@@ -1,0 +1,25 @@
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+
+# Per-developer settings
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.swiftpm/
+.build/
+Package.resolved
+
+# CocoaPods / Carthage (not used, but defensive)
+Pods/
+Carthage/Build/
+
+# Built xcframeworks (built from bee-lite-java, referenced by path)
+Mobile.xcframework/
