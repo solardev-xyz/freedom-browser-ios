@@ -6,6 +6,23 @@ public enum SwarmStatus: String, Sendable {
     case idle, starting, running, stopping, stopped, failed
 }
 
+public struct SwarmFile: Sendable {
+    public let name: String
+    public let data: Data
+}
+
+public enum SwarmError: LocalizedError {
+    case notRunning
+    case notFound
+
+    public var errorDescription: String? {
+        switch self {
+        case .notRunning: "Swarm node is not running"
+        case .notFound: "content not found on Swarm"
+        }
+    }
+}
+
 public struct SwarmConfig: Sendable {
     public var dataDir: URL
     public var password: String
@@ -43,6 +60,29 @@ public final class SwarmNode {
     private var pollTask: Task<Void, Never>?
 
     public init() {}
+
+    public static func defaultDataDir() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("swarm", isDirectory: true)
+    }
+
+    public func download(hash: String) async throws -> SwarmFile {
+        guard let captured = node else { throw SwarmError.notRunning }
+        return try await withUnsafeThrowingContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try captured.download(hash)
+                    guard let file = result.file, let data = file.data else {
+                        cont.resume(throwing: SwarmError.notFound)
+                        return
+                    }
+                    cont.resume(returning: SwarmFile(name: file.name, data: data))
+                } catch {
+                    cont.resume(throwing: error)
+                }
+            }
+        }
+    }
 
     public func start(_ config: SwarmConfig) {
         guard node == nil else { return }
