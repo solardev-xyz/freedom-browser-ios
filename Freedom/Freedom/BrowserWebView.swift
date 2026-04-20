@@ -2,15 +2,20 @@ import SwiftUI
 import WebKit
 
 struct BrowserWebView: UIViewRepresentable {
-    let html: String
+    let url: URL
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        config.setURLSchemeHandler(BzzSchemeHandler(), forURLScheme: "bzz")
         config.defaultWebpagePreferences.allowsContentJavaScript = true
-        return WKWebView(frame: .zero, configuration: config)
+        let view = WKWebView(frame: .zero, configuration: config)
+        view.load(URLRequest(url: url))
+        return view
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {
-        view.loadHTMLString(html, baseURL: nil)
+        if view.url != url {
+            view.load(URLRequest(url: url))
+        }
     }
 }

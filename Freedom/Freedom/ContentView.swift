@@ -5,10 +5,8 @@ struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
 
     @State private var hashInput: String = "bzz://f0df8b5fbe7d8cb04430ba8913e8aa6a0ad4976f3a48b7aacf5aa14635739813"
-    @State private var currentHtml: String? = nil
-    @State private var loadedFilename: String? = nil
-    @State private var fetchError: String? = nil
-    @State private var isLoading: Bool = false
+    @State private var currentURL: URL? = nil
+    @State private var inputError: String? = nil
     @FocusState private var hashFieldFocused: Bool
 
     var body: some View {
@@ -34,7 +32,7 @@ struct ContentView: View {
 
     private var urlBar: some View {
         HStack(spacing: 8) {
-            TextField("swarm hash…", text: $hashInput)
+            TextField("bzz://<hash>[/path]", text: $hashInput)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
@@ -48,34 +46,19 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var contentArea: some View {
-        if isLoading {
-            VStack(spacing: 12) {
-                ProgressView()
-                Text("fetching…").font(.caption).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let err = fetchError {
+        if let err = inputError {
             ContentUnavailableView {
-                Label("load failed", systemImage: "exclamationmark.triangle")
+                Label("invalid URL", systemImage: "exclamationmark.triangle")
             } description: {
-                Text(err).font(.caption).multilineTextAlignment(.center)
+                Text(err).font(.caption)
             }
-        } else if let html = currentHtml {
-            VStack(spacing: 0) {
-                if let name = loadedFilename {
-                    Text(name)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .padding(.horizontal, 12).padding(.vertical, 4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.tertiarySystemBackground))
-                }
-                BrowserWebView(html: html)
-            }
+        } else if let url = currentURL {
+            BrowserWebView(url: url)
         } else {
             ContentUnavailableView {
-                Label("paste a swarm hash", systemImage: "network")
+                Label("paste a swarm URL", systemImage: "network")
             } description: {
-                Text("Freedom fetches content over the Swarm network via the embedded bee node.")
+                Text("Freedom routes bzz:// requests through the embedded bee node.\nAssets within a manifest resolve by path.")
                     .multilineTextAlignment(.center)
             }
         }
@@ -84,7 +67,6 @@ struct ContentView: View {
     private var canLoad: Bool {
         !hashInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && swarm.status == .running
-        && !isLoading
     }
 
     private var statusColor: Color {
@@ -99,26 +81,15 @@ struct ContentView: View {
     private func load() {
         let trimmed = hashInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let hash = trimmed.hasPrefix("bzz://") ? String(trimmed.dropFirst("bzz://".count)) : trimmed
-        hashFieldFocused = false
-        isLoading = true
-        currentHtml = nil
-        loadedFilename = nil
-        fetchError = nil
-        Task {
-            do {
-                let file = try await swarm.download(hash: hash)
-                if let text = String(data: file.data, encoding: .utf8) {
-                    currentHtml = text
-                    loadedFilename = file.name
-                } else {
-                    fetchError = "content is binary (\(file.data.count) bytes). M1 only renders UTF-8 text/HTML — M2 will add full asset resolution via WKURLSchemeHandler."
-                }
-            } catch {
-                fetchError = error.localizedDescription
-            }
-            isLoading = false
+        let urlString = trimmed.hasPrefix("bzz://") ? trimmed : "bzz://\(trimmed)"
+        guard let url = URL(string: urlString), url.scheme == "bzz", url.host != nil else {
+            inputError = "expected bzz://<hash>[/path] or a bare hash"
+            currentURL = nil
+            return
         }
+        inputError = nil
+        currentURL = url
+        hashFieldFocused = false
     }
 }
 
