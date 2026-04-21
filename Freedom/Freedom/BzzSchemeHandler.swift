@@ -2,37 +2,13 @@ import Foundation
 import WebKit
 
 final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
-    private let beeAPIPort: Int = 1633
+    static let beeAPIPort: Int = 1633
+
     private let session = URLSession.shared
     private var active: [ObjectIdentifier: URLSessionDataTask] = [:]
 
-    // Bee HTTP API read-path shapes. When the path matches one of these
-    // exactly (including the expected hex-reference format), we route the
-    // request straight to Bee, bypassing the current page's origin hash.
-    // Otherwise the request is interpreted as a path inside the origin's
-    // manifest. Shapes here mirror the Bee HTTP API's own router so we
-    // reserve exactly the same namespace any Swarm gateway already reserves.
-    private func isBeeGatewayPath(_ path: String) -> Bool {
-        let segments = path.split(separator: "/", omittingEmptySubsequences: true)
-        guard segments.count >= 2 else { return false }
-        switch segments[0] {
-        case "bzz", "bytes":
-            // /bzz/<64 or 128 hex>[/...]
-            return SwarmRef.isValid(segments[1])
-        case "chunks":
-            // /chunks/<64 hex>
-            return SwarmRef.isHex(segments[1], length: 64)
-        case "feeds", "soc":
-            // /feeds/<owner: 40 hex>/<topic: 64 hex>
-            guard segments.count >= 3 else { return false }
-            return SwarmRef.isHex(segments[1], length: 40) && SwarmRef.isHex(segments[2], length: 64)
-        default:
-            return false
-        }
-    }
-
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
-        guard let bzzURL = task.request.url, let httpURL = translate(bzzURL) else {
+        guard let bzzURL = task.request.url, let httpURL = Self.localHTTPURL(for: bzzURL) else {
             task.didFailWithError(URLError(.badURL))
             return
         }
@@ -70,26 +46,43 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
         active.removeValue(forKey: ObjectIdentifier(task))?.cancel()
     }
 
-    private func translate(_ url: URL) -> URL? {
-        guard url.scheme == "bzz", let host = url.host else { return nil }
+    /// Translate a `bzz://` URL to its Bee HTTP API equivalent on localhost.
+    /// When the path looks like a reserved Bee API route
+    /// (/bzz/<ref>, /bytes/<ref>, /chunks/<ref>, /feeds/<owner>/<topic>,
+    /// /soc/<owner>/<topic>), route directly — this is how Swarm SPAs issue
+    /// relative `fetch('/bzz/<ref>/')` calls. Otherwise treat the path as
+    /// a subpath inside the current origin's manifest.
+    static func localHTTPURL(for bzzURL: URL) -> URL? {
+        guard bzzURL.scheme == "bzz", let host = bzzURL.host else { return nil }
 
         var components = URLComponents()
         components.scheme = "http"
         components.host = "127.0.0.1"
         components.port = beeAPIPort
 
-        let path = url.path.isEmpty ? "/" : url.path
-
+        let path = bzzURL.path.isEmpty ? "/" : bzzURL.path
         if isBeeGatewayPath(path) {
-            // SPA is addressing a *different* Swarm reference via relative
-            // /bzz/<ref>/ path. Route to Bee directly, ignoring origin.
             components.path = path
         } else {
-            // Regular in-manifest navigation — prefix with origin hash so Bee
-            // walks the current site's manifest.
             components.path = "/bzz/\(host)\(path)"
         }
-        components.query = url.query
+        components.query = bzzURL.query
         return components.url
+    }
+
+    private static func isBeeGatewayPath(_ path: String) -> Bool {
+        let segments = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard segments.count >= 2 else { return false }
+        switch segments[0] {
+        case "bzz", "bytes":
+            return SwarmRef.isValid(segments[1])
+        case "chunks":
+            return SwarmRef.isHex(segments[1], length: 64)
+        case "feeds", "soc":
+            guard segments.count >= 3 else { return false }
+            return SwarmRef.isHex(segments[1], length: 40) && SwarmRef.isHex(segments[2], length: 64)
+        default:
+            return false
+        }
     }
 }

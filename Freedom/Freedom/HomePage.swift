@@ -71,7 +71,8 @@ struct HomePage: View {
             ForEach(bookmarks, id: \.id) { bookmark in
                 LaunchCard(
                     title: bookmark.displayTitle,
-                    subtitle: bookmark.url.absoluteString
+                    subtitle: bookmark.url.absoluteString,
+                    url: bookmark.url
                 ) {
                     if let classified = BrowserURL.classify(bookmark.url) {
                         onNavigate(classified)
@@ -92,7 +93,8 @@ struct HomePage: View {
             ForEach(recentDistinct, id: \.id) { entry in
                 LaunchCard(
                     title: entry.displayTitle,
-                    subtitle: entry.url.absoluteString
+                    subtitle: entry.url.absoluteString,
+                    url: entry.url
                 ) {
                     if let classified = BrowserURL.classify(entry.url) {
                         onNavigate(classified)
@@ -106,7 +108,7 @@ struct HomePage: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Explore").font(.headline)
             ForEach(ExploreEntry.mainnetCurated, id: \.self) { entry in
-                LaunchCard(title: entry.title, subtitle: entry.subtitle) {
+                LaunchCard(title: entry.title, subtitle: entry.subtitle, url: entry.url.url) {
                     onNavigate(entry.url)
                 }
             }
@@ -146,11 +148,13 @@ struct HomePage: View {
 private struct LaunchCard: View {
     let title: String
     let subtitle: String?
+    let url: URL
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack {
+            HStack(spacing: 12) {
+                FaviconView(host: url.host, size: 24)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).foregroundStyle(.primary).lineLimit(1)
                     if let subtitle {

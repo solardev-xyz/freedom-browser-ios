@@ -13,7 +13,7 @@ struct BookmarksView: View {
             List {
                 ForEach(bookmarks) { bookmark in
                     Button { select(bookmark) } label: {
-                        URLRow(title: bookmark.displayTitle, urlString: bookmark.url.absoluteString)
+                        URLRow(title: bookmark.displayTitle, url: bookmark.url)
                     }
                     .buttonStyle(.plain)
                     .swipeActions(edge: .trailing) {

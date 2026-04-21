@@ -13,11 +13,13 @@ final class TabStore {
 
     @ObservationIgnored private let context: ModelContext
     @ObservationIgnored private let historyStore: HistoryStore
+    @ObservationIgnored private let faviconStore: FaviconStore
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
-    init(context: ModelContext, historyStore: HistoryStore) {
+    init(context: ModelContext, historyStore: HistoryStore, faviconStore: FaviconStore) {
         self.context = context
         self.historyStore = historyStore
+        self.faviconStore = faviconStore
         reloadRecords()
     }
 
@@ -100,8 +102,10 @@ final class TabStore {
     private func ensureLiveTab(for id: UUID) -> BrowserTab {
         if let existing = liveTabs[id] { return existing }
         let tab = BrowserTab(recordID: id)
-        tab.onNavigationFinish = { [weak self] url, title in
-            self?.historyStore.record(url: url, title: title)
+        tab.onNavigationFinish = { [weak self, weak tab] url, title in
+            guard let self, let tab else { return }
+            self.historyStore.record(url: url, title: title)
+            self.faviconStore.fetchIfNeeded(for: url, webView: tab.webView)
         }
         liveTabs[id] = tab
         if let record = record(for: id),

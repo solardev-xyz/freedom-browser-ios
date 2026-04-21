@@ -20,7 +20,7 @@ struct HistoryView: View {
                     Section(header: Text(group.label)) {
                         ForEach(group.entries) { entry in
                             Button { select(entry) } label: {
-                                URLRow(title: entry.displayTitle, urlString: entry.url.absoluteString)
+                                URLRow(title: entry.displayTitle, url: entry.url)
                             }
                             .buttonStyle(.plain)
                             .swipeActions(edge: .trailing) {

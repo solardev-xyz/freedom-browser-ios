@@ -17,10 +17,7 @@ struct HistorySuggestions: View {
             ForEach(Array(matches.enumerated()), id: \.element.id) { index, match in
                 Button { onSelect(match) } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: match.isBookmark ? "star.fill" : "clock")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 16)
+                        FaviconView(host: match.url.host)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(match.title)
                                 .foregroundStyle(.primary)
@@ -32,6 +29,11 @@ struct HistorySuggestions: View {
                                 .truncationMode(.middle)
                         }
                         Spacer(minLength: 0)
+                        if match.isBookmark {
+                            Image(systemName: "star.fill")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
