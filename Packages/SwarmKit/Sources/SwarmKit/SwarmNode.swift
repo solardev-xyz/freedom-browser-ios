@@ -27,15 +27,28 @@ public struct SwarmConfig: Sendable {
     public var dataDir: URL
     public var password: String
     public var rpcEndpoint: String?       // nil → ultra-light mode
-    public var bootnodes: String
+    public var bootnodes: String          // pipe-delimited list of multiaddrs
     public var mainnet: Bool
     public var networkID: Int64
+
+    // IP-literal Swarm mainnet bootnodes. We ship these because libp2p's
+    // /dnsaddr/ TXT-record resolution fails on real iOS devices (works in
+    // Simulator, which shares the host's DNS path). /dnsaddr/ form is
+    // omitted entirely to keep the log noise-free on device.
+    // Updated 2026-04-21 from dig TXT _dnsaddr.*.mainnet.ethswarm.org.
+    public static let defaultBootnodes: [String] = [
+        "/ip4/135.181.84.53/tcp/1634/p2p/QmTxX73q8dDiVbmXU7GqMNwG3gWmjSFECuMoCsTW4xp6CK",
+        "/ip4/139.84.229.70/tcp/1634/p2p/QmRa6rSrUWJ7s68MNmV94bo2KAa9pYcp6YbFLMHZ3r7n2M",
+        "/ip4/159.223.6.181/tcp/1634/p2p/QmP9b7MxjyEfrJrch5jUThmuFaGzvUPpWEJewCpx5Ln6i8",
+        "/ip4/170.64.184.25/tcp/1634/p2p/Qmeh2e7U2FWrSooyrjWjnNKGceJWbRxLLx8Ppy5CimzsGH",
+        "/ip4/172.104.43.205/tcp/1634/p2p/QmeovveLJmgyfjiA9mJnvFTawHyisuJMCYicJffdWdxNmr",
+    ]
 
     public init(
         dataDir: URL,
         password: String,
         rpcEndpoint: String? = nil,
-        bootnodes: String = "/dnsaddr/mainnet.ethswarm.org",
+        bootnodes: String = Self.defaultBootnodes.joined(separator: "|"),
         mainnet: Bool = true,
         networkID: Int64 = 1
     ) {
