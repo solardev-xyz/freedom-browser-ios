@@ -9,11 +9,14 @@ struct HistoryView: View {
     @Query(sort: \HistoryEntry.visitedAt, order: .reverse) private var history: [HistoryEntry]
 
     @State private var isShowingClearConfirm = false
+    @State private var searchText = ""
 
     var body: some View {
+        let filtered = filteredHistory
+        let groups = groupByDay(filtered)
         NavigationStack {
             List {
-                ForEach(dayGroups, id: \.label) { group in
+                ForEach(groups, id: \.label) { group in
                     Section(header: Text(group.label)) {
                         ForEach(group.entries) { entry in
                             Button { select(entry) } label: {
@@ -31,12 +34,17 @@ struct HistoryView: View {
                     }
                 }
             }
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always))
             .overlay {
-                if history.isEmpty {
-                    ContentUnavailableView {
-                        Label("No history", systemImage: "clock")
-                    } description: {
-                        Text("Pages you visit will appear here.")
+                if filtered.isEmpty {
+                    if searchText.isEmpty {
+                        ContentUnavailableView {
+                            Label("No history", systemImage: "clock")
+                        } description: {
+                            Text("Pages you visit will appear here.")
+                        }
+                    } else {
+                        ContentUnavailableView.search(text: searchText)
                     }
                 }
             }
@@ -72,10 +80,19 @@ struct HistoryView: View {
         dismiss()
     }
 
-    private var dayGroups: [DayGroup] {
+    private var filteredHistory: [HistoryEntry] {
+        guard !searchText.isEmpty else { return history }
+        let lower = searchText.lowercased()
+        return history.filter {
+            $0.url.absoluteString.lowercased().contains(lower)
+            || ($0.title?.lowercased().contains(lower) ?? false)
+        }
+    }
+
+    private func groupByDay(_ entries: [HistoryEntry]) -> [DayGroup] {
         var seenLabels: [String] = []
         var byLabel: [String: [HistoryEntry]] = [:]
-        for entry in history {
+        for entry in entries {
             let label = dayLabel(for: entry.visitedAt)
             if byLabel[label] == nil {
                 byLabel[label] = []

@@ -8,9 +8,13 @@ struct ContentView: View {
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(\.scenePhase) private var scenePhase
 
-    // Drives the bookmark menu item's label reactively — toggling a bookmark
-    // updates this query, which flips the label on the next menu open.
+    // Drives the bookmark toolbar button's fill state — toggling a bookmark
+    // updates this query, which flips the icon immediately.
     @Query private var allBookmarks: [Bookmark]
+
+    // Capped history fetch for the address-bar autocomplete. 500 is plenty
+    // to satisfy a typed substring without materialising the whole table.
+    @Query(Self.suggestionHistoryDescriptor) private var suggestionHistory: [HistoryEntry]
 
     @State private var addressText: String = ""
     @State private var inputError: String? = nil
@@ -28,6 +32,14 @@ struct ContentView: View {
             }
             progressBar
             webArea
+                .overlay(alignment: .top) {
+                    if !suggestions.isEmpty {
+                        HistorySuggestions(matches: suggestions) { suggestion in
+                            guard let classified = BrowserURL.classify(suggestion.url) else { return }
+                            navigate(to: classified)
+                        }
+                    }
+                }
             toolbar
         }
         .sheet(isPresented: $isShowingTabSwitcher) {
@@ -172,6 +184,56 @@ struct ContentView: View {
 
     private var bookmarkedURLs: Set<URL> {
         Set(allBookmarks.map(\.url))
+    }
+
+    private var suggestions: [HistorySuggestion] {
+        let trimmed = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard addressFocused, !trimmed.isEmpty else { return [] }
+        let lower = trimmed.lowercased()
+        let bookmarkURLs = bookmarkedURLs
+
+        func matches(title: String, url: URL) -> Bool {
+            title.lowercased().contains(lower)
+            || url.absoluteString.lowercased().contains(lower)
+        }
+
+        var seen = Set<URL>()
+        var items: [HistorySuggestion] = []
+
+        // History first — its sort order makes the first occurrence per URL
+        // the most-recent visit.
+        for entry in suggestionHistory where matches(title: entry.displayTitle, url: entry.url) {
+            guard !seen.contains(entry.url) else { continue }
+            seen.insert(entry.url)
+            items.append(HistorySuggestion(
+                url: entry.url,
+                title: entry.displayTitle,
+                timestamp: entry.visitedAt,
+                isBookmark: bookmarkURLs.contains(entry.url)
+            ))
+        }
+        // Then bookmarks the user has never visited through history.
+        for bookmark in allBookmarks where matches(title: bookmark.displayTitle, url: bookmark.url) {
+            guard !seen.contains(bookmark.url) else { continue }
+            seen.insert(bookmark.url)
+            items.append(HistorySuggestion(
+                url: bookmark.url,
+                title: bookmark.displayTitle,
+                timestamp: bookmark.createdAt,
+                isBookmark: true
+            ))
+        }
+
+        items.sort { $0.timestamp > $1.timestamp }
+        return Array(items.prefix(5))
+    }
+
+    private static var suggestionHistoryDescriptor: FetchDescriptor<HistoryEntry> {
+        var d = FetchDescriptor<HistoryEntry>(
+            sortBy: [SortDescriptor(\.visitedAt, order: .reverse)]
+        )
+        d.fetchLimit = 500
+        return d
     }
 
     private var isActiveURLBookmarked: Bool {
