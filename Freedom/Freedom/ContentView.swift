@@ -5,7 +5,7 @@ struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
 
     @State private var tab = BrowserTab()
-    @State private var addressText: String = "bzz://c0b683a3be2593bc7e22d252a371bac921bf47d11c3f3c1680ee60e6b8ccfcc8"
+    @State private var addressText: String = ""
     @State private var inputError: String? = nil
     @FocusState private var addressFocused: Bool
 
@@ -77,10 +77,10 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var webArea: some View {
-        if tab.url == nil {
-            emptyState
-        } else {
+        if tab.hasNavigated {
             BrowserWebView(tab: tab)
+        } else {
+            HomePage(onNavigate: navigate(to:))
         }
     }
 
@@ -95,16 +95,6 @@ struct ContentView: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
         .foregroundStyle(.white)
         .background(Color.red)
-    }
-
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("Freedom", systemImage: "network")
-        } description: {
-            Text("Enter a bzz:// hash or a regular URL and tap Go.")
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var toolbar: some View {
@@ -150,9 +140,14 @@ struct ContentView: View {
             inputError = "Expected bzz://<hash>[/path], https://…, or a bare 64-hex Swarm reference."
             return
         }
+        navigate(to: parsed)
+    }
+
+    private func navigate(to browserURL: BrowserURL) {
         inputError = nil
         addressFocused = false
-        tab.navigate(to: parsed)
+        addressText = browserURL.url.absoluteString
+        tab.navigate(to: browserURL)
     }
 }
 

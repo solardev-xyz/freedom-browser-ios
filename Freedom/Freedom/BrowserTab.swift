@@ -10,7 +10,14 @@ final class BrowserTab {
     var canGoBack: Bool = false
     var canGoForward: Bool = false
     var isLoading: Bool = false
+    private(set) var hasNavigated: Bool = false
 
+    // The WKWebView is stored, not lazy or computed, because SwiftUI's
+    // UIViewRepresentable vends it via `tab.webView` every time the
+    // representable is materialized — which happens when the view tree
+    // flips between HomePage and BrowserWebView. A single persistent
+    // instance keeps navigation state and the bzz scheme handler alive
+    // across those flips.
     let webView: WKWebView
 
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
@@ -28,6 +35,7 @@ final class BrowserTab {
     }
 
     func navigate(to browserURL: BrowserURL) {
+        hasNavigated = true
         webView.load(URLRequest(url: browserURL.url))
     }
 

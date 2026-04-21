@@ -1,6 +1,6 @@
 import Foundation
 
-enum BrowserURL {
+enum BrowserURL: Hashable {
     case bzz(URL)
     case web(URL)
 
