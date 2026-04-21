@@ -1,11 +1,15 @@
 import Foundation
 import Observation
+import UIKit
 import WebKit
 
 @MainActor
 @Observable
 final class BrowserTab {
+    let recordID: UUID
+
     var url: URL?
+    var title: String = ""
     var progress: Double = 0
     var canGoBack: Bool = false
     var canGoForward: Bool = false
@@ -22,7 +26,8 @@ final class BrowserTab {
 
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
 
-    init() {
+    init(recordID: UUID = UUID()) {
+        self.recordID = recordID
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BzzSchemeHandler(), forURLScheme: "bzz")
         config.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -44,18 +49,36 @@ final class BrowserTab {
     func reload()    { webView.reload() }
     func stop()      { webView.stopLoading() }
 
+    /// Render the current webview contents at a reduced width as JPEG bytes.
+    /// Used for persisting tab thumbnails.
+    func snapshot() async -> Data? {
+        let config = WKSnapshotConfiguration()
+        config.snapshotWidth = 600
+        return await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
+            webView.takeSnapshot(with: config) { image, _ in
+                cont.resume(returning: image?.jpegData(compressionQuality: 0.7))
+            }
+        }
+    }
+
     private func observeWebView() {
         // WKWebView posts KVO on the main thread, so these closures execute
         // on the same actor as BrowserTab. Use assumeIsolated to mutate state
         // without bouncing through Task { @MainActor in … }. Writes are
         // guarded by value-change checks because @Observable invalidates
-        // downstream views on every setter call regardless of the new value,
-        // and estimatedProgress in particular posts hundreds of times per
-        // page load.
+        // downstream views on every setter call regardless of the new value.
         observations.append(webView.observe(\.url, options: .new) { [weak self] wv, _ in
             MainActor.assumeIsolated {
                 guard let self, self.url != wv.url else { return }
                 self.url = wv.url
+            }
+        })
+        observations.append(webView.observe(\.title, options: .new) { [weak self] wv, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let new = wv.title ?? ""
+                guard self.title != new else { return }
+                self.title = new
             }
         })
         observations.append(webView.observe(\.estimatedProgress, options: .new) { [weak self] wv, _ in

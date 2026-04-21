@@ -1,22 +1,35 @@
 import SwiftUI
+import SwiftData
 import SwarmKit
 
 @main
 struct FreedomApp: App {
     @State private var swarm = SwarmNode()
+    @State private var tabStore: TabStore
+    private let modelContainer: ModelContainer
+
+    init() {
+        do {
+            let container = try ModelContainer(for: TabRecord.self)
+            self.modelContainer = container
+            self._tabStore = State(wrappedValue: TabStore(context: container.mainContext))
+        } catch {
+            fatalError("Failed to create SwiftData ModelContainer: \(error)")
+        }
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(swarm)
+                .environment(tabStore)
+                .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
         }
     }
 
     private func startNodeIfNeeded() async {
         guard swarm.status == .idle else { return }
-        // Try to pull fresh bootnode addresses via DoH; fall back to the
-        // hardcoded list if it times out or fails.
         let fresh = await BootnodeResolver.resolveMainnet()
         let bootnodes = fresh.isEmpty ? SwarmConfig.defaultBootnodes : fresh
         swarm.start(.init(

@@ -10,13 +10,22 @@ enum BrowserURL: Hashable {
         }
     }
 
+    /// Wrap an already-valid URL in the right case based on its scheme.
+    /// Returns nil if the scheme isn't bzz/http/https.
+    static func classify(_ url: URL) -> BrowserURL? {
+        switch url.scheme?.lowercased() {
+        case "bzz": return .bzz(url)
+        case "http", "https": return .web(url)
+        default: return nil
+        }
+    }
+
     static func parse(_ input: String) -> BrowserURL? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if let scheme = URL(string: trimmed)?.scheme?.lowercased() {
-            if scheme == "bzz", let url = URL(string: trimmed) { return .bzz(url) }
-            if scheme == "http" || scheme == "https", let url = URL(string: trimmed) { return .web(url) }
+        if let url = URL(string: trimmed), let classified = classify(url) {
+            return classified
         }
 
         if SwarmRef.isValid(trimmed), let url = URL(string: "bzz://\(trimmed)") {

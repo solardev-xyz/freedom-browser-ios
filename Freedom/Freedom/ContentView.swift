@@ -3,10 +3,12 @@ import SwarmKit
 
 struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
+    @Environment(TabStore.self) private var tabStore
+    @Environment(\.scenePhase) private var scenePhase
 
-    @State private var tab = BrowserTab()
     @State private var addressText: String = ""
     @State private var inputError: String? = nil
+    @State private var isShowingTabSwitcher = false
     @FocusState private var addressFocused: Bool
 
     var body: some View {
@@ -20,9 +22,21 @@ struct ContentView: View {
             webArea
             toolbar
         }
-        .onChange(of: tab.url) { _, new in
-            guard !addressFocused, let new else { return }
-            addressText = new.absoluteString
+        .sheet(isPresented: $isShowingTabSwitcher) {
+            TabSwitcher(isPresented: $isShowingTabSwitcher)
+        }
+        .onChange(of: tabStore.activeTab?.url) { _, new in
+            guard !addressFocused else { return }
+            addressText = new?.absoluteString ?? ""
+        }
+        .onChange(of: tabStore.activeRecordID) { _, _ in
+            addressFocused = false
+            addressText = tabStore.activeTab?.url?.absoluteString ?? ""
+        }
+        .onChange(of: scenePhase) { _, new in
+            if new == .background {
+                Task { await tabStore.captureActive() }
+            }
         }
     }
 
@@ -51,15 +65,15 @@ struct ContentView: View {
             if addressFocused {
                 Button("Go", action: navigate)
                     .buttonStyle(.borderedProminent)
-            } else if tab.isLoading {
-                Button { tab.stop() } label: {
+            } else if let active = tabStore.activeTab, active.isLoading {
+                Button { active.stop() } label: {
                     Image(systemName: "xmark")
                 }
             } else {
-                Button { tab.reload() } label: {
+                Button { tabStore.activeTab?.reload() } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .disabled(tab.url == nil)
+                .disabled(tabStore.activeTab?.url == nil)
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -67,8 +81,8 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var progressBar: some View {
-        if tab.isLoading && tab.progress > 0 && tab.progress < 1 {
-            ProgressView(value: tab.progress)
+        if let active = tabStore.activeTab, active.isLoading, active.progress > 0, active.progress < 1 {
+            ProgressView(value: active.progress)
                 .tint(.accentColor)
                 .scaleEffect(y: 0.5)
         } else {
@@ -77,8 +91,12 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var webArea: some View {
-        if tab.hasNavigated {
-            BrowserWebView(tab: tab)
+        if let active = tabStore.activeTab, active.hasNavigated {
+            // .id forces SwiftUI to recreate the representable when the
+            // active tab changes — otherwise it reuses the prior UIView
+            // (which is the *previous* tab's WKWebView) and we show the
+            // wrong page.
+            BrowserWebView(tab: active).id(active.recordID)
         } else {
             HomePage(onNavigate: navigate(to:))
         }
@@ -99,10 +117,14 @@ struct ContentView: View {
 
     private var toolbar: some View {
         HStack(spacing: 0) {
-            toolbarButton("chevron.backward", enabled: tab.canGoBack) { tab.goBack() }
-            toolbarButton("chevron.forward", enabled: tab.canGoForward) { tab.goForward() }
+            toolbarButton("chevron.backward", enabled: tabStore.activeTab?.canGoBack == true) {
+                tabStore.activeTab?.goBack()
+            }
+            toolbarButton("chevron.forward", enabled: tabStore.activeTab?.canGoForward == true) {
+                tabStore.activeTab?.goForward()
+            }
             Spacer(minLength: 0)
-            if let url = tab.url {
+            if let url = tabStore.activeTab?.url {
                 ShareLink(item: url) {
                     Image(systemName: "square.and.arrow.up")
                         .font(.system(size: 20))
@@ -111,10 +133,27 @@ struct ContentView: View {
             } else {
                 toolbarButton("square.and.arrow.up", enabled: false) {}
             }
-            toolbarButton("square.on.square", enabled: false) {}  // tabs — M3.2
+            Button { isShowingTabSwitcher = true } label: {
+                tabsButtonLabel
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
         }
         .padding(.horizontal, 4)
         .background(Color(.secondarySystemBackground))
+    }
+
+    private var tabsButtonLabel: some View {
+        ZStack {
+            Image(systemName: "square.on.square").font(.system(size: 20))
+            if !tabStore.records.isEmpty {
+                Text("\(tabStore.records.count)")
+                    .font(.caption2).bold()
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(Color.accentColor, in: Capsule())
+                    .foregroundStyle(.white)
+                    .offset(x: 14, y: -10)
+            }
+        }
     }
 
     private func toolbarButton(_ systemImage: String, enabled: Bool, action: @escaping () -> Void) -> some View {
@@ -147,11 +186,6 @@ struct ContentView: View {
         inputError = nil
         addressFocused = false
         addressText = browserURL.url.absoluteString
-        tab.navigate(to: browserURL)
+        tabStore.navigateActive(to: browserURL)
     }
-}
-
-#Preview {
-    ContentView()
-        .environment(SwarmNode())
 }
