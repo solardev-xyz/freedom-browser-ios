@@ -17,7 +17,7 @@ struct HistoryView: View {
                     Section(header: Text(group.label)) {
                         ForEach(group.entries) { entry in
                             Button { select(entry) } label: {
-                                HistoryRow(entry: entry)
+                                URLRow(title: entry.displayTitle, urlString: entry.url.absoluteString)
                             }
                             .buttonStyle(.plain)
                             .swipeActions(edge: .trailing) {
@@ -90,25 +90,6 @@ struct HistoryView: View {
 private struct DayGroup {
     let label: String
     let entries: [HistoryEntry]
-}
-
-private struct HistoryRow: View {
-    let entry: HistoryEntry
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(entry.displayTitle)
-                .font(.body)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Text(entry.url.absoluteString)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .padding(.vertical, 2)
-    }
 }
 
 private func dayLabel(for date: Date) -> String {

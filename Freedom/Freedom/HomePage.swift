@@ -22,13 +22,18 @@ struct HomePage: View {
     // surface 5 distinct URLs. Without a limit, every HomePage body re-eval
     // materialises the full HistoryEntry table.
     @Query(Self.recentDescriptor) private var history: [HistoryEntry]
+    @Query(Self.bookmarksDescriptor) private var bookmarks: [Bookmark]
 
     @State private var isShowingHistory = false
+    @State private var isShowingBookmarks = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 header
+                if !bookmarks.isEmpty {
+                    bookmarksSection
+                }
                 if !recentDistinct.isEmpty {
                     recentSection
                 }
@@ -42,6 +47,9 @@ struct HomePage: View {
         .sheet(isPresented: $isShowingHistory) {
             HistoryView(onSelect: onNavigate)
         }
+        .sheet(isPresented: $isShowingBookmarks) {
+            BookmarksView(onSelect: onNavigate)
+        }
     }
 
     private var header: some View {
@@ -49,6 +57,27 @@ struct HomePage: View {
             Text("Freedom").font(.largeTitle).bold()
             Text("Browse the decentralized web via Swarm")
                 .font(.subheadline).foregroundStyle(.secondary)
+        }
+    }
+
+    private var bookmarksSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Bookmarks").font(.headline)
+                Spacer()
+                Button("See all") { isShowingBookmarks = true }
+                    .font(.subheadline)
+            }
+            ForEach(bookmarks, id: \.id) { bookmark in
+                LaunchCard(
+                    title: bookmark.displayTitle,
+                    subtitle: bookmark.url.absoluteString
+                ) {
+                    if let classified = BrowserURL.classify(bookmark.url) {
+                        onNavigate(classified)
+                    }
+                }
+            }
         }
     }
 
@@ -102,6 +131,14 @@ struct HomePage: View {
             sortBy: [SortDescriptor(\.visitedAt, order: .reverse)]
         )
         d.fetchLimit = 50
+        return d
+    }
+
+    private static var bookmarksDescriptor: FetchDescriptor<Bookmark> {
+        var d = FetchDescriptor<Bookmark>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+        )
+        d.fetchLimit = 5
         return d
     }
 }

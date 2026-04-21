@@ -1,15 +1,22 @@
+import SwiftData
 import SwiftUI
 import SwarmKit
 
 struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
     @Environment(TabStore.self) private var tabStore
+    @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(\.scenePhase) private var scenePhase
+
+    // Drives the bookmark menu item's label reactively — toggling a bookmark
+    // updates this query, which flips the label on the next menu open.
+    @Query private var allBookmarks: [Bookmark]
 
     @State private var addressText: String = ""
     @State private var inputError: String? = nil
     @State private var isShowingTabSwitcher = false
     @State private var isShowingHistory = false
+    @State private var isShowingBookmarks = false
     @FocusState private var addressFocused: Bool
 
     var body: some View {
@@ -30,6 +37,12 @@ struct ContentView: View {
             HistoryView(onSelect: { browserURL in
                 navigate(to: browserURL)
                 isShowingHistory = false
+            })
+        }
+        .sheet(isPresented: $isShowingBookmarks) {
+            BookmarksView(onSelect: { browserURL in
+                navigate(to: browserURL)
+                isShowingBookmarks = false
             })
         }
         .onChange(of: tabStore.activeTab?.url) { _, new in
@@ -133,6 +146,8 @@ struct ContentView: View {
             Spacer()
             shareButton
             Spacer()
+            bookmarkButton
+            Spacer()
             Button { isShowingTabSwitcher = true } label: {
                 tabsButtonLabel.frame(width: 44, height: 44)
             }
@@ -155,8 +170,34 @@ struct ContentView: View {
         }
     }
 
+    private var bookmarkedURLs: Set<URL> {
+        Set(allBookmarks.map(\.url))
+    }
+
+    private var isActiveURLBookmarked: Bool {
+        guard let url = tabStore.activeTab?.url else { return false }
+        return bookmarkedURLs.contains(url)
+    }
+
+    private var bookmarkButton: some View {
+        Button {
+            guard let tab = tabStore.activeTab, let url = tab.url else { return }
+            bookmarkStore.toggle(url: url, title: tab.title)
+        } label: {
+            Image(systemName: isActiveURLBookmarked ? "star.fill" : "star")
+                .font(.system(size: 20))
+                .frame(width: 44, height: 44)
+        }
+        .disabled(tabStore.activeTab?.url == nil)
+    }
+
     private var menuButton: some View {
         Menu {
+            Button {
+                isShowingBookmarks = true
+            } label: {
+                Label("Bookmarks", systemImage: "book")
+            }
             Button {
                 isShowingHistory = true
             } label: {
