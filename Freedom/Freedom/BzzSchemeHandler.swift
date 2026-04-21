@@ -18,25 +18,17 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
         switch segments[0] {
         case "bzz", "bytes":
             // /bzz/<64 or 128 hex>[/...]
-            return isSwarmRef(segments[1])
+            return SwarmRef.isValid(segments[1])
         case "chunks":
             // /chunks/<64 hex>
-            return isHex(segments[1], length: 64)
+            return SwarmRef.isHex(segments[1], length: 64)
         case "feeds", "soc":
             // /feeds/<owner: 40 hex>/<topic: 64 hex>
             guard segments.count >= 3 else { return false }
-            return isHex(segments[1], length: 40) && isHex(segments[2], length: 64)
+            return SwarmRef.isHex(segments[1], length: 40) && SwarmRef.isHex(segments[2], length: 64)
         default:
             return false
         }
-    }
-
-    private func isSwarmRef(_ s: Substring) -> Bool {
-        (s.count == 64 || s.count == 128) && s.allSatisfy(\.isHexDigit)
-    }
-
-    private func isHex(_ s: Substring, length: Int) -> Bool {
-        s.count == length && s.allSatisfy(\.isHexDigit)
     }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {

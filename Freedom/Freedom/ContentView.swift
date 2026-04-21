@@ -4,23 +4,31 @@ import SwarmKit
 struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
 
-    @State private var hashInput: String = "bzz://c0b683a3be2593bc7e22d252a371bac921bf47d11c3f3c1680ee60e6b8ccfcc8"
-    @State private var currentURL: URL? = nil
+    @State private var tab = BrowserTab()
+    @State private var addressText: String = "bzz://c0b683a3be2593bc7e22d252a371bac921bf47d11c3f3c1680ee60e6b8ccfcc8"
     @State private var inputError: String? = nil
-    @FocusState private var hashFieldFocused: Bool
+    @FocusState private var addressFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            statusBar
-            urlBar
-            Divider()
-            contentArea
+            nodeStatusBar
+            addressBar
+            if let err = inputError {
+                inputErrorRow(err)
+            }
+            progressBar
+            webArea
+            toolbar
+        }
+        .onChange(of: tab.url) { _, new in
+            guard !addressFocused, let new else { return }
+            addressText = new.absoluteString
         }
     }
 
-    private var statusBar: some View {
+    private var nodeStatusBar: some View {
         HStack(spacing: 8) {
-            Circle().frame(width: 8, height: 8).foregroundStyle(statusColor)
+            Circle().frame(width: 8, height: 8).foregroundStyle(nodeStatusColor)
             Text(swarm.status.rawValue).font(.caption).monospaced()
             Spacer()
             Text("\(swarm.peerCount) peers")
@@ -30,46 +38,105 @@ struct ContentView: View {
         .background(Color(.secondarySystemBackground))
     }
 
-    private var urlBar: some View {
+    private var addressBar: some View {
         HStack(spacing: 8) {
-            TextField("bzz://<hash>[/path]", text: $hashInput)
+            TextField("bzz://<hash> or https://…", text: $addressText)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
-                .focused($hashFieldFocused)
-                .onSubmit(load)
-            Button("Go", action: load)
-                .buttonStyle(.borderedProminent)
-                .disabled(!canLoad)
+                .keyboardType(.URL)
+                .submitLabel(.go)
+                .focused($addressFocused)
+                .onSubmit(navigate)
+            if addressFocused {
+                Button("Go", action: navigate)
+                    .buttonStyle(.borderedProminent)
+            } else if tab.isLoading {
+                Button { tab.stop() } label: {
+                    Image(systemName: "xmark")
+                }
+            } else {
+                Button { tab.reload() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(tab.url == nil)
+            }
         }
-        .padding(12)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Color(.secondarySystemBackground))
     }
 
-    @ViewBuilder private var contentArea: some View {
-        if let err = inputError {
-            ContentUnavailableView {
-                Label("invalid URL", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(err).font(.caption)
-            }
-        } else if let url = currentURL {
-            BrowserWebView(url: url)
+    @ViewBuilder private var progressBar: some View {
+        if tab.isLoading && tab.progress > 0 && tab.progress < 1 {
+            ProgressView(value: tab.progress)
+                .tint(.accentColor)
+                .scaleEffect(y: 0.5)
         } else {
-            ContentUnavailableView {
-                Label("paste a swarm URL", systemImage: "network")
-            } description: {
-                Text("Freedom routes bzz:// requests through the embedded bee node.\nAssets within a manifest resolve by path.")
-                    .multilineTextAlignment(.center)
-            }
+            Color.clear.frame(height: 2)
         }
     }
 
-    private var canLoad: Bool {
-        !hashInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && swarm.status == .running
+    @ViewBuilder private var webArea: some View {
+        if tab.url == nil {
+            emptyState
+        } else {
+            BrowserWebView(tab: tab)
+        }
     }
 
-    private var statusColor: Color {
+    private func inputErrorRow(_ err: String) -> some View {
+        HStack {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(err).font(.caption)
+            Spacer()
+            Button { inputError = nil } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .foregroundStyle(.white)
+        .background(Color.red)
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("Freedom", systemImage: "network")
+        } description: {
+            Text("Enter a bzz:// hash or a regular URL and tap Go.")
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 0) {
+            toolbarButton("chevron.backward", enabled: tab.canGoBack) { tab.goBack() }
+            toolbarButton("chevron.forward", enabled: tab.canGoForward) { tab.goForward() }
+            Spacer(minLength: 0)
+            if let url = tab.url {
+                ShareLink(item: url) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 20))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+            } else {
+                toolbarButton("square.and.arrow.up", enabled: false) {}
+            }
+            toolbarButton("square.on.square", enabled: false) {}  // tabs — M3.2
+        }
+        .padding(.horizontal, 4)
+        .background(Color(.secondarySystemBackground))
+    }
+
+    private func toolbarButton(_ systemImage: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 20))
+                .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .disabled(!enabled)
+    }
+
+    private var nodeStatusColor: Color {
         switch swarm.status {
         case .running: .green
         case .starting, .stopping: .orange
@@ -78,18 +145,14 @@ struct ContentView: View {
         }
     }
 
-    private func load() {
-        let trimmed = hashInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        let urlString = trimmed.hasPrefix("bzz://") ? trimmed : "bzz://\(trimmed)"
-        guard let url = URL(string: urlString), url.scheme == "bzz", url.host != nil else {
-            inputError = "expected bzz://<hash>[/path] or a bare hash"
-            currentURL = nil
+    private func navigate() {
+        guard let parsed = BrowserURL.parse(addressText) else {
+            inputError = "Expected bzz://<hash>[/path], https://…, or a bare 64-hex Swarm reference."
             return
         }
         inputError = nil
-        currentURL = url
-        hashFieldFocused = false
+        addressFocused = false
+        tab.navigate(to: parsed)
     }
 }
 
