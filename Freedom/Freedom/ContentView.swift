@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var addressText: String = ""
     @State private var inputError: String? = nil
     @State private var isShowingTabSwitcher = false
+    @State private var isShowingHistory = false
     @FocusState private var addressFocused: Bool
 
     var body: some View {
@@ -24,6 +25,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingTabSwitcher) {
             TabSwitcher(isPresented: $isShowingTabSwitcher)
+        }
+        .sheet(isPresented: $isShowingHistory) {
+            HistoryView(onSelect: { browserURL in
+                navigate(to: browserURL)
+                isShowingHistory = false
+            })
         }
         .onChange(of: tabStore.activeTab?.url) { _, new in
             guard !addressFocused else { return }
@@ -123,23 +130,43 @@ struct ContentView: View {
             toolbarButton("chevron.forward", enabled: tabStore.activeTab?.canGoForward == true) {
                 tabStore.activeTab?.goForward()
             }
-            Spacer(minLength: 0)
-            if let url = tabStore.activeTab?.url {
-                ShareLink(item: url) {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 20))
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                }
-            } else {
-                toolbarButton("square.and.arrow.up", enabled: false) {}
-            }
+            Spacer()
+            shareButton
+            Spacer()
             Button { isShowingTabSwitcher = true } label: {
-                tabsButtonLabel
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                tabsButtonLabel.frame(width: 44, height: 44)
             }
+            Spacer()
+            menuButton
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 12)
         .background(Color(.secondarySystemBackground))
+    }
+
+    @ViewBuilder private var shareButton: some View {
+        if let url = tabStore.activeTab?.url {
+            ShareLink(item: url) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 20))
+                    .frame(width: 44, height: 44)
+            }
+        } else {
+            toolbarButton("square.and.arrow.up", enabled: false) {}
+        }
+    }
+
+    private var menuButton: some View {
+        Menu {
+            Button {
+                isShowingHistory = true
+            } label: {
+                Label("History", systemImage: "clock")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 20))
+                .frame(width: 44, height: 44)
+        }
     }
 
     private var tabsButtonLabel: some View {
@@ -160,7 +187,7 @@ struct ContentView: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 20))
-                .frame(maxWidth: .infinity, minHeight: 44)
+                .frame(width: 44, height: 44)
         }
         .disabled(!enabled)
     }

@@ -5,14 +5,17 @@ import SwarmKit
 @main
 struct FreedomApp: App {
     @State private var swarm = SwarmNode()
+    @State private var historyStore: HistoryStore
     @State private var tabStore: TabStore
     private let modelContainer: ModelContainer
 
     init() {
         do {
-            let container = try ModelContainer(for: TabRecord.self)
+            let container = try ModelContainer(for: TabRecord.self, HistoryEntry.self)
             self.modelContainer = container
-            self._tabStore = State(wrappedValue: TabStore(context: container.mainContext))
+            let history = HistoryStore(context: container.mainContext)
+            self._historyStore = State(wrappedValue: history)
+            self._tabStore = State(wrappedValue: TabStore(context: container.mainContext, historyStore: history))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
         }
@@ -23,6 +26,7 @@ struct FreedomApp: App {
             ContentView()
                 .environment(swarm)
                 .environment(tabStore)
+                .environment(historyStore)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
         }

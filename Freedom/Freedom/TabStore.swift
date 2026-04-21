@@ -12,10 +12,12 @@ final class TabStore {
     var activeRecordID: UUID?
 
     @ObservationIgnored private let context: ModelContext
+    @ObservationIgnored private let historyStore: HistoryStore
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
-    init(context: ModelContext) {
+    init(context: ModelContext, historyStore: HistoryStore) {
         self.context = context
+        self.historyStore = historyStore
         reloadRecords()
     }
 
@@ -98,6 +100,9 @@ final class TabStore {
     private func ensureLiveTab(for id: UUID) -> BrowserTab {
         if let existing = liveTabs[id] { return existing }
         let tab = BrowserTab(recordID: id)
+        tab.onNavigationFinish = { [weak self] url, title in
+            self?.historyStore.record(url: url, title: title)
+        }
         liveTabs[id] = tab
         if let record = record(for: id),
            let url = record.url,

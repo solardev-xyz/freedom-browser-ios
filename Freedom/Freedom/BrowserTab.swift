@@ -24,7 +24,12 @@ final class BrowserTab {
     // across those flips.
     let webView: WKWebView
 
+    /// Called when a navigation commits successfully (WKNavigationDelegate
+    /// didFinish). Used by TabStore to feed the history store.
+    var onNavigationFinish: ((URL, String) -> Void)?
+
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
+    @ObservationIgnored private let navDelegate = NavDelegate()
 
     init(recordID: UUID = UUID()) {
         self.recordID = recordID
@@ -32,6 +37,8 @@ final class BrowserTab {
         config.setURLSchemeHandler(BzzSchemeHandler(), forURLScheme: "bzz")
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         self.webView = WKWebView(frame: .zero, configuration: config)
+        self.webView.navigationDelegate = navDelegate
+        navDelegate.owner = self
         observeWebView()
     }
 
@@ -105,5 +112,19 @@ final class BrowserTab {
                 self.isLoading = wv.isLoading
             }
         })
+    }
+}
+
+private final class NavDelegate: NSObject, WKNavigationDelegate {
+    weak var owner: BrowserTab?
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard let url = webView.url else { return }
+        let title = webView.title ?? ""
+        // WKNavigationDelegate callbacks arrive on the main thread, same
+        // pattern as the KVO observers in BrowserTab.
+        MainActor.assumeIsolated {
+            owner?.onNavigationFinish?(url, title)
+        }
     }
 }
