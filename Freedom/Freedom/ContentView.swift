@@ -4,7 +4,7 @@ import SwarmKit
 struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
 
-    @State private var hashInput: String = "bzz://f0df8b5fbe7d8cb04430ba8913e8aa6a0ad4976f3a48b7aacf5aa14635739813"
+    @State private var hashInput: String = "bzz://c0b683a3be2593bc7e22d252a371bac921bf47d11c3f3c1680ee60e6b8ccfcc8"
     @State private var currentURL: URL? = nil
     @State private var inputError: String? = nil
     @FocusState private var hashFieldFocused: Bool
