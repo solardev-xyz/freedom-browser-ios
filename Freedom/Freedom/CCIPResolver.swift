@@ -154,16 +154,15 @@ enum CCIPResolver {
             } catch {
                 continue
             }
-            // EIP-3668: 4xx terminates the lookup for ALL urls (client-side
-            // error is deterministic across gateways); 5xx falls through to
-            // the next URL. We extend the 5xx-retry treatment to transport
-            // failures and unparseable bodies — treat anything but 4xx as
-            // "try next" so one flaky gateway can't cancel the whole query.
+            // EIP-3668: 4xx terminates for ALL gateways (client-side error
+            // is deterministic). 3xx in practice means `ccipSession`
+            // refused a redirect — treat as "try next", same as 5xx or a
+            // parse failure. Anything outside 2xx-or-4xx is "try next".
             if (400..<500).contains(resp.status) {
                 throw CCIPError.clientError(status: resp.status)
             }
-            if resp.status >= 500 { continue }
-            guard let data = parseGatewayBody(resp.body) else { continue }
+            guard (200..<300).contains(resp.status),
+                  let data = parseGatewayBody(resp.body) else { continue }
             return data
         }
         throw CCIPError.allGatewaysFailed
@@ -227,12 +226,22 @@ enum CCIPResolver {
 
     private static func isUnsafeIPv6(_ addr: IPv6Address) -> Bool {
         let b = [UInt8](addr.rawValue)
+        // IPv4-mapped (::ffff:a.b.c.d) and deprecated IPv4-compatible
+        // (::a.b.c.d, RFC 4291) smuggle a v4 address through v6; route
+        // the trailing 4 bytes through the v4 classifier so loopback/
+        // private targets don't slip past.
+        if addr.isIPv4Mapped { return embeddedIPv4Unsafe(b) }
         if b.allSatisfy({ $0 == 0 }) { return true }                       // :: unspecified
         if b[0..<15].allSatisfy({ $0 == 0 }), b[15] == 1 { return true }   // ::1 loopback
+        if b[0..<12].allSatisfy({ $0 == 0 }) { return embeddedIPv4Unsafe(b) }
         if b[0] == 0xFE, (b[1] & 0xC0) == 0x80 { return true }             // fe80::/10 link-local
         if (b[0] & 0xFE) == 0xFC { return true }                           // fc00::/7 unique-local
         if b[0] == 0xFF { return true }                                    // ff00::/8 multicast
         return false
+    }
+
+    private static func embeddedIPv4Unsafe(_ v6Bytes: [UInt8]) -> Bool {
+        IPv4Address(Data(v6Bytes.suffix(4))).map(isUnsafeIPv4) ?? true
     }
 
     static func parseGatewayBody(_ data: Data) -> Data? {
@@ -246,10 +255,13 @@ enum CCIPResolver {
         return String(hex.prefix(10)).lowercased()
     }
 
-    /// Production HTTP client. Separate from RPCSession.post because
-    /// CCIP gateways speak REST (arbitrary URL / GET or POST / JSON
-    /// body only on POST), not JSON-RPC. Reuses RPCSession.shared +
-    /// withTimeout so connection pool behaviour is the same.
+    /// Production HTTP client. Uses a dedicated session that refuses
+    /// HTTP redirects: `isSafeGatewayURL` only validates the initial
+    /// URL, and URLSession's default redirect-follow would let a
+    /// safe-looking gateway 302 the client to `https://127.0.0.1/...`
+    /// or RFC1918 targets, bypassing the gate entirely. EIP-3668
+    /// gateways return direct JSON, so refusing redirects is correct
+    /// semantics per the spec as well.
     nonisolated static let defaultHTTP: HTTPClient = { request, timeout in
         var builder = URLRequest(url: request.url)
         builder.httpMethod = request.method
@@ -257,12 +269,34 @@ enum CCIPResolver {
             builder.setValue("application/json", forHTTPHeaderField: "Content-Type")
             builder.httpBody = body
         }
-        let session = RPCSession.shared
+        let session = ccipSession
         let req = builder
         let (data, response) = try await RPCSession.withTimeout(seconds: timeout) {
             try await session.data(for: req)
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         return GatewayResponse(status: status, body: data)
+    }
+
+    nonisolated static let ccipSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 30
+        return URLSession(
+            configuration: config,
+            delegate: NoRedirectDelegate(),
+            delegateQueue: nil
+        )
+    }()
+
+    private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            completionHandler(nil)
+        }
     }
 }

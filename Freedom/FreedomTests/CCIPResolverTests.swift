@@ -152,6 +152,22 @@ final class CCIPResolverTests: XCTestCase {
         XCTAssertTrue(CCIPResolver.isSafeGatewayURL(URL(string: "https://11.0.0.1/x")!))
     }
 
+    func testGatewayURLRejectsIPv4MappedIPv6Private() {
+        // ::ffff:a.b.c.d must route through the IPv4 classifier —
+        // two samples exercise the dispatch (loopback + RFC1918);
+        // exhaustive v4 coverage lives in testGatewayURLRejectsIPv4LoopbackAndPrivate.
+        XCTAssertFalse(CCIPResolver.isSafeGatewayURL(URL(string: "https://[::ffff:127.0.0.1]/x")!))
+        XCTAssertFalse(CCIPResolver.isSafeGatewayURL(URL(string: "https://[::ffff:10.0.0.1]/x")!))
+    }
+
+    func testGatewayURLAcceptsIPv4MappedPublic() {
+        // ::ffff:8.8.8.8 is a public v4 target smuggled as v6 — still
+        // legitimate; accept to match the real-v4 policy.
+        XCTAssertTrue(
+            CCIPResolver.isSafeGatewayURL(URL(string: "https://[::ffff:8.8.8.8]/x")!)
+        )
+    }
+
     func testGatewayURLRejectsIPv6LoopbackAndPrivate() {
         let blocked = [
             "https://[::1]/x",           // loopback
@@ -167,6 +183,37 @@ final class CCIPResolverTests: XCTestCase {
                 "expected \(s) to be rejected"
             )
         }
+    }
+
+    /// A gateway that 302s (which URLSession would normally auto-follow,
+    /// bypassing isSafeGatewayURL on the redirect target) is treated as
+    /// a refused redirect: the 3xx response body is unparseable and we
+    /// fall through to the next gateway. Exercises the policy in
+    /// fetchFromGateways; the actual redirect-refusal is enforced at the
+    /// URLSession delegate level (integration-tested out of band).
+    func testResolveFallsThroughOnRedirectStatus() async throws {
+        let lookup = OffchainLookup(
+            address: .zero,
+            urls: ["https://first.example.com/x", "https://second.example.com/x"],
+            callData: Data(), callbackFunction: Data(repeating: 0, count: 4), extraData: Data()
+        )
+        let revert = try encodedRevert(lookup: lookup)
+        var seen: [String] = []
+        let http: CCIPResolver.HTTPClient = { request, _ in
+            seen.append(request.url.host ?? "")
+            if seen.count == 1 {
+                // Simulate refused-redirect response: 302 with empty body.
+                return .init(status: 302, body: Data())
+            }
+            let body = try JSONSerialization.data(withJSONObject: ["data": "0xbeef"])
+            return .init(status: 200, body: body)
+        }
+        let ethCall: CCIPResolver.EthCallExecutor = { _, _ in "0xok" }
+        let result = try await CCIPResolver.resolve(
+            revertData: revert, ethCall: ethCall, http: http, timeout: 1
+        )
+        XCTAssertEqual(result, "0xok")
+        XCTAssertEqual(seen, ["first.example.com", "second.example.com"])
     }
 
     func testBuildRequestRejectsUnsafeURL() {
