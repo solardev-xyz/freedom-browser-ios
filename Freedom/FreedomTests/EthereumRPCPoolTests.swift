@@ -118,8 +118,3 @@ final class EthereumRPCPoolTests: XCTestCase {
     }
 }
 
-private final class MutableClock {
-    var now: Date
-    init(now: Date) { self.now = now }
-    func advance(by interval: TimeInterval) { now.addTimeInterval(interval) }
-}
