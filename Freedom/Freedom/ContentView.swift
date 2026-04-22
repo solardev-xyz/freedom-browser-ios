@@ -105,7 +105,18 @@ struct ContentView: View {
 
     private var addressBar: some View {
         HStack(spacing: 8) {
-            TextField("bzz://<hash> or https://…", text: $addressText)
+            // Reserve the shield slot even when there's no trust, so the
+            // text field doesn't jump horizontally as tabs switch between
+            // ENS-resolved and plain pages.
+            Group {
+                if let trust = tabStore.activeTab?.currentTrust {
+                    TrustShield(trust: trust)
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(width: 28, height: 28)
+            TextField("name.eth, bzz://<hash>, or https://…", text: $addressText)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
