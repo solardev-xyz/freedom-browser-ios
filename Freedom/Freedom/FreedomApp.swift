@@ -5,6 +5,7 @@ import SwarmKit
 @main
 struct FreedomApp: App {
     @State private var swarm = SwarmNode()
+    @State private var settings = SettingsStore()
     @State private var historyStore: HistoryStore
     @State private var bookmarkStore: BookmarkStore
     @State private var faviconStore: FaviconStore
@@ -37,6 +38,7 @@ struct FreedomApp: App {
         WindowGroup {
             ContentView()
                 .environment(swarm)
+                .environment(settings)
                 .environment(tabStore)
                 .environment(historyStore)
                 .environment(bookmarkStore)
