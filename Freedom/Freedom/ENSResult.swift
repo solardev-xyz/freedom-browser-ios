@@ -19,7 +19,7 @@ enum ENSNotFoundReason {
     case emptyContenthash
 }
 
-struct ENSConflictGroup {
+struct ENSConflictGroup: Equatable {
     let resolvedData: Data?
     let reason: ENSNotFoundReason?
     let hosts: [String]

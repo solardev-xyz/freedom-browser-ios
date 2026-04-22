@@ -21,7 +21,7 @@ struct ENSBlock: Hashable {
     let hash: String
 }
 
-struct ENSTrust {
+struct ENSTrust: Equatable {
     let level: ENSTrustLevel
     let block: ENSBlock
     let agreed: [String]

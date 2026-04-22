@@ -154,11 +154,15 @@ struct ContentView: View {
 
     @ViewBuilder private var webArea: some View {
         if let active = tabStore.activeTab, active.hasNavigated {
-            // .id forces SwiftUI to recreate the representable when the
-            // active tab changes — otherwise it reuses the prior UIView
-            // (which is the *previous* tab's WKWebView) and we show the
-            // wrong page.
-            BrowserWebView(tab: active).id(active.recordID)
+            if let gate = active.pendingGate {
+                ENSInterstitial(gate: gate, tab: active)
+            } else {
+                // .id forces SwiftUI to recreate the representable when the
+                // active tab changes — otherwise it reuses the prior UIView
+                // (which is the *previous* tab's WKWebView) and we show the
+                // wrong page.
+                BrowserWebView(tab: active).id(active.recordID)
+            }
         } else {
             HomePage(onNavigate: navigate(to:))
         }

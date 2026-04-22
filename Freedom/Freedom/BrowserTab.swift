@@ -12,6 +12,16 @@ final class BrowserTab {
         case failed(message: String)
     }
 
+    /// A gated navigation waiting for user consent. Rendered in place of
+    /// the webview until the user continues (unverified only) or backs
+    /// out (all gates). Conflict and anchorDisagreement are security
+    /// signals with no continue option.
+    enum Gate: Equatable {
+        case unverifiedUntrusted(url: URL, trust: ENSTrust)
+        case conflict(groups: [ENSConflictGroup], trust: ENSTrust)
+        case anchorDisagreement(largestBucketSize: Int, total: Int, threshold: Int)
+    }
+
     let recordID: UUID
 
     var url: URL?
@@ -35,6 +45,11 @@ final class BrowserTab {
     /// reached through ENS.
     var currentTrust: ENSTrust?
 
+    /// Non-nil when a navigation is blocked by an interstitial. The UI
+    /// renders an ENSInterstitial in place of the webview; the gate is
+    /// cleared by dismissGate() or continuePastGate().
+    var pendingGate: Gate?
+
     /// URL the UI presents — ENS form if set, otherwise the live webview URL.
     var displayURL: URL? { ensURL ?? url }
 
@@ -51,13 +66,15 @@ final class BrowserTab {
     var onNavigationFinish: ((URL, String) -> Void)?
 
     @ObservationIgnored private let ensResolver: ENSResolver
+    @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private let navDelegate = NavDelegate()
     @ObservationIgnored private var activeResolveTask: Task<Void, Never>?
 
-    init(recordID: UUID = UUID(), ensResolver: ENSResolver) {
+    init(recordID: UUID = UUID(), ensResolver: ENSResolver, settings: SettingsStore) {
         self.recordID = recordID
         self.ensResolver = ensResolver
+        self.settings = settings
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BzzSchemeHandler(), forURLScheme: "bzz")
         config.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -89,6 +106,33 @@ final class BrowserTab {
         ensURL = nil
         ensStatus = .idle
         currentTrust = nil
+        pendingGate = nil
+    }
+
+    /// One-shot bypass of the current unverified gate. Conflict and
+    /// anchorDisagreement gates deliberately don't expose this.
+    func continuePastGate() {
+        guard case .unverifiedUntrusted(let url, let trust) = pendingGate else { return }
+        pendingGate = nil
+        ensStatus = .idle
+        currentTrust = trust
+        webView.load(URLRequest(url: url))
+    }
+
+    func dismissGate() {
+        // Gated ENS state belongs to the rejected navigation — clear it
+        // before restoring the prior page so the address bar reflects
+        // what's actually on screen (whether that's the prior webview
+        // content or the home page).
+        pendingGate = nil
+        ensURL = nil
+        ensStatus = .idle
+        currentTrust = nil
+        if webView.canGoBack {
+            webView.goBack()
+        } else {
+            hasNavigated = false
+        }
     }
 
     func goBack()    { webView.goBack() }
@@ -115,20 +159,42 @@ final class BrowserTab {
         let result: ENSResolvedContent
         do {
             result = try await ensResolver.resolveContent(name)
+        } catch ENSResolutionError.conflict(let groups, let trust) {
+            if Task.isCancelled { return }
+            ensStatus = .idle
+            pendingGate = .conflict(groups: groups, trust: trust)
+            return
+        } catch ENSResolutionError.anchorDisagreement(let largest, let total, let threshold) {
+            if Task.isCancelled { return }
+            ensStatus = .idle
+            pendingGate = .anchorDisagreement(
+                largestBucketSize: largest, total: total, threshold: threshold
+            )
+            return
         } catch {
             if Task.isCancelled { return }
             ensStatus = .failed(message: ENSErrorFormatting.describe(error))
             return
         }
         if Task.isCancelled { return }
-        currentTrust = result.trust
         switch result.codec {
-        case .bzz:
-            ensStatus = .idle
-            webView.load(URLRequest(url: result.uri))
         case .ipfs, .ipns:
             ensStatus = .failed(message: "IPFS/IPNS content not yet supported on iOS.")
+            return
+        case .bzz:
+            break
         }
+        if result.trust.level == .unverified, settings.blockUnverifiedEns {
+            // Withhold the webview load until the user opts in. Also
+            // withhold currentTrust — the shield shouldn't claim
+            // anything yet. continuePastGate sets it when the user proceeds.
+            ensStatus = .idle
+            pendingGate = .unverifiedUntrusted(url: result.uri, trust: result.trust)
+            return
+        }
+        ensStatus = .idle
+        currentTrust = result.trust
+        webView.load(URLRequest(url: result.uri))
     }
 
     private func observeWebView() {

@@ -15,18 +15,21 @@ final class TabStore {
     @ObservationIgnored private let historyStore: HistoryStore
     @ObservationIgnored private let faviconStore: FaviconStore
     @ObservationIgnored private let ensResolver: ENSResolver
+    @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
     init(
         context: ModelContext,
         historyStore: HistoryStore,
         faviconStore: FaviconStore,
-        ensResolver: ENSResolver
+        ensResolver: ENSResolver,
+        settings: SettingsStore
     ) {
         self.context = context
         self.historyStore = historyStore
         self.faviconStore = faviconStore
         self.ensResolver = ensResolver
+        self.settings = settings
         reloadRecords()
     }
 
@@ -114,7 +117,7 @@ final class TabStore {
     @discardableResult
     private func ensureLiveTab(for id: UUID) -> BrowserTab {
         if let existing = liveTabs[id] { return existing }
-        let tab = BrowserTab(recordID: id, ensResolver: ensResolver)
+        let tab = BrowserTab(recordID: id, ensResolver: ensResolver, settings: settings)
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }
             // Record history under the ens:// form when we navigated via

@@ -35,7 +35,8 @@ struct FreedomApp: App {
                 context: container.mainContext,
                 historyStore: history,
                 faviconStore: favicons,
-                ensResolver: resolver
+                ensResolver: resolver,
+                settings: settings
             ))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
