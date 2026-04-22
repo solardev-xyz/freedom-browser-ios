@@ -6,11 +6,12 @@ import ENSNormalize
 @main
 struct FreedomApp: App {
     @State private var swarm = SwarmNode()
-    @State private var settings = SettingsStore()
+    @State private var settings: SettingsStore
     @State private var historyStore: HistoryStore
     @State private var bookmarkStore: BookmarkStore
     @State private var faviconStore: FaviconStore
     @State private var tabStore: TabStore
+    @State private var ensResolver: ENSResolver
     private let modelContainer: ModelContainer
 
     init() {
@@ -22,13 +23,19 @@ struct FreedomApp: App {
             let history = HistoryStore(context: container.mainContext)
             let bookmarks = BookmarkStore(context: container.mainContext)
             let favicons = FaviconStore(context: container.mainContext)
+            let settings = SettingsStore()
+            let pool = EthereumRPCPool(settings: settings)
+            let resolver = ENSResolver(pool: pool, settings: settings)
             self._historyStore = State(wrappedValue: history)
             self._bookmarkStore = State(wrappedValue: bookmarks)
             self._faviconStore = State(wrappedValue: favicons)
+            self._settings = State(wrappedValue: settings)
+            self._ensResolver = State(wrappedValue: resolver)
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
                 historyStore: history,
-                faviconStore: favicons
+                faviconStore: favicons,
+                ensResolver: resolver
             ))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
@@ -49,6 +56,7 @@ struct FreedomApp: App {
                 .environment(historyStore)
                 .environment(bookmarkStore)
                 .environment(faviconStore)
+                .environment(ensResolver)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
         }

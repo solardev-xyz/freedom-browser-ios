@@ -6,6 +6,12 @@ import WebKit
 @MainActor
 @Observable
 final class BrowserTab {
+    enum ENSStatus: Equatable {
+        case idle
+        case resolving(name: String)
+        case failed(message: String)
+    }
+
     let recordID: UUID
 
     var url: URL?
@@ -15,6 +21,22 @@ final class BrowserTab {
     var canGoForward: Bool = false
     var isLoading: Bool = false
     private(set) var hasNavigated: Bool = false
+
+    /// Pseudo-URL for the originating ENS name when the page was loaded
+    /// via ENS resolution. Kept alongside `url` (the resolved bzz://
+    /// WebKit actually loaded) so the address bar, history and bookmarks
+    /// can store the ens:// form — revisits re-resolve and pick up any
+    /// content-hash rotation by the ENS record owner.
+    var ensURL: URL?
+    var ensStatus: ENSStatus = .idle
+
+    /// Trust metadata from the last ENS resolution. The address-bar
+    /// shield (M4.10) reads this; nil means the current page wasn't
+    /// reached through ENS.
+    var currentTrust: ENSTrust?
+
+    /// URL the UI presents — ENS form if set, otherwise the live webview URL.
+    var displayURL: URL? { ensURL ?? url }
 
     // The WKWebView is stored, not lazy or computed, because SwiftUI's
     // UIViewRepresentable vends it via `tab.webView` every time the
@@ -28,11 +50,14 @@ final class BrowserTab {
     /// didFinish). Used by TabStore to feed the history store.
     var onNavigationFinish: ((URL, String) -> Void)?
 
+    @ObservationIgnored private let ensResolver: ENSResolver
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private let navDelegate = NavDelegate()
+    @ObservationIgnored private var activeResolveTask: Task<Void, Never>?
 
-    init(recordID: UUID = UUID()) {
+    init(recordID: UUID = UUID(), ensResolver: ENSResolver) {
         self.recordID = recordID
+        self.ensResolver = ensResolver
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BzzSchemeHandler(), forURLScheme: "bzz")
         config.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -48,13 +73,31 @@ final class BrowserTab {
 
     func navigate(to browserURL: BrowserURL) {
         hasNavigated = true
-        webView.load(URLRequest(url: browserURL.url))
+        activeResolveTask?.cancel()
+        resetENSState()
+        switch browserURL {
+        case .bzz(let target), .web(let target):
+            webView.load(URLRequest(url: target))
+        case .ens(let name):
+            ensURL = browserURL.url
+            ensStatus = .resolving(name: name)
+            activeResolveTask = Task { await resolveAndLoad(name: name) }
+        }
+    }
+
+    private func resetENSState() {
+        ensURL = nil
+        ensStatus = .idle
+        currentTrust = nil
     }
 
     func goBack()    { webView.goBack() }
     func goForward() { webView.goForward() }
     func reload()    { webView.reload() }
-    func stop()      { webView.stopLoading() }
+    func stop()      {
+        activeResolveTask?.cancel()
+        webView.stopLoading()
+    }
 
     /// Render the current webview contents at a reduced width as JPEG bytes.
     /// Used for persisting tab thumbnails.
@@ -65,6 +108,26 @@ final class BrowserTab {
             webView.takeSnapshot(with: config) { image, _ in
                 cont.resume(returning: image?.jpegData(compressionQuality: 0.7))
             }
+        }
+    }
+
+    private func resolveAndLoad(name: String) async {
+        let result: ENSResolvedContent
+        do {
+            result = try await ensResolver.resolveContent(name)
+        } catch {
+            if Task.isCancelled { return }
+            ensStatus = .failed(message: ENSErrorFormatting.describe(error))
+            return
+        }
+        if Task.isCancelled { return }
+        currentTrust = result.trust
+        switch result.codec {
+        case .bzz:
+            ensStatus = .idle
+            webView.load(URLRequest(url: result.uri))
+        case .ipfs, .ipns:
+            ensStatus = .failed(message: "IPFS/IPNS content not yet supported on iOS.")
         }
     }
 
@@ -125,6 +188,31 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // pattern as the KVO observers in BrowserTab.
         MainActor.assumeIsolated {
             owner?.onNavigationFinish?(url, title)
+        }
+    }
+}
+
+enum ENSErrorFormatting {
+    static func describe(_ error: Error) -> String {
+        switch error {
+        case ENSResolutionError.invalidName:
+            return "Invalid ENS name."
+        case ENSResolutionError.notFound(.noResolver, _):
+            return "This name isn't registered on ENS."
+        case ENSResolutionError.notFound(.noContenthash, _), ENSResolutionError.notFound(.emptyContenthash, _):
+            return "No content set on this ENS name."
+        case ENSResolutionError.unsupportedCodec:
+            return "Unsupported contenthash codec."
+        case ENSResolutionError.conflict:
+            return "RPC providers disagreed on the contenthash — possible attack."
+        case ENSResolutionError.anchorDisagreement:
+            return "RPC providers disagreed on the anchor block — possible attack."
+        case ENSResolutionError.allProvidersErrored:
+            return "All Ethereum RPC providers failed. Check your network."
+        case ENSResolutionError.notImplemented:
+            return "ENS resolution not implemented."
+        default:
+            return "ENS resolution failed: \(error.localizedDescription)"
         }
     }
 }

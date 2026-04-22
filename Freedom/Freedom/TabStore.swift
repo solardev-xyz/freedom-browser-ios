@@ -14,12 +14,19 @@ final class TabStore {
     @ObservationIgnored private let context: ModelContext
     @ObservationIgnored private let historyStore: HistoryStore
     @ObservationIgnored private let faviconStore: FaviconStore
+    @ObservationIgnored private let ensResolver: ENSResolver
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
-    init(context: ModelContext, historyStore: HistoryStore, faviconStore: FaviconStore) {
+    init(
+        context: ModelContext,
+        historyStore: HistoryStore,
+        faviconStore: FaviconStore,
+        ensResolver: ENSResolver
+    ) {
         self.context = context
         self.historyStore = historyStore
         self.faviconStore = faviconStore
+        self.ensResolver = ensResolver
         reloadRecords()
     }
 
@@ -61,6 +68,10 @@ final class TabStore {
     }
 
     func close(_ id: UUID) {
+        // Cancel any in-flight ENS resolution or page load before dropping
+        // the reference — otherwise the Task retains the tab + webview past
+        // removal here and may call webView.load(...) on a detached view.
+        liveTabs[id]?.stop()
         liveTabs.removeValue(forKey: id)
         if let record = record(for: id) {
             context.delete(record)
@@ -84,7 +95,9 @@ final class TabStore {
 
     private func capture(id: UUID) async {
         guard let tab = liveTabs[id], let record = record(for: id) else { return }
-        record.url = tab.url
+        // Persist the displayURL (ens:// when ENS-originated) so restarts
+        // re-resolve the name rather than pin the old content hash.
+        record.url = tab.displayURL
         record.title = tab.title.isEmpty ? nil : tab.title
         if let snapshot = await tab.snapshot() {
             record.lastSnapshot = snapshot
@@ -101,10 +114,15 @@ final class TabStore {
     @discardableResult
     private func ensureLiveTab(for id: UUID) -> BrowserTab {
         if let existing = liveTabs[id] { return existing }
-        let tab = BrowserTab(recordID: id)
+        let tab = BrowserTab(recordID: id, ensResolver: ensResolver)
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }
-            self.historyStore.record(url: url, title: title)
+            // Record history under the ens:// form when we navigated via
+            // ENS — revisits should re-resolve and pick up content-hash
+            // rotations. Favicons key on the resolved origin, so they
+            // survive those rotations (same content host → same favicon).
+            let recordedURL = tab.ensURL ?? url
+            self.historyStore.record(url: recordedURL, title: title)
             self.faviconStore.fetchIfNeeded(for: url, webView: tab.webView)
         }
         liveTabs[id] = tab

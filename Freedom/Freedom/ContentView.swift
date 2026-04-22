@@ -16,19 +16,29 @@ struct ContentView: View {
     // to satisfy a typed substring without materialising the whole table.
     @Query(Self.suggestionHistoryDescriptor) private var suggestionHistory: [HistoryEntry]
 
+    /// The status/error row above the progress bar. Only one is ever
+    /// visible at a time — input parse failures and ENS resolve failures
+    /// share the red channel; ENS "Resolving…" takes the info channel.
+    enum Banner: Equatable {
+        case resolving(name: String)
+        case error(message: String)
+    }
+
     @State private var addressText: String = ""
-    @State private var inputError: String? = nil
+    @State private var banner: Banner? = nil
     @State private var isShowingTabSwitcher = false
     @State private var isShowingHistory = false
     @State private var isShowingBookmarks = false
     @FocusState private var addressFocused: Bool
 
+    private var activeURL: URL? { tabStore.activeTab?.displayURL }
+
     var body: some View {
         VStack(spacing: 0) {
             nodeStatusBar
             addressBar
-            if let err = inputError {
-                inputErrorRow(err)
+            if let banner {
+                bannerRow(banner)
             }
             progressBar
             webArea
@@ -57,13 +67,22 @@ struct ContentView: View {
                 isShowingBookmarks = false
             })
         }
-        .onChange(of: tabStore.activeTab?.url) { _, new in
+        .onChange(of: tabStore.activeTab?.displayURL) { _, new in
             guard !addressFocused else { return }
             addressText = new?.absoluteString ?? ""
         }
         .onChange(of: tabStore.activeRecordID) { _, _ in
             addressFocused = false
-            addressText = tabStore.activeTab?.url?.absoluteString ?? ""
+            addressText = activeURL?.absoluteString ?? ""
+            // Previous tab's banner is irrelevant to the new tab.
+            banner = nil
+        }
+        .onChange(of: tabStore.activeTab?.ensStatus ?? .idle) { _, new in
+            switch new {
+            case .idle: banner = nil
+            case .resolving(let name): banner = .resolving(name: name)
+            case .failed(let message): banner = .error(message: message)
+            }
         }
         .onChange(of: scenePhase) { _, new in
             if new == .background {
@@ -105,7 +124,7 @@ struct ContentView: View {
                 Button { tabStore.activeTab?.reload() } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .disabled(tabStore.activeTab?.url == nil)
+                .disabled(tabStore.activeTab?.displayURL == nil)
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -134,17 +153,28 @@ struct ContentView: View {
         }
     }
 
-    private func inputErrorRow(_ err: String) -> some View {
-        HStack {
-            Image(systemName: "exclamationmark.triangle.fill")
-            Text(err).font(.caption)
-            Spacer()
-            Button { inputError = nil } label: { Image(systemName: "xmark") }
-                .buttonStyle(.plain)
+    @ViewBuilder private func bannerRow(_ banner: Banner) -> some View {
+        switch banner {
+        case .resolving(let name):
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Resolving \(name)…").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Color(.secondarySystemBackground))
+        case .error(let message):
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text(message).font(.caption)
+                Spacer()
+                Button { self.banner = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .foregroundStyle(.white)
+            .background(Color.red)
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .foregroundStyle(.white)
-        .background(Color.red)
     }
 
     private var toolbar: some View {
@@ -171,7 +201,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var shareButton: some View {
-        if let url = tabStore.activeTab?.url {
+        if let url = activeURL {
             ShareLink(item: url) {
                 Image(systemName: "square.and.arrow.up")
                     .font(.system(size: 20))
@@ -237,20 +267,20 @@ struct ContentView: View {
     }
 
     private var isActiveURLBookmarked: Bool {
-        guard let url = tabStore.activeTab?.url else { return false }
+        guard let url = activeURL else { return false }
         return bookmarkedURLs.contains(url)
     }
 
     private var bookmarkButton: some View {
         Button {
-            guard let tab = tabStore.activeTab, let url = tab.url else { return }
+            guard let tab = tabStore.activeTab, let url = activeURL else { return }
             bookmarkStore.toggle(url: url, title: tab.title)
         } label: {
             Image(systemName: isActiveURLBookmarked ? "star.fill" : "star")
                 .font(.system(size: 20))
                 .frame(width: 44, height: 44)
         }
-        .disabled(tabStore.activeTab?.url == nil)
+        .disabled(activeURL == nil)
     }
 
     private var menuButton: some View {
@@ -306,14 +336,14 @@ struct ContentView: View {
 
     private func navigate() {
         guard let parsed = BrowserURL.parse(addressText) else {
-            inputError = "Expected bzz://<hash>[/path], https://…, or a bare 64-hex Swarm reference."
+            banner = .error(message: "Expected a name (foo.eth), bzz://<hash>, or https://…")
             return
         }
         navigate(to: parsed)
     }
 
     private func navigate(to browserURL: BrowserURL) {
-        inputError = nil
+        banner = nil
         addressFocused = false
         addressText = browserURL.url.absoluteString
         tabStore.navigateActive(to: browserURL)
