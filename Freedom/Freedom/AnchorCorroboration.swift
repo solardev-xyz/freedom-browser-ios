@@ -93,6 +93,19 @@ final class AnchorCorroboration {
         cachedEntry = nil
     }
 
+    /// Head → depth → hash chain against one provider. Same three-step
+    /// pipeline as the quorum path but without cross-provider
+    /// corroboration. Used for the degraded unverified fallback.
+    func singleSourceAnchor(url: URL) async throws -> PinnedBlock {
+        let anchor = settings.ensBlockAnchor
+        let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
+        let head = try await fetchHead(url, anchor, timeout)
+        let depth = anchor.safetyDepth
+        let targetNumber = head > depth ? head - depth : 0
+        let hash = try await fetchHash(url, targetNumber, timeout)
+        return PinnedBlock(anchor: anchor, number: targetNumber, hash: hash)
+    }
+
     // MARK: - Phases
 
     private func probeHeads(
