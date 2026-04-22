@@ -150,6 +150,7 @@ private struct ConflictGroups: View {
             case .noResolver: return "No resolver registered"
             case .noContenthash: return "Resolver failed (e.g. CCIP gateway)"
             case .emptyContenthash: return "Contenthash empty"
+            case .ccipDisabled: return "Needs CCIP-Read (disabled)"
             }
         }
         guard let bytes = group.resolvedData else { return "Unknown response" }

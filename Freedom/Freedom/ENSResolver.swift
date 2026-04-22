@@ -154,6 +154,8 @@ final class ENSResolver {
                     largestBucketSize: largest, total: total, threshold: threshold
                 ))
             }
+        } catch ENSResolutionError.customRpcFailed {
+            return .failure(.customRpcFailed)
         } catch {
             // allErrored / noProviders / transport. Surfaced as
             // .allProvidersErrored, which `isCacheable` treats as
@@ -206,8 +208,10 @@ final class ENSResolver {
         /// other outcome (including negative results) is cacheable per the
         /// TTL below.
         var isCacheable: Bool {
-            if case .failure(.allProvidersErrored) = self { return false }
-            return true
+            switch self {
+            case .failure(.allProvidersErrored), .failure(.customRpcFailed): return false
+            default: return true
+            }
         }
 
         /// TTL per desktop's policy — verified answers are stable across
@@ -240,12 +244,20 @@ final class ENSResolver {
         dnsEncodedName: Data,
         callData: Data
     ) async throws -> ConsensusResult {
+        let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
+
+        // See ENSResolutionError.customRpcFailed — fail-closed by design.
+        if settings.enableEnsCustomRpc {
+            return try await resolveCustomRPC(
+                dnsEncodedName: dnsEncodedName, callData: callData, timeout: timeout
+            )
+        }
+
         let available = pool.availableProviders()
         guard !available.isEmpty else { throw ConsensusError.noProviders }
 
         let desiredK = max(1, min(settings.ensQuorumK, 9))
         let desiredM = max(1, min(settings.ensQuorumM, desiredK))
-        let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
         let quorumDisabled = !settings.enableEnsQuorum
         let underpowered = desiredK < AnchorCorroboration.minQuorumProviders || desiredM < 2
 
@@ -289,13 +301,17 @@ final class ENSResolver {
             enableCcipRead: settings.enableCcipRead,
             legRunner: legRunner
         )
+        feedQuarantine(from: wave)
 
         // Second-wave escalation on all-errored only. Conflict and
         // unverified outcomes mean honest providers gave us answers and
-        // retrying wouldn't flip the verdict.
+        // retrying wouldn't flip the verdict. Same K≥3 floor as the first
+        // wave — with 2 remaining providers, an agreeing pair would mint
+        // verified trust at K=2, violating the policy that verified public
+        // quorum requires ≥3 independent legs.
         if case .allErrored = wave.resolution {
             let remaining = pool.availableProviders().filter { !firstSelection.contains($0) }
-            if !remaining.isEmpty {
+            if remaining.count >= AnchorCorroboration.minQuorumProviders {
                 let secondK = min(desiredK, remaining.count)
                 let secondSelection = Array(remaining.prefix(secondK))
                 wave = await QuorumWave.run(
@@ -306,14 +322,35 @@ final class ENSResolver {
                     enableCcipRead: settings.enableCcipRead,
                     legRunner: legRunner
                 )
+                feedQuarantine(from: wave)
             }
         }
 
         return try buildResult(from: wave, block: block)
     }
 
+    /// Mirror anchor corroboration's quarantine feeding for the resolve
+    /// leg. Without this, providers that pass the anchor step but fail
+    /// the UR.resolve call stay in the shuffle forever and burn K slots
+    /// of every resolution. CCIP gateway errors aren't the RPC's fault
+    /// — the RPC gave us a correct OffchainLookup revert — so those
+    /// don't feed markFailure.
+    private func feedQuarantine(from wave: QuorumWave.Outcome) {
+        for leg in wave.legs.values {
+            switch leg.kind {
+            case .data, .notFound:
+                pool.markSuccess(leg.url)
+            case .error(let err) where !(err is CCIPResolver.CCIPError):
+                pool.markFailure(leg.url)
+            case .error:
+                break
+            }
+        }
+    }
+
     private func resolveSingleSource(
         url: URL,
+        level: ENSTrustLevel = .unverified,
         dnsEncodedName: Data,
         callData: Data,
         timeout: TimeInterval
@@ -327,7 +364,7 @@ final class ENSResolver {
         let leg = await legRunner(url, dnsEncodedName, callData, pinned.hash, timeout, settings.enableCcipRead)
         let ensBlock = ENSBlock(number: pinned.number, hash: pinned.hash)
         let trust = buildTrust(
-            level: .unverified, agreed: [url],
+            level: level, agreed: [url],
             queried: [url], k: 1, m: 1, block: ensBlock
         )
         switch leg.kind {
@@ -337,6 +374,29 @@ final class ENSResolver {
             return .notFound(reason: reason, trust: trust)
         case .error:
             throw ConsensusError.allErrored
+        }
+    }
+
+    private func resolveCustomRPC(
+        dnsEncodedName: Data,
+        callData: Data,
+        timeout: TimeInterval
+    ) async throws -> ConsensusResult {
+        let trimmed = settings.ensRpcUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              url.host != nil
+        else {
+            throw ENSResolutionError.customRpcFailed
+        }
+        do {
+            return try await resolveSingleSource(
+                url: url, level: .userConfigured,
+                dnsEncodedName: dnsEncodedName, callData: callData, timeout: timeout
+            )
+        } catch {
+            throw ENSResolutionError.customRpcFailed
         }
     }
 

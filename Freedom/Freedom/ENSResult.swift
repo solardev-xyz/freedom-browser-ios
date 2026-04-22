@@ -17,6 +17,11 @@ enum ENSNotFoundReason {
     case noResolver
     case noContenthash
     case emptyContenthash
+    /// Resolver reverted with EIP-3668 OffchainLookup but the user has
+    /// CCIP-Read disabled. Distinct from `.noContenthash` so we don't
+    /// silently pin a verified "no content" verdict when the name does
+    /// have content that just requires an offchain hop the user opted out of.
+    case ccipDisabled
 }
 
 struct ENSConflictGroup: Equatable {
@@ -35,5 +40,10 @@ enum ENSResolutionError: Error {
     /// UI should surface distinctly from plain network failures.
     case anchorDisagreement(largestBucketSize: Int, total: Int, threshold: Int)
     case allProvidersErrored
+    /// User has `enableEnsCustomRpc` on but the configured URL is
+    /// missing/malformed or unreachable. Fail-closed — we don't silently
+    /// fall back to the public pool, which would defeat the privacy
+    /// intent of the toggle.
+    case customRpcFailed
     case notImplemented
 }

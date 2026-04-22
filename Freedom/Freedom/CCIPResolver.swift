@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import web3
 
 /// EIP-3668 CCIP-Read retry loop. When a resolver reverts with the
@@ -173,14 +174,65 @@ enum CCIPResolver {
             let substituted = template
                 .replacingOccurrences(of: "{sender}", with: sender)
                 .replacingOccurrences(of: "{data}", with: callData)
-            guard let url = URL(string: substituted) else { return nil }
+            guard let url = URL(string: substituted), isSafeGatewayURL(url) else { return nil }
             return GatewayRequest(url: url, method: "GET", body: nil)
         }
         let substituted = template.replacingOccurrences(of: "{sender}", with: sender)
-        guard let url = URL(string: substituted) else { return nil }
+        guard let url = URL(string: substituted), isSafeGatewayURL(url) else { return nil }
         let payload: [String: String] = ["sender": sender, "data": callData]
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
         return GatewayRequest(url: url, method: "POST", body: body)
+    }
+
+    /// Block gateway URLs that could steer a CCIP leg at local / private
+    /// network targets. Each leg fires its gateway request from a single
+    /// untrusted RPC revert, before any quorum agreement. Not covered:
+    /// DNS names that resolve to private IPs (DNS rebinding) — stopping
+    /// that needs resolved-address pinning through connect, which URLSession
+    /// doesn't expose.
+    static func isSafeGatewayURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https" else { return false }
+        guard let host = url.host, !host.isEmpty else { return false }
+
+        let lowered = host.lowercased()
+        if lowered == "localhost" || lowered == "localhost.localdomain" { return false }
+        if lowered.hasSuffix(".local") { return false }
+
+        if let v4 = IPv4Address(host) { return !isUnsafeIPv4(v4) }
+        // URL.host strips IPv6 brackets, but be defensive.
+        let v6Candidate = host.hasPrefix("[") && host.hasSuffix("]")
+            ? String(host.dropFirst().dropLast()) : host
+        if let v6 = IPv6Address(v6Candidate) { return !isUnsafeIPv6(v6) }
+        return true
+    }
+
+    // IPv4/IPv6 parsing via `Network` types gives us strict literal
+    // validation (e.g. a hostname that happens to contain digits won't
+    // masquerade as an IP). Classification is byte-level and explicit
+    // — `IPv4Address.isLoopback` turns out to only catch 127.0.0.1,
+    // not the whole 127/8, so we can't rely on the stdlib predicates.
+
+    private static func isUnsafeIPv4(_ addr: IPv4Address) -> Bool {
+        let b = [UInt8](addr.rawValue)
+        if b[0] == 127 { return true }                                     // 127/8 loopback
+        if b[0] == 10 { return true }                                      // 10/8 private
+        if b[0] == 172, (16...31).contains(b[1]) { return true }           // 172.16/12 private
+        if b[0] == 192, b[1] == 168 { return true }                        // 192.168/16 private
+        if b[0] == 169, b[1] == 254 { return true }                        // 169.254/16 link-local
+        if b[0] == 0 { return true }                                       // 0/8 "this net"
+        if (224...239).contains(b[0]) { return true }                      // 224/4 multicast
+        if b == [255, 255, 255, 255] { return true }                       // broadcast
+        return false
+    }
+
+    private static func isUnsafeIPv6(_ addr: IPv6Address) -> Bool {
+        let b = [UInt8](addr.rawValue)
+        if b.allSatisfy({ $0 == 0 }) { return true }                       // :: unspecified
+        if b[0..<15].allSatisfy({ $0 == 0 }), b[15] == 1 { return true }   // ::1 loopback
+        if b[0] == 0xFE, (b[1] & 0xC0) == 0x80 { return true }             // fe80::/10 link-local
+        if (b[0] & 0xFE) == 0xFC { return true }                           // fc00::/7 unique-local
+        if b[0] == 0xFF { return true }                                    // ff00::/8 multicast
+        return false
     }
 
     static func parseGatewayBody(_ data: Data) -> Data? {

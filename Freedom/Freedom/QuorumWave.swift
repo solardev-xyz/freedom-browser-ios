@@ -20,6 +20,11 @@ enum QuorumWave {
         let byNegative: [ENSNotFoundReason: [URL]]
         let queried: [URL]
         let mUsed: Int
+        /// Per-URL leg results. Callers feed these into pool quarantine
+        /// (see `ENSResolver.feedQuarantine`); exposing the raw map keeps
+        /// the wave a pure aggregator and leaves quarantine policy to
+        /// the orchestrator.
+        let legs: [URL: QuorumLeg.Outcome]
     }
 
     typealias LegRunner = @Sendable (URL, Data, Data, String, TimeInterval, Bool) async -> QuorumLeg.Outcome
@@ -83,7 +88,8 @@ enum QuorumWave {
             byData: byData,
             byNegative: byNegative,
             queried: providers,
-            mUsed: m
+            mUsed: m,
+            legs: legs
         )
     }
 

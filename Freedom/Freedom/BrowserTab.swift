@@ -267,6 +267,8 @@ enum ENSErrorFormatting {
             return "This name isn't registered on ENS."
         case ENSResolutionError.notFound(.noContenthash, _), ENSResolutionError.notFound(.emptyContenthash, _):
             return "No content set on this ENS name."
+        case ENSResolutionError.notFound(.ccipDisabled, _):
+            return "This ENS name resolves via an offchain gateway (CCIP-Read). Enable it in Settings → Advanced to load it."
         case ENSResolutionError.unsupportedCodec:
             return "Unsupported contenthash codec."
         case ENSResolutionError.conflict:
@@ -275,6 +277,8 @@ enum ENSErrorFormatting {
             return "RPC providers disagreed on the anchor block — possible attack."
         case ENSResolutionError.allProvidersErrored:
             return "All Ethereum RPC providers failed. Check your network."
+        case ENSResolutionError.customRpcFailed:
+            return "Your custom Ethereum RPC is unreachable or invalid. Check Settings → Custom RPC."
         case ENSResolutionError.notImplemented:
             return "ENS resolution not implemented."
         default:

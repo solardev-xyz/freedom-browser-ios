@@ -100,6 +100,87 @@ final class CCIPResolverTests: XCTestCase {
         ))
     }
 
+    // MARK: Gateway URL safety (audit fix P2c)
+
+    /// Each CCIP leg fires the gateway request from a single untrusted
+    /// RPC leg before any quorum agreement on the revert data. A malicious
+    /// provider could otherwise steer the client at loopback, private, or
+    /// link-local targets. isSafeGatewayURL is the defense-in-depth gate.
+
+    func testGatewayURLAcceptsHTTPSPublic() {
+        XCTAssertTrue(CCIPResolver.isSafeGatewayURL(URL(string: "https://gw.example.com/x")!))
+        XCTAssertTrue(CCIPResolver.isSafeGatewayURL(URL(string: "https://8.8.8.8/x")!))
+    }
+
+    func testGatewayURLRejectsHTTP() {
+        XCTAssertFalse(CCIPResolver.isSafeGatewayURL(URL(string: "http://gw.example.com/x")!))
+    }
+
+    func testGatewayURLRejectsLocalhost() {
+        XCTAssertFalse(CCIPResolver.isSafeGatewayURL(URL(string: "https://localhost/x")!))
+        XCTAssertFalse(CCIPResolver.isSafeGatewayURL(URL(string: "https://LOCALHOST/x")!))
+    }
+
+    func testGatewayURLRejectsMDNS() {
+        XCTAssertFalse(CCIPResolver.isSafeGatewayURL(URL(string: "https://mybox.local/x")!))
+    }
+
+    func testGatewayURLRejectsIPv4LoopbackAndPrivate() {
+        let blocked = [
+            "https://127.0.0.1/x",
+            "https://127.5.5.5/x",
+            "https://10.0.0.1/x",
+            "https://172.16.0.1/x",
+            "https://172.31.255.255/x",
+            "https://192.168.1.1/x",
+            "https://169.254.169.254/x",   // AWS metadata-style
+            "https://0.0.0.0/x",
+            "https://224.0.0.1/x",
+        ]
+        for s in blocked {
+            XCTAssertFalse(
+                CCIPResolver.isSafeGatewayURL(URL(string: s)!),
+                "expected \(s) to be rejected"
+            )
+        }
+    }
+
+    func testGatewayURLAcceptsIPv4AtBoundary() {
+        // Just outside the private ranges — should still be allowed.
+        XCTAssertTrue(CCIPResolver.isSafeGatewayURL(URL(string: "https://172.15.255.255/x")!))
+        XCTAssertTrue(CCIPResolver.isSafeGatewayURL(URL(string: "https://172.32.0.0/x")!))
+        XCTAssertTrue(CCIPResolver.isSafeGatewayURL(URL(string: "https://11.0.0.1/x")!))
+    }
+
+    func testGatewayURLRejectsIPv6LoopbackAndPrivate() {
+        let blocked = [
+            "https://[::1]/x",           // loopback
+            "https://[::]/x",            // unspecified
+            "https://[fe80::1]/x",       // link-local
+            "https://[fc00::1]/x",       // unique-local
+            "https://[fd12:3456::1]/x",  // unique-local
+            "https://[ff02::1]/x",       // multicast
+        ]
+        for s in blocked {
+            XCTAssertFalse(
+                CCIPResolver.isSafeGatewayURL(URL(string: s)!),
+                "expected \(s) to be rejected"
+            )
+        }
+    }
+
+    func testBuildRequestRejectsUnsafeURL() {
+        // End-to-end: attacker-supplied localhost URL → buildRequest nils out.
+        XCTAssertNil(CCIPResolver.buildRequest(
+            template: "https://127.0.0.1:8080/admin",
+            sender: "0xabc", callData: "0x01"
+        ))
+        XCTAssertNil(CCIPResolver.buildRequest(
+            template: "http://gw.example.com/x",
+            sender: "0xabc", callData: "0x01"
+        ))
+    }
+
     // MARK: Gateway body parsing
 
     func testParseGatewayBodyAcceptsHexString() throws {

@@ -41,12 +41,12 @@ enum QuorumLeg {
             return .init(url: url, kind: .data(resolvedData: data, resolverAddress: resolver))
         } catch let RPCError.executionRevert(revertData) {
             let selector = revertData.flatMap(CCIPResolver.selectorOf)
-            // OffchainLookup here = CCIP off, or the callback itself
-            // reverted non-CCIP (CCIPResolver rethrows non-CCIP reverts).
-            // Bucket as NO_CONTENTHASH; CCIP-transport failures come
-            // through the CCIPError catch below.
             if selector == CCIPResolver.offchainLookupSelector {
-                return .init(url: url, kind: .notFound(reason: .noContenthash))
+                // Distinct reason when CCIP is off so agreeing legs don't
+                // mint a false verified NO_CONTENTHASH for a name that
+                // actually has content (just behind an offchain hop).
+                let reason: ENSNotFoundReason = enableCcipRead ? .noContenthash : .ccipDisabled
+                return .init(url: url, kind: .notFound(reason: reason))
             }
             let isNoResolver = selector.map(resolverNotFoundSelectors.contains) ?? false
             return .init(url: url, kind: .notFound(reason: isNoResolver ? .noResolver : .noContenthash))
