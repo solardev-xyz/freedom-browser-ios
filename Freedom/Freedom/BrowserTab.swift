@@ -82,6 +82,19 @@ final class BrowserTab {
         self.webView.navigationDelegate = navDelegate
         navDelegate.owner = self
         observeWebView()
+        installPullToRefresh()
+    }
+
+    private func installPullToRefresh() {
+        let control = UIRefreshControl()
+        control.addAction(UIAction { [weak self] _ in
+            self?.reload()
+        }, for: .valueChanged)
+        webView.scrollView.refreshControl = control
+    }
+
+    private func endRefreshing() {
+        webView.scrollView.refreshControl?.endRefreshing()
     }
 
     deinit {
@@ -137,8 +150,16 @@ final class BrowserTab {
 
     func goBack()    { webView.goBack() }
     func goForward() { webView.goForward() }
-    func reload()    { webView.reload() }
-    func stop()      {
+    /// Re-resolves ENS-origin pages so a rotated content-hash is picked up;
+    /// otherwise delegates to WKWebView.reload which re-fetches the current URL.
+    func reload() {
+        if let ensURL, case .ens(let name) = BrowserURL.classify(ensURL) {
+            navigate(to: .ens(name: name))
+        } else {
+            webView.reload()
+        }
+    }
+    func stop() {
         activeResolveTask?.cancel()
         webView.stopLoading()
     }
@@ -156,6 +177,13 @@ final class BrowserTab {
     }
 
     private func resolveAndLoad(name: String) async {
+        // Paths that never reach webView.load (gates, resolve failures,
+        // unsupported codecs, task cancellation) need to stop the pull
+        // spinner explicitly; the webview-load path rides the isLoading
+        // observer instead.
+        var handedToWebView = false
+        defer { if !handedToWebView { endRefreshing() } }
+
         let result: ENSResolvedContent
         do {
             result = try await ensResolver.resolveContent(name)
@@ -194,6 +222,7 @@ final class BrowserTab {
         }
         ensStatus = .idle
         currentTrust = result.trust
+        handedToWebView = true
         webView.load(URLRequest(url: result.uri))
     }
 
@@ -239,6 +268,10 @@ final class BrowserTab {
             MainActor.assumeIsolated {
                 guard let self, self.isLoading != wv.isLoading else { return }
                 self.isLoading = wv.isLoading
+                // Every webview-phase termination (didFinish, didFail,
+                // didFailProvisionalNavigation, stopLoading) flips isLoading
+                // back to false — one hook covers them all.
+                if !wv.isLoading { self.endRefreshing() }
             }
         })
     }
