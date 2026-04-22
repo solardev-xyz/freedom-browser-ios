@@ -119,7 +119,7 @@ Plus one advanced flag not mirrored from desktop:
 
 | Key                | Default | Purpose |
 |--------------------|---------|---------|
-| `enableCcipRead`   | false   | Detect EIP-3668 OffchainLookup reverts. Full retry is scaffolded; see "Deferred" below. |
+| `enableCcipRead`   | false   | Follow EIP-3668 OffchainLookup reverts (CCIP-Read). Off by default because it silently relays queries to third-party gateways. |
 
 `SettingsView.swift` is the UI — a Form reached from the ⋯ menu with sections for Custom RPC, Quorum (K/M/timeout/anchor), Public RPC Providers (editable list), Safety, and Advanced. Tapping Done calls `ENSResolver.invalidate()` which clears the name cache, cancels in-flight Tasks, and resets both the anchor cache and provider pool — so the next navigation runs against the new config.
 
@@ -135,9 +135,20 @@ Plus one advanced flag not mirrored from desktop:
 
 **History and bookmarks store the `ens://name.eth` form**, not the resolved `bzz://<hash>`. Revisits re-resolve and pick up any content-hash rotation by the ENS record owner. Favicons key on the same form, so a cached favicon survives rotation.
 
+### CCIP-Read (EIP-3668) — `CCIPResolver.swift`
+
+When a resolver reverts with the `OffchainLookup` custom error (selector `0x556f1830`), our existing `QuorumLeg` detects it and, if the user has `enableCcipRead` on, hands off to `CCIPResolver`. The retry loop does the three things EIP-3668 requires:
+
+1. **Parse** the revert into `(address, string[] urls, bytes callData, bytes4 callbackFunction, bytes extraData)`. We go through web3.swift's public `ABIRevertError` / `ABIFunctionEncodable.decode(_:expectedTypes:filteringEmptyEntries:)` API because the library's `OffchainLookup.init?(decoded:)` is internal.
+2. **Hop** through each gateway URL in order. `{sender}` and `{data}` are substituted; `{data}` present ⇒ GET, otherwise POST with `{"sender": ..., "data": ...}` body. Per the EIP, **4xx from any gateway terminates the whole lookup** (deterministic client error); **5xx, transport failures, or unparseable bodies fall through to the next gateway**. Response is `{"data": "0x..."}`.
+3. **Callback** — re-issue `eth_call` against `callbackFunction(bytes response, bytes extraData)` on `address`, **at the same pinned `blockHash`** that anchor corroboration chose. The return value is the true `(bytes, address)` pair we'd have gotten without CCIP.
+
+A callback may itself revert with `OffchainLookup` (ethers.js compat); recursion is capped at `maxRedirects = 4` so a hostile gateway can't loop us forever. Callback encoding is `callbackFunction (4) || abi.encode(bytes, bytes)` — we use `ABIFunctionEncoder` with a throwaway name and strip its 4-byte method id prefix, since `OffchainLookup.encodeCall(withResponse:)` is internal.
+
+CCIP failures (all gateways unreachable, 4xx, too many redirects, parse error) surface as `CCIPError.*` out of the leg. Each leg then reports `.error(…)` to consensus, which aggregates: if every leg hits the same failure, we get `allErrored` and the user sees the standard all-providers-failed banner; if a subset succeed with `.data(…)`, that bucket can still reach M. We deliberately do not bucket CCIP failures as `NO_CONTENTHASH` — that would falsely pin a verified not-found when the gateway is merely broken.
+
 ## What's deliberately not in M4
 
-- **CCIP-Read (EIP-3668) — scaffolded, not fully implemented.** A setting (`enableCcipRead`) and the revert-selector detection (`0x556f1830`) exist in `QuorumLeg`. When the setting is on and a name needs CCIP, we surface a distinct `RPCError.offchainLookupNotImplemented` rather than pretending the name doesn't exist. The full retry (parse OffchainLookup args, POST to gateway, re-call with response at the pinned block) requires access to `web3.swift`'s `OffchainLookup` decode + `encodeCall` internals which aren't public — implementing it without those would roughly duplicate their ~150 lines. Tracked as a followup; until then, enabling the setting for `.box` names shows a surfaced error, and the default OFF state keeps those names bucketed as `NO_CONTENTHASH` (current behavior).
 - **Reverse resolution** (`addr` → `name`). Lands with the wallet.
 - **Speculative gateway prefetch**. Desktop does it; it's a latency optimization, not a trust property. Skipped.
 - **Persistent resolution cache**. Desktop is in-memory only; we match.
@@ -156,6 +167,7 @@ Freedom/Freedom/
 ├── QuorumLeg.swift                — single UR.resolve at a pinned blockHash, JSON-RPC transport
 ├── ContenthashDecoder.swift       — ABI unwrap + codec dispatch (bzz/ipfs/ipns)
 ├── Base58.swift                   — encoder for multihash → CIDv0
+├── CCIPResolver.swift             — EIP-3668 gateway hop + callback eth_call
 ├── RPCSession.swift               — shared URLSession, generic Response<R>, withTimeout
 ├── EthereumRPCPool.swift          — shuffle + quarantine
 ├── SettingsStore.swift            — the 10 ENS keys, UserDefaults-backed
@@ -168,8 +180,9 @@ Freedom/FreedomTests/
 ├── QuorumWaveTests.swift          — bucket isolation, early resolve shapes, conflict variants
 ├── EthereumRPCPoolTests.swift     — shuffle + quarantine + orphan cleanup
 ├── ContenthashDecoderTests.swift  — codec coverage + Base58 vector
+├── CCIPResolverTests.swift        — OffchainLookup round-trip, gateway fallback, redirect cap
 ├── ENSResolverTests.swift         — resolveContent end-to-end, cache, dedup, error mapping
 └── BrowserURLTests.swift          — parse rules (bare .eth, ens://, .eth redirect, case)
 ```
 
-75 tests. Every security-critical invariant has a test.
+92 tests. Every security-critical invariant has a test.

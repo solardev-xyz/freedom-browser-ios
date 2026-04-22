@@ -29,39 +29,84 @@ enum QuorumLeg {
     ) async -> Outcome {
         do {
             let urCall = try abiEncodeResolve(name: dnsEncodedName, callData: callData)
-            let hex = try await ethCallAtBlockHash(
+            let hex = try await callAndMaybeFollowCCIP(
                 rpcURL: url,
                 to: ENSResolver.universalResolverAddress.asString(),
                 dataHex: urCall.web3.hexString,
                 blockHash: blockHash,
-                timeout: timeout
+                timeout: timeout,
+                enableCcipRead: enableCcipRead
             )
             let (data, resolver) = try abiDecodeResolveResponse(hex)
             return .init(url: url, kind: .data(resolvedData: data, resolverAddress: resolver))
         } catch let RPCError.executionRevert(revertData) {
-            let selector = revertData.flatMap(revertSelector)
-            // Detect an EIP-3668 OffchainLookup revert explicitly — we don't
-            // currently follow it (full CCIP-Read support requires access to
-            // web3.swift's internal OffchainLookup decode/encode machinery
-            // which isn't public). When the user enabled CCIP we surface
-            // a distinct error so the failure is actionable; otherwise we
-            // bucket it as a generic no-contenthash revert.
-            if selector == Self.offchainLookupSelector {
-                if enableCcipRead {
-                    return .init(url: url, kind: .error(RPCError.offchainLookupNotImplemented))
-                }
+            let selector = revertData.flatMap(CCIPResolver.selectorOf)
+            // OffchainLookup here = CCIP off, or the callback itself
+            // reverted non-CCIP (CCIPResolver rethrows non-CCIP reverts).
+            // Bucket as NO_CONTENTHASH; CCIP-transport failures come
+            // through the CCIPError catch below.
+            if selector == CCIPResolver.offchainLookupSelector {
                 return .init(url: url, kind: .notFound(reason: .noContenthash))
             }
             let isNoResolver = selector.map(resolverNotFoundSelectors.contains) ?? false
             return .init(url: url, kind: .notFound(reason: isNoResolver ? .noResolver : .noContenthash))
+        } catch let err as CCIPResolver.CCIPError {
+            // Every CCIP-transport failure (gateways unreachable, 4xx,
+            // too many redirects, parse error) maps to a leg error.
+            // Consensus then aggregates: all-fail ⇒ allErrored, partial
+            // ⇒ a clean leg can still win. Bucketing as NO_CONTENTHASH
+            // would pin a verified not-found incorrectly.
+            return .init(url: url, kind: .error(err))
         } catch {
             return .init(url: url, kind: .error(error))
         }
     }
 
-    // EIP-3668 OffchainLookup custom-error selector —
-    // bytes4(keccak256("OffchainLookup(address,string[],bytes,bytes4,bytes)")).
-    private static let offchainLookupSelector = "0x556f1830"
+    /// Issue the eth_call; on OffchainLookup revert with CCIP enabled,
+    /// hand off to CCIPResolver for the gateway POST + callback eth_call
+    /// at the same pinned block. The retry is wrapped in an outer timeout
+    /// so hostile gateways / pathological redirect depth can't blow up
+    /// a leg's wallclock budget beyond the quorum timeout.
+    private static func callAndMaybeFollowCCIP(
+        rpcURL: URL,
+        to: String,
+        dataHex: String,
+        blockHash: String,
+        timeout: TimeInterval,
+        enableCcipRead: Bool
+    ) async throws -> String {
+        do {
+            return try await ethCallAtBlockHash(
+                rpcURL: rpcURL, to: to, dataHex: dataHex,
+                blockHash: blockHash, timeout: timeout
+            )
+        } catch let RPCError.executionRevert(revertHex) where enableCcipRead {
+            guard let hex = revertHex,
+                  CCIPResolver.selectorOf(hex) == CCIPResolver.offchainLookupSelector,
+                  let bytes = hex.web3.hexData else {
+                throw RPCError.executionRevert(data: revertHex)
+            }
+            // With maxRedirects = 4 and N gateway URLs, the retry could
+            // issue up to 4×(N+1) hops — at the per-hop `timeout` this
+            // would dominate the leg budget. Cap the whole CCIP pass at
+            // 2× the nominal quorum timeout so one leg can't stall the
+            // wave. Per-hop timeout stays `timeout` so a single healthy
+            // gateway still fits comfortably.
+            return try await RPCSession.withTimeout(seconds: timeout * 2) {
+                try await CCIPResolver.resolve(
+                    revertData: bytes,
+                    ethCall: { target, callHex in
+                        try await ethCallAtBlockHash(
+                            rpcURL: rpcURL, to: target, dataHex: callHex,
+                            blockHash: blockHash, timeout: timeout
+                        )
+                    },
+                    http: CCIPResolver.defaultHTTP,
+                    timeout: timeout
+                )
+            }
+        }
+    }
 
     // UR custom-error selectors (first 4 bytes of keccak256(signature)).
     // https://docs.ens.domains/resolvers/universal/
@@ -84,11 +129,6 @@ enum QuorumLeg {
         let data: Data = try decoded[0].decoded()
         let resolver: EthereumAddress = try decoded[1].decoded()
         return (data, resolver)
-    }
-
-    private static func revertSelector(_ hex: String) -> String? {
-        guard hex.hasPrefix("0x"), hex.count >= 10 else { return nil }
-        return String(hex.prefix(10)).lowercased()
     }
 
     // MARK: JSON-RPC transport
@@ -129,10 +169,6 @@ enum RPCError: Error {
     case jsonRpc(code: Int, message: String)
     case executionRevert(data: String?)
     case emptyResponse
-    /// The resolver reverted with EIP-3668 OffchainLookup. CCIP-Read is
-    /// detected but the retry loop isn't implemented yet; user enabled
-    /// the setting knowing this is a scaffold.
-    case offchainLookupNotImplemented
 }
 
 private struct EthCallBody: Encodable {
@@ -155,4 +191,3 @@ private struct EthCallBody: Encodable {
     private struct CallObject: Encodable { let to: String; let data: String }
     private struct BlockObject: Encodable { let blockHash: String }
 }
-

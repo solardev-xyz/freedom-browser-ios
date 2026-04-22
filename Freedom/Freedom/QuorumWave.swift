@@ -12,11 +12,6 @@ enum QuorumWave {
         case notFound(reason: ENSNotFoundReason, urls: [URL], trust: TrustTier)
         case conflict
         case allErrored
-        /// All legs errored and every one of them reported the CCIP-Read
-        /// scaffold error. Distinct from .allErrored so the caller can
-        /// surface an actionable message to the user rather than "check
-        /// your network" when the real issue is the name needs CCIP.
-        case ccipNotImplemented
     }
 
     struct Outcome {
@@ -95,24 +90,16 @@ enum QuorumWave {
     private static func classifyNoAgreement(legs: [URL: QuorumLeg.Outcome]) -> Resolution {
         var dataLegs: [QuorumLeg.Outcome] = []
         var notFoundLegs: [QuorumLeg.Outcome] = []
-        var errorLegs: [QuorumLeg.Outcome] = []
         for leg in legs.values {
             switch leg.kind {
             case .data: dataLegs.append(leg)
             case .notFound: notFoundLegs.append(leg)
-            case .error: errorLegs.append(leg)
+            case .error: break
             }
         }
         let total = dataLegs.count + notFoundLegs.count
         if total == 0 {
-            // When the only failures are the CCIP-scaffold error, surface
-            // that distinctly — user enabled the setting and deserves to
-            // see "needs CCIP" not "network is broken."
-            let allCcip = !errorLegs.isEmpty && errorLegs.allSatisfy { leg in
-                guard case .error(let err) = leg.kind else { return false }
-                return (err as? RPCError).map { if case .offchainLookupNotImplemented = $0 { return true } else { return false } } ?? false
-            }
-            return allCcip ? .ccipNotImplemented : .allErrored
+            return .allErrored
         }
         if total == 1 {
             if let leg = dataLegs.first, case .data(let bytes, let resolver) = leg.kind {

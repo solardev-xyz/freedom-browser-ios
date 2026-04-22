@@ -27,7 +27,6 @@ final class ENSResolver {
     enum ConsensusError: Error {
         case noProviders
         case allErrored
-        case ccipNotImplemented
     }
 
     // bytes4(keccak256("contenthash(bytes32)")) — the resolver call we
@@ -157,10 +156,6 @@ final class ENSResolver {
                     largestBucketSize: largest, total: total, threshold: threshold
                 ))
             }
-        } catch ConsensusError.ccipNotImplemented {
-            // Distinct from generic "all errored" so the banner tells the
-            // user the name needs CCIP rather than "check your network."
-            return .failure(.ccipNotImplemented)
         } catch {
             // allErrored / noProviders / transport. Don't cache — retries
             // may succeed once the network recovers.
@@ -374,8 +369,6 @@ final class ENSResolver {
             )
         case .allErrored:
             throw ConsensusError.allErrored
-        case .ccipNotImplemented:
-            throw ConsensusError.ccipNotImplemented
         }
     }
 

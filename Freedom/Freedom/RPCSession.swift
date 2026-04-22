@@ -6,7 +6,7 @@ enum RPCSession {
     // importantly) our per-call timeout actually bites — URLSession.shared
     // caps the effective timeout at max(request, session default 60s),
     // silently ignoring shorter per-request values.
-    static let shared: URLSession = {
+    nonisolated static let shared: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForResource = 300
         return URLSession(configuration: config)

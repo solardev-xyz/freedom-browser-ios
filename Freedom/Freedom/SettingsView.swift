@@ -88,11 +88,11 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle("Detect CCIP-Read (EIP-3668)", isOn: $settings.enableCcipRead)
+                    Toggle("Follow CCIP-Read (EIP-3668)", isOn: $settings.enableCcipRead)
                 } header: {
                     Text("Advanced")
                 } footer: {
-                    Text("Some ENS names (e.g. .box via 3DNS) require an offchain gateway hop. When enabled, we detect the OffchainLookup revert and surface a distinct error — the full retry loop isn't implemented yet.")
+                    Text("Some ENS names (e.g. .box via 3DNS) resolve via an offchain gateway. When on, the browser follows the OffchainLookup revert, fetches from the gateway the resolver specifies, and re-verifies the callback at the pinned block. Off by default — the gateway sees the queried name.")
                 }
 
                 Section("About") {
