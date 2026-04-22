@@ -159,7 +159,7 @@ final class ConsensusResolveTests: XCTestCase {
         let counter = ActorCallTracker()
         let bytes = sampleBytes
         let resolver_address = sampleResolver
-        let legRunner: QuorumWave.LegRunner = { url, _, _, _, _ in
+        let legRunner: QuorumWave.LegRunner = { url, _, _, _, _, _ in
             await counter.increment()
             let n = await counter.value
             let kind: QuorumLeg.Outcome.Kind = n <= 3

@@ -51,6 +51,9 @@ final class SettingsStore {
     var blockUnverifiedEns: Bool {
         didSet { defaults.set(blockUnverifiedEns, forKey: Keys.blockUnverifiedEns) }
     }
+    var enableCcipRead: Bool {
+        didSet { defaults.set(enableCcipRead, forKey: Keys.enableCcipRead) }
+    }
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -67,6 +70,7 @@ final class SettingsStore {
             Keys.ensBlockAnchorTtlMs: 30_000,
             Keys.ensPublicRpcProviders: Self.defaultPublicRpcProviders,
             Keys.blockUnverifiedEns: true,
+            Keys.enableCcipRead: false,
         ])
         self.enableEnsCustomRpc = defaults.bool(forKey: Keys.enableEnsCustomRpc)
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
@@ -80,6 +84,7 @@ final class SettingsStore {
         self.ensPublicRpcProviders = defaults.stringArray(forKey: Keys.ensPublicRpcProviders)
             ?? Self.defaultPublicRpcProviders
         self.blockUnverifiedEns = defaults.bool(forKey: Keys.blockUnverifiedEns)
+        self.enableCcipRead = defaults.bool(forKey: Keys.enableCcipRead)
     }
 
     private enum Keys {
@@ -93,5 +98,6 @@ final class SettingsStore {
         static let ensBlockAnchorTtlMs = "ensBlockAnchorTtlMs"
         static let ensPublicRpcProviders = "ensPublicRpcProviders"
         static let blockUnverifiedEns = "blockUnverifiedEns"
+        static let enableCcipRead = "enableCcipRead"
     }
 }

@@ -24,7 +24,8 @@ enum QuorumLeg {
         dnsEncodedName: Data,
         callData: Data,
         blockHash: String,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        enableCcipRead: Bool = false
     ) async -> Outcome {
         do {
             let urCall = try abiEncodeResolve(name: dnsEncodedName, callData: callData)
@@ -38,14 +39,29 @@ enum QuorumLeg {
             let (data, resolver) = try abiDecodeResolveResponse(hex)
             return .init(url: url, kind: .data(resolvedData: data, resolverAddress: resolver))
         } catch let RPCError.executionRevert(revertData) {
-            let isNoResolver = revertData
-                .flatMap(revertSelector)
-                .map(resolverNotFoundSelectors.contains) ?? false
+            let selector = revertData.flatMap(revertSelector)
+            // Detect an EIP-3668 OffchainLookup revert explicitly — we don't
+            // currently follow it (full CCIP-Read support requires access to
+            // web3.swift's internal OffchainLookup decode/encode machinery
+            // which isn't public). When the user enabled CCIP we surface
+            // a distinct error so the failure is actionable; otherwise we
+            // bucket it as a generic no-contenthash revert.
+            if selector == Self.offchainLookupSelector {
+                if enableCcipRead {
+                    return .init(url: url, kind: .error(RPCError.offchainLookupNotImplemented))
+                }
+                return .init(url: url, kind: .notFound(reason: .noContenthash))
+            }
+            let isNoResolver = selector.map(resolverNotFoundSelectors.contains) ?? false
             return .init(url: url, kind: .notFound(reason: isNoResolver ? .noResolver : .noContenthash))
         } catch {
             return .init(url: url, kind: .error(error))
         }
     }
+
+    // EIP-3668 OffchainLookup custom-error selector —
+    // bytes4(keccak256("OffchainLookup(address,string[],bytes,bytes4,bytes)")).
+    private static let offchainLookupSelector = "0x556f1830"
 
     // UR custom-error selectors (first 4 bytes of keccak256(signature)).
     // https://docs.ens.domains/resolvers/universal/
@@ -113,6 +129,10 @@ enum RPCError: Error {
     case jsonRpc(code: Int, message: String)
     case executionRevert(data: String?)
     case emptyResponse
+    /// The resolver reverted with EIP-3668 OffchainLookup. CCIP-Read is
+    /// detected but the retry loop isn't implemented yet; user enabled
+    /// the setting knowing this is a scaffold.
+    case offchainLookupNotImplemented
 }
 
 private struct EthCallBody: Encodable {

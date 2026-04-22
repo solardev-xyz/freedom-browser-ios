@@ -273,6 +273,8 @@ enum ENSErrorFormatting {
             return "RPC providers disagreed on the contenthash — possible attack."
         case ENSResolutionError.anchorDisagreement:
             return "RPC providers disagreed on the anchor block — possible attack."
+        case ENSResolutionError.ccipNotImplemented:
+            return "This ENS name requires CCIP-Read (offchain resolution). Full support isn't implemented yet on iOS."
         case ENSResolutionError.allProvidersErrored:
             return "All Ethereum RPC providers failed. Check your network."
         case ENSResolutionError.notImplemented:

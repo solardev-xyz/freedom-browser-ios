@@ -27,6 +27,7 @@ final class ENSResolver {
     enum ConsensusError: Error {
         case noProviders
         case allErrored
+        case ccipNotImplemented
     }
 
     // bytes4(keccak256("contenthash(bytes32)")) — the resolver call we
@@ -64,6 +65,17 @@ final class ENSResolver {
     /// the same normalized name share one Task; successful results are
     /// cached with trust-tier-specific TTLs matching desktop (verified
     /// 15min, unverified 60s, conflict 10s negative cache).
+    /// Clears the name cache, cancels in-flight resolutions, and resets
+    /// the anchor cache + pool quarantine. Call after a settings edit so
+    /// stale verifications don't linger against the new configuration.
+    func invalidate() {
+        cache.removeAll()
+        for task in inFlight.values { task.cancel() }
+        inFlight.removeAll()
+        anchor.invalidate()
+        pool.invalidate()
+    }
+
     func resolveContent(_ name: String) async throws -> ENSResolvedContent {
         let normalized: String
         do {
@@ -81,6 +93,13 @@ final class ENSResolver {
 
         let task = Task { @MainActor in
             let outcome = await self.doResolveContent(normalized)
+            // If invalidate() cancelled us between task launch and this
+            // point, skip the cache write — the cache was just cleared
+            // and we'd re-pollute it with stale data.
+            guard !Task.isCancelled else {
+                self.inFlight.removeValue(forKey: normalized)
+                return outcome
+            }
             self.storeAndClear(normalized: normalized, outcome: outcome)
             return outcome
         }
@@ -138,6 +157,10 @@ final class ENSResolver {
                     largestBucketSize: largest, total: total, threshold: threshold
                 ))
             }
+        } catch ConsensusError.ccipNotImplemented {
+            // Distinct from generic "all errored" so the banner tells the
+            // user the name needs CCIP rather than "check your network."
+            return .failure(.ccipNotImplemented)
         } catch {
             // allErrored / noProviders / transport. Don't cache — retries
             // may succeed once the network recovers.
@@ -268,6 +291,7 @@ final class ENSResolver {
             providers: firstSelection,
             dnsEncodedName: dnsEncodedName, callData: callData,
             blockHash: block.hash, timeout: timeout, m: effectiveM,
+            enableCcipRead: settings.enableCcipRead,
             legRunner: legRunner
         )
 
@@ -284,6 +308,7 @@ final class ENSResolver {
                     dnsEncodedName: dnsEncodedName, callData: callData,
                     blockHash: block.hash, timeout: timeout,
                     m: min(desiredM, secondK),
+                    enableCcipRead: settings.enableCcipRead,
                     legRunner: legRunner
                 )
             }
@@ -304,7 +329,7 @@ final class ENSResolver {
         } catch {
             throw ConsensusError.allErrored
         }
-        let leg = await legRunner(url, dnsEncodedName, callData, pinned.hash, timeout)
+        let leg = await legRunner(url, dnsEncodedName, callData, pinned.hash, timeout, settings.enableCcipRead)
         let ensBlock = ENSBlock(number: pinned.number, hash: pinned.hash)
         let trust = buildTrust(
             level: .unverified, agreed: [url],
@@ -349,6 +374,8 @@ final class ENSResolver {
             )
         case .allErrored:
             throw ConsensusError.allErrored
+        case .ccipNotImplemented:
+            throw ConsensusError.ccipNotImplemented
         }
     }
 

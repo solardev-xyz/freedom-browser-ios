@@ -115,6 +115,14 @@ All runtime configuration lives in `SettingsStore`, persisted to `UserDefaults`.
 
 Sub-minimum `ensQuorumK` or `ensQuorumM` values route through the single-source unverified path instead of producing a `.verified` badge we can't defend.
 
+Plus one advanced flag not mirrored from desktop:
+
+| Key                | Default | Purpose |
+|--------------------|---------|---------|
+| `enableCcipRead`   | false   | Detect EIP-3668 OffchainLookup reverts. Full retry is scaffolded; see "Deferred" below. |
+
+`SettingsView.swift` is the UI — a Form reached from the ⋯ menu with sections for Custom RPC, Quorum (K/M/timeout/anchor), Public RPC Providers (editable list), Safety, and Advanced. Tapping Done calls `ENSResolver.invalidate()` which clears the name cache, cancels in-flight Tasks, and resets both the anchor cache and provider pool — so the next navigation runs against the new config.
+
 ## UI surface (M4.8 → M4.11)
 
 - **Address bar input**: `BrowserURL.parse` detects bare `name.eth`, `ens://name.eth` literal, and `https://name.eth` (no DNS `.eth` TLD exists, so routing to ENS is unambiguous).
@@ -129,7 +137,7 @@ Sub-minimum `ensQuorumK` or `ensQuorumM` values route through the single-source 
 
 ## What's deliberately not in M4
 
-- **CCIP-Read (EIP-3668)**. Needed for `.box` names and other offchain resolvers. `web3.swift` has an `OffchainLookup` module; wiring it is an M5 task. Until then we issue the UR call with CCIP off (the library default).
+- **CCIP-Read (EIP-3668) — scaffolded, not fully implemented.** A setting (`enableCcipRead`) and the revert-selector detection (`0x556f1830`) exist in `QuorumLeg`. When the setting is on and a name needs CCIP, we surface a distinct `RPCError.offchainLookupNotImplemented` rather than pretending the name doesn't exist. The full retry (parse OffchainLookup args, POST to gateway, re-call with response at the pinned block) requires access to `web3.swift`'s `OffchainLookup` decode + `encodeCall` internals which aren't public — implementing it without those would roughly duplicate their ~150 lines. Tracked as a followup; until then, enabling the setting for `.box` names shows a surfaced error, and the default OFF state keeps those names bucketed as `NO_CONTENTHASH` (current behavior).
 - **Reverse resolution** (`addr` → `name`). Lands with the wallet.
 - **Speculative gateway prefetch**. Desktop does it; it's a latency optimization, not a trust property. Skipped.
 - **Persistent resolution cache**. Desktop is in-memory only; we match.
@@ -164,4 +172,4 @@ Freedom/FreedomTests/
 └── BrowserURLTests.swift          — parse rules (bare .eth, ens://, .eth redirect, case)
 ```
 
-61 tests. Every security-critical invariant has a test.
+75 tests. Every security-critical invariant has a test.

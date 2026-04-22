@@ -29,6 +29,7 @@ struct ContentView: View {
     @State private var isShowingTabSwitcher = false
     @State private var isShowingHistory = false
     @State private var isShowingBookmarks = false
+    @State private var isShowingSettings = false
     @FocusState private var addressFocused: Bool
 
     private var activeURL: URL? { tabStore.activeTab?.displayURL }
@@ -66,6 +67,9 @@ struct ContentView: View {
                 navigate(to: browserURL)
                 isShowingBookmarks = false
             })
+        }
+        .sheet(isPresented: $isShowingSettings) {
+            SettingsView()
         }
         .onChange(of: tabStore.activeTab?.displayURL) { _, new in
             guard !addressFocused else { return }
@@ -309,6 +313,12 @@ struct ContentView: View {
                 isShowingHistory = true
             } label: {
                 Label("History", systemImage: "clock")
+            }
+            Divider()
+            Button {
+                isShowingSettings = true
+            } label: {
+                Label("Settings", systemImage: "gear")
             }
         } label: {
             Image(systemName: "ellipsis.circle")

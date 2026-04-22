@@ -17,7 +17,7 @@ actor ActorCallTracker {
 /// not in the map returns a generic network error so missing entries are
 /// obvious in test failures.
 func makeLegRunner(_ kinds: [URL: QuorumLeg.Outcome.Kind]) -> QuorumWave.LegRunner {
-    { url, _, _, _, _ in
+    { url, _, _, _, _, _ in
         QuorumLeg.Outcome(url: url, kind: kinds[url] ?? .error(URLError(.badServerResponse)))
     }
 }
