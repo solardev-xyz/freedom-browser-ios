@@ -109,7 +109,7 @@ enum QuorumWave {
         return .conflict
     }
 
-    static let defaultLegRunner: LegRunner = { url, name, data, blockHash, timeout in
+    nonisolated static let defaultLegRunner: LegRunner = { url, name, data, blockHash, timeout in
         await QuorumLeg.run(
             url: url,
             dnsEncodedName: name,

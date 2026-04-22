@@ -1,5 +1,6 @@
 import Foundation
 import web3
+import ENSNormalize
 
 private extension QuorumWave.TrustTier {
     var level: ENSTrustLevel {
@@ -28,25 +29,188 @@ final class ENSResolver {
         case allErrored
     }
 
+    // bytes4(keccak256("contenthash(bytes32)")) — the resolver call we
+    // wrap in the Universal Resolver's resolve(name, data).
+    private static let contenthashSelector = Data([0xbc, 0x1c, 0x58, 0xd1])
+
     private let pool: EthereumRPCPool
     private let settings: SettingsStore
     private let anchor: AnchorCorroboration
     private let legRunner: QuorumWave.LegRunner
+    private let clock: () -> Date
+
+    private var cache: [String: CacheEntry] = [:]
+    private var inFlight: [String: Task<CachedOutcome, Never>] = [:]
 
     init(
         pool: EthereumRPCPool,
         settings: SettingsStore,
         anchor: AnchorCorroboration? = nil,
-        legRunner: @escaping QuorumWave.LegRunner = QuorumWave.defaultLegRunner
+        legRunner: @escaping QuorumWave.LegRunner = QuorumWave.defaultLegRunner,
+        clock: @escaping () -> Date = Date.init
     ) {
         self.pool = pool
         self.settings = settings
         self.anchor = anchor ?? AnchorCorroboration(pool: pool, settings: settings)
         self.legRunner = legRunner
+        self.clock = clock
     }
 
+    // MARK: - Public entry
+
+    /// Resolve an ENS name to a navigable content URL. Normalizes via
+    /// ENSIP-15 (adraffy/ENSNormalize), computes the namehash, runs the
+    /// consensus pipeline, decodes the contenthash. Concurrent calls for
+    /// the same normalized name share one Task; successful results are
+    /// cached with trust-tier-specific TTLs matching desktop (verified
+    /// 15min, unverified 60s, conflict 10s negative cache).
     func resolveContent(_ name: String) async throws -> ENSResolvedContent {
-        throw ENSResolutionError.notImplemented
+        let normalized: String
+        do {
+            normalized = try name.ensNormalized()
+        } catch {
+            throw ENSResolutionError.invalidName
+        }
+
+        if let cached = cache[normalized], clock() < cached.expiresAt {
+            return try cached.outcome.unwrap()
+        }
+        if let task = inFlight[normalized] {
+            return try await task.value.unwrap()
+        }
+
+        let task = Task { @MainActor in
+            let outcome = await self.doResolveContent(normalized)
+            self.storeAndClear(normalized: normalized, outcome: outcome)
+            return outcome
+        }
+        inFlight[normalized] = task
+        return try await task.value.unwrap()
+    }
+
+    private func storeAndClear(normalized: String, outcome: CachedOutcome) {
+        if case .transient = outcome {
+            // Don't pin transient failures; let retries re-attempt fresh.
+        } else {
+            cache[normalized] = CacheEntry(
+                outcome: outcome,
+                expiresAt: clock().addingTimeInterval(outcome.ttl)
+            )
+            capCache()
+        }
+        inFlight.removeValue(forKey: normalized)
+    }
+
+    // Desktop's policy: when over the cap, drop expired entries first;
+    // if still over, fall through to arbitrary-order eviction. Bounded
+    // memory during long browsing sessions with many distinct names.
+    private static let maxCacheEntries = 500
+
+    private func capCache() {
+        guard cache.count > Self.maxCacheEntries else { return }
+        let now = clock()
+        cache = cache.filter { $0.value.expiresAt > now }
+        while cache.count > Self.maxCacheEntries, let key = cache.keys.first {
+            cache.removeValue(forKey: key)
+        }
+    }
+
+    private func doResolveContent(_ normalized: String) async -> CachedOutcome {
+        let dnsEncoded: Data
+        do {
+            dnsEncoded = try ENSNameEncoding.dnsEncode(normalized)
+        } catch {
+            return .failure(.invalidName)
+        }
+        let node = ENSNameEncoding.namehash(normalized)
+        let callData = Self.contenthashSelector + node
+
+        let consensus: ConsensusResult
+        do {
+            consensus = try await consensusResolve(dnsEncodedName: dnsEncoded, callData: callData)
+        } catch let err as AnchorCorroboration.AnchorError {
+            // Security signal — preserve distinct from plain network failure.
+            // Short-TTL cached (below) to avoid re-hammering providers during
+            // an active disagreement.
+            switch err {
+            case .hashDisagreement(let largest, let total, let threshold):
+                return .failure(.anchorDisagreement(
+                    largestBucketSize: largest, total: total, threshold: threshold
+                ))
+            }
+        } catch {
+            // allErrored / noProviders / transport. Don't cache — retries
+            // may succeed once the network recovers.
+            return .transient
+        }
+
+        switch consensus {
+        case .data(let abiEncoded, _, let trust):
+            let innerBytes: Data
+            do {
+                innerBytes = try ContenthashDecoder.unwrapABIBytes(abiEncoded)
+            } catch {
+                return .failure(.unsupportedCodec(rawBytes: abiEncoded, trust: trust))
+            }
+            if innerBytes.isEmpty {
+                return .failure(.notFound(reason: .emptyContenthash, trust: trust))
+            }
+            guard let (uri, codec) = ContenthashDecoder.decode(innerBytes) else {
+                return .failure(.unsupportedCodec(rawBytes: innerBytes, trust: trust))
+            }
+            return .success(ENSResolvedContent(name: normalized, uri: uri, codec: codec, trust: trust))
+        case .notFound(let reason, let trust):
+            return .failure(.notFound(reason: reason, trust: trust))
+        case .conflict(let groups, let trust):
+            return .failure(.conflict(groups: groups, trust: trust))
+        }
+    }
+
+    // MARK: - Cache types
+
+    private struct CacheEntry {
+        let outcome: CachedOutcome
+        let expiresAt: Date
+    }
+
+    private enum CachedOutcome {
+        case success(ENSResolvedContent)
+        case failure(ENSResolutionError)
+        /// Transient upstream failure (anchor disagreement, no providers,
+        /// network). Sentinel marker — caller reinterprets as a thrown
+        /// .allProvidersErrored and we don't cache it.
+        case transient
+
+        func unwrap() throws -> ENSResolvedContent {
+            switch self {
+            case .success(let c): return c
+            case .failure(let e): throw e
+            case .transient: throw ENSResolutionError.allProvidersErrored
+            }
+        }
+
+        /// TTL per desktop's policy — verified answers are stable across
+        /// short windows, unverified or conflict states shouldn't pin for
+        /// long. The transient case short-TTLs to 0 so it's effectively
+        /// unreachable in the cache path (the caller also skips caching).
+        var ttl: TimeInterval {
+            switch self {
+            case .success(let c):
+                switch c.trust.level {
+                case .verified, .userConfigured: return 15 * 60
+                case .unverified: return 60
+                case .conflict: return 10
+                }
+            case .failure(.notFound(_, let trust)):
+                return trust.level == .verified ? 15 * 60 : 60
+            case .failure(.conflict), .failure(.anchorDisagreement):
+                return 10
+            case .failure:
+                return 60
+            case .transient:
+                return 0
+            }
+        }
     }
 
     // MARK: - Consensus orchestration

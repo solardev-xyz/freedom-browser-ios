@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import SwarmKit
+import ENSNormalize
 
 @main
 struct FreedomApp: App {
@@ -32,6 +33,11 @@ struct FreedomApp: App {
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
         }
+
+        // ENSIP-15 tables (~MB of Unicode data) load lazily on first use.
+        // Warm them off-main so the first ENS address-bar navigation
+        // doesn't pay the deserialization cost on the main actor.
+        Task.detached { _ = try? "a.eth".ensNormalized() }
     }
 
     var body: some Scene {

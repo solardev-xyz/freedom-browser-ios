@@ -1,4 +1,5 @@
 import Foundation
+import web3
 @testable import Freedom
 
 final class MutableClock {
@@ -19,4 +20,14 @@ func makeLegRunner(_ kinds: [URL: QuorumLeg.Outcome.Kind]) -> QuorumWave.LegRunn
     { url, _, _, _, _ in
         QuorumLeg.Outcome(url: url, kind: kinds[url] ?? .error(URLError(.badServerResponse)))
     }
+}
+
+/// Wrap raw bytes as an ABI-encoded `bytes` payload — matches the shape
+/// the UR returns after one layer of unwrapping. Force-tries so encoding
+/// failures fail the test loudly rather than silently corrupting assertions.
+func abiEncodeBytes(_ payload: Data) -> Data {
+    let encoder = ABIFunctionEncoder("_")
+    try! encoder.encode(payload)
+    let full = try! encoder.encoded()
+    return Data(full.dropFirst(4))  // strip 4-byte method id
 }

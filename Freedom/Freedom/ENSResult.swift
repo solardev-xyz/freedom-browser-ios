@@ -30,6 +30,10 @@ enum ENSResolutionError: Error {
     case notFound(reason: ENSNotFoundReason, trust: ENSTrust)
     case unsupportedCodec(rawBytes: Data, trust: ENSTrust)
     case conflict(groups: [ENSConflictGroup], trust: ENSTrust)
+    /// The anchor-corroboration step saw disagreement between providers
+    /// on the block hash at the chosen number — a security signal the
+    /// UI should surface distinctly from plain network failures.
+    case anchorDisagreement(largestBucketSize: Int, total: Int, threshold: Int)
     case allProvidersErrored
     case notImplemented
 }

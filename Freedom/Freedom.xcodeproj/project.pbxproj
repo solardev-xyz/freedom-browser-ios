@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */ = {isa = PBXBuildFile; productRef = 170726AB2F96CD3900CCFF45 /* SwarmKit */; };
 		17E52F300000000000000003 /* web3.swift in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F200000000000000002 /* web3.swift */; };
+		17E52F50000000000000000E /* ENSNormalize in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F60000000000000000F /* ENSNormalize */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 			files = (
 				170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */,
 				17E52F300000000000000003 /* web3.swift in Frameworks */,
+				17E52F50000000000000000E /* ENSNormalize in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +114,7 @@
 			packageProductDependencies = (
 				170726AB2F96CD3900CCFF45 /* SwarmKit */,
 				17E52F200000000000000002 /* web3.swift */,
+				17E52F60000000000000000F /* ENSNormalize */,
 			);
 			productName = Freedom;
 			productReference = 1707269C2F96CCE500CCFF45 /* Freedom.app */;
@@ -168,6 +171,7 @@
 				170726AA2F96CD3900CCFF45 /* XCLocalSwiftPackageReference "../Packages/SwarmKit" */,
 				17E52F100000000000000001 /* XCRemoteSwiftPackageReference "web3" */,
 				17E52F400000000000000004 /* XCRemoteSwiftPackageReference "secp256k1" */,
+				17E52F70000000000000000D /* XCRemoteSwiftPackageReference "ENSNormalize" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1707269D2F96CCE500CCFF45 /* Products */;
@@ -524,6 +528,14 @@
 				version = 0.19.0;
 			};
 		};
+		17E52F70000000000000000D /* XCRemoteSwiftPackageReference "ENSNormalize" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/adraffy/ENSNormalize.swift";
+			requirement = {
+				kind = revision;
+				revision = d848cc56f5ba8a9cb60dc26b61c96ca51509ef52;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -535,6 +547,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 17E52F100000000000000001 /* XCRemoteSwiftPackageReference "web3" */;
 			productName = web3.swift;
+		};
+		17E52F60000000000000000F /* ENSNormalize */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 17E52F70000000000000000D /* XCRemoteSwiftPackageReference "ENSNormalize" */;
+			productName = ENSNormalize;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
