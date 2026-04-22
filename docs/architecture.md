@@ -1,11 +1,13 @@
 # Freedom Browser — Architecture & Development Journal
 
-Snapshot of the iOS Freedom Browser codebase as of the M2 commit (`73efa98`).
+Snapshot of the iOS Freedom Browser codebase.
 This document exists so the next person (or future-you) can pick up the thread without rebuilding context from scratch. It covers:
 
 1. What the product is and how the pieces fit together
 2. Every non-obvious engineering decision made so far, and why
 3. What's missing before this can ship to users
+
+> **Progress pointer:** the M1 / M2 material below covers the xcframework pipeline and the bzz scheme handler. M3 (full browser UI) and M4 (ENS resolution) landed afterward and are covered at the end of this file. For the security model and algorithm of ENS resolution specifically, see [`docs/ens-resolution.md`](./ens-resolution.md).
 
 ---
 
@@ -383,5 +385,96 @@ The matching `case elem == "byte"` check a few lines down (for `[]byte` → `NSD
 **Simulator keyboard paste**. Menu `I/O → Keyboard → Connect Hardware Keyboard` (⇧⌘K) — otherwise ⌘V doesn't work inside text fields.
 
 **Rebuilding the xcframework**. Run `make build-ios` in `bee-lite-java/`. First run after `go clean -cache` takes ~20 min. Incremental rebuilds after a small source change: <1 min (Go caches most compiles; only the final gomobile-bind step re-runs).
+
+---
+
+## 11. M3 — Browser UI
+
+Built in six incremental milestones, each committed separately:
+
+- **M3.1** — single-tab chrome (back/forward/reload, share, address bar, node-status row, progress indicator).
+- **M3.2** — multi-tab with SwiftData persistence. `TabRecord` @Model holds the URL / title / snapshot; `BrowserTab` holds the live `WKWebView`. `TabStore` maps record IDs to live tabs and handles activation / capture-on-background / close. `BrowserWebView(tab:).id(tab.recordID)` forces SwiftUI to recreate the representable on tab switch — otherwise it reuses the prior tab's `WKWebView` and shows the wrong page.
+- **M3.3** — browsing history. `HistoryEntry` @Model, `HistoryStore` with 5-minute dedup on `record(url:title:)`, day-grouped `HistoryView` sheet.
+- **M3.4** — bookmarks. `Bookmark` @Model with `@Attribute(.unique) var id`, `BookmarkStore.toggle`, reactive `@Query allBookmarks` in `ContentView` drives the star icon's fill state. SwiftData's `#Predicate` is flaky for `URL` equality on iOS 17 — we filter in Swift instead.
+- **M3.5** — home / new-tab page. Bookmarks, Recent, Explore sections. Explore has one hand-curated entry (`Swarmit`) in `ExploreEntry.mainnetCurated`.
+- **M3.6** — history polish: URL dedup via `recentDistinct`, `.searchable` on history, address-bar autocomplete dropdown that overlays (doesn't push content).
+- **M3.7** — favicons. `FaviconStore` caches decoded `UIImage`s in memory, persists raw bytes via SwiftData. `FaviconView(host:)` renders the cached image or a globe placeholder. JS-extracted `<link rel="icon">` with `/favicon.ico` fallback; `bzz://` scheme is translated to `localhost:1633/bzz/...` via the existing `BzzSchemeHandler.localHTTPURL(for:)` helper.
+
+### Non-obvious decisions
+
+**KVO → `MainActor.assumeIsolated`.** `WKWebView` posts KVO on the main thread. Inside each observation closure we call `MainActor.assumeIsolated { ... }` rather than bouncing through `Task { @MainActor in ... }` — the assume keeps us synchronous and cheap. Writes are guarded by value-change checks (`guard self.url != wv.url else { return }`) because `@Observable` invalidates downstream views on every setter call regardless of the new value.
+
+**Scene-phase `.inactive` is transient** (Control Center opens, etc.). We snapshot tabs only on `.background`.
+
+**`@Query private var allBookmarks` drives the star-button fill state** — any bookmark toggle flips the icon instantly with no manual invalidation.
+
+---
+
+## 12. M4 — ENS resolution
+
+Twelve milestones (M4.1 through M4.12). Turns input like `vitalik.eth` or `ens://foo.eth` into a navigable `bzz://<hash>` URL, with cross-provider consensus against lying or stale public Ethereum RPCs.
+
+**Full writeup**: [`docs/ens-resolution.md`](./ens-resolution.md) — covers the algorithm, the Swift file map, the trust-tier TTLs, and the UI surface.
+
+### The security-critical shape
+
+- **ENSIP-15 normalization** via `adraffy/ENSNormalize.swift` (first-party Swift port of `@adraffy/ens-normalize.js` by the same author).
+- **Universal Resolver contract** at `0xeEeE…eEeE` — one call replaces `registry → supportsWildcard → contenthash`. We call it directly via JSON-RPC (EIP-1898 block-hash pinning), bypassing `web3.swift`'s `EthereumClient` because its `EthereumBlock` enum doesn't surface hash tags.
+- **Anchor corroboration**: median head across ≥3 providers, hash agreement at `median − safetyDepth` with a plurality-plus-strict-majority threshold (not just user-M — attacker-plurality is in scope).
+- **Quorum wave**: K parallel legs, NO_RESOLVER / NO_CONTENTHASH bucket separately, early-resolve on M agreement, second-wave escalation only on all-errored.
+- **Trust tiers** propagate through `ENSResolver.consensusResolve`'s result and surface as: green/blue/amber/red shield in the address bar (`TrustShield.swift`), and full-webArea interstitials for unverified (`blockUnverifiedEns` gated with "Continue once"), conflict, and anchorDisagreement (`ENSInterstitial.swift`).
+
+### Dependency surface after M4
+
+Added to the Xcode project's Swift Package Manager graph, pinned to specific commit SHAs:
+
+- `argentlabs/web3.swift` (Ethereum RPC + ABI + keccak). With workaround: `GigaBitcoin/secp256k1.swift` transitively pinned to `0.19.0` because `0.20+` renamed the product from `secp256k1` to `P256K` and web3.swift hasn't caught up (upstream issue #388, open PR #379).
+- `adraffy/ENSNormalize.swift` (ENSIP-15 normalization).
+
+Both are pinned by SHA, not version — a future repo compromise can't silently swap our dependency mid-flight. Bumps require manual review + a commit.
+
+### Navigation flow
+
+User types `foo.eth` → `BrowserURL.parse` detects bare `.eth` → `BrowserTab.navigate(.ens(name))` → resolver runs in a cancelable Task while the UI shows "Resolving foo.eth…" → on success, the bzz URL loads in the webview and the shield appears; on unverified-with-setting-on, the interstitial replaces the webview area; on conflict/anchorDisagreement, a red interstitial with no bypass. The address bar stays on `ens://foo.eth` so revisits re-resolve and pick up any content-hash rotation. Favicons key on the ens name, not the bzz hash, so they survive rotation.
+
+### Tests
+
+61 tests across 7 test files. Every security invariant has coverage: median-vs-outlier, plurality-below-majority-even-at-user-M, NO_RESOLVER-vs-NO_CONTENTHASH bucket isolation, M-agreement early-resolve, second-wave escalation, cache-hit-skips-consensus, in-flight dedup. UI layers (shield, interstitials) aren't unit-tested — they're tested on-device.
+
+### Deferred
+
+- **CCIP-Read** for `.box` / 3DNS names (web3.swift has `OffchainLookup`; wiring pending).
+- **Reverse resolution** (`addr` → `name`) — lands with the wallet.
+- **Public `invalidate()`** on `ENSResolver` — currently can't clear the resolution cache from outside; lands with settings UI when user edits can trigger it.
+- **Settings UI** — the 10 keys are persisted and respected, but there's no screen to edit them. Defaults work; advanced users need code-level access.
+- **Speculative gateway prefetch** — latency optimization, not a trust property.
+
+---
+
+## 13. Key commits (updated)
+
+### M3 — browser UI
+
+- `43b4c26` — M3.1: single-tab chrome
+- `1b581d1` — M3.2: multi-tab with persistence
+- `444ae52` — M3.3: browsing history
+- `efc1727` — M3.4: bookmarks
+- `4f9bf4a` — M3.5: home page
+- `c781bd6` — M3.6: history polish
+- `bf3f830` — M3.7: favicons
+
+### M4 — ENS resolution
+
+- `d35ad84` — M4.1: scaffold + web3.swift dependency
+- `fc3c18f` — M4.2: SettingsStore mirroring desktop
+- `c281548` — M4.3: RPC pool with quarantine
+- `5701227` — M4.4: single-leg UR.resolve primitive
+- `731acc3` — M4.4.5: test target + first coverage
+- `68fa859` — M4.5: anchor corroboration
+- `c0f8986` — M4.6: quorum wave + orchestrator
+- `54d5329` — M4.7: resolveContent (normalize, decode, cache, dedup)
+- `0e315da` — M4.8: navigation integration (first demoable)
+- `91d0cc0` — M4.10: trust shield
+- `b88a496` — M4.11: interstitials
 
 **`.gitignore`**. `build/` is ignored in `bee-lite-java/`. `Mobile.xcframework/` and `xcuserdata/`, `.swiftpm/`, `DerivedData/` are ignored in `swarm-mobile-ios/`. None of these should ever be committed.

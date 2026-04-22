@@ -120,13 +120,15 @@ final class TabStore {
         let tab = BrowserTab(recordID: id, ensResolver: ensResolver, settings: settings)
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }
-            // Record history under the ens:// form when we navigated via
-            // ENS — revisits should re-resolve and pick up content-hash
-            // rotations. Favicons key on the resolved origin, so they
-            // survive those rotations (same content host → same favicon).
-            let recordedURL = tab.ensURL ?? url
-            self.historyStore.record(url: recordedURL, title: title)
-            self.faviconStore.fetchIfNeeded(for: url, webView: tab.webView)
+            // Key history AND favicons on the ens:// form when we navigated
+            // via ENS — revisits re-resolve (and pick up any content-hash
+            // rotation by the record owner) while the favicon stays tied
+            // to the name, not to whichever bzz hash happens to be current.
+            // The JS extraction still runs against the webview's live page
+            // (the resolved bzz content), only the storage key changes.
+            let displayURL = tab.ensURL ?? url
+            self.historyStore.record(url: displayURL, title: title)
+            self.faviconStore.fetchIfNeeded(for: displayURL, webView: tab.webView)
         }
         liveTabs[id] = tab
         if let record = record(for: id),
