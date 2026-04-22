@@ -107,9 +107,7 @@ final class ENSResolver {
     }
 
     private func storeAndClear(normalized: String, outcome: CachedOutcome) {
-        if case .transient = outcome {
-            // Don't pin transient failures; let retries re-attempt fresh.
-        } else {
+        if outcome.isCacheable {
             cache[normalized] = CacheEntry(
                 outcome: outcome,
                 expiresAt: clock().addingTimeInterval(outcome.ttl)
@@ -157,9 +155,10 @@ final class ENSResolver {
                 ))
             }
         } catch {
-            // allErrored / noProviders / transport. Don't cache — retries
-            // may succeed once the network recovers.
-            return .transient
+            // allErrored / noProviders / transport. Surfaced as
+            // .allProvidersErrored, which `isCacheable` treats as
+            // non-cacheable so retries re-attempt once the network recovers.
+            return .failure(.allProvidersErrored)
         }
 
         switch consensus {
@@ -194,23 +193,26 @@ final class ENSResolver {
     private enum CachedOutcome {
         case success(ENSResolvedContent)
         case failure(ENSResolutionError)
-        /// Transient upstream failure (anchor disagreement, no providers,
-        /// network). Sentinel marker — caller reinterprets as a thrown
-        /// .allProvidersErrored and we don't cache it.
-        case transient
 
         func unwrap() throws -> ENSResolvedContent {
             switch self {
             case .success(let c): return c
             case .failure(let e): throw e
-            case .transient: throw ENSResolutionError.allProvidersErrored
             }
+        }
+
+        /// `.allProvidersErrored` is a transient network failure — retries
+        /// may succeed once the network recovers, so don't pin it. Every
+        /// other outcome (including negative results) is cacheable per the
+        /// TTL below.
+        var isCacheable: Bool {
+            if case .failure(.allProvidersErrored) = self { return false }
+            return true
         }
 
         /// TTL per desktop's policy — verified answers are stable across
         /// short windows, unverified or conflict states shouldn't pin for
-        /// long. The transient case short-TTLs to 0 so it's effectively
-        /// unreachable in the cache path (the caller also skips caching).
+        /// long.
         var ttl: TimeInterval {
             switch self {
             case .success(let c):
@@ -225,8 +227,6 @@ final class ENSResolver {
                 return 10
             case .failure:
                 return 60
-            case .transient:
-                return 0
             }
         }
     }
