@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */ = {isa = PBXBuildFile; productRef = 170726AB2F96CD3900CCFF45 /* SwarmKit */; };
+		17E52F300000000000000003 /* web3.swift in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F200000000000000002 /* web3.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -41,6 +42,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */,
+				17E52F300000000000000003 /* web3.swift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -84,6 +86,7 @@
 			name = Freedom;
 			packageProductDependencies = (
 				170726AB2F96CD3900CCFF45 /* SwarmKit */,
+				17E52F200000000000000002 /* web3.swift */,
 			);
 			productName = Freedom;
 			productReference = 1707269C2F96CCE500CCFF45 /* Freedom.app */;
@@ -115,6 +118,8 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				170726AA2F96CD3900CCFF45 /* XCLocalSwiftPackageReference "../Packages/SwarmKit" */,
+				17E52F100000000000000001 /* XCRemoteSwiftPackageReference "web3" */,
+				17E52F400000000000000004 /* XCRemoteSwiftPackageReference "secp256k1" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1707269D2F96CCE500CCFF45 /* Products */;
@@ -368,10 +373,34 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		17E52F100000000000000001 /* XCRemoteSwiftPackageReference "web3" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argentlabs/web3.swift";
+			requirement = {
+				kind = revision;
+				revision = a7b1b9411186c82feae8be1d7c364bc4c74c2fb0;
+			};
+		};
+		17E52F400000000000000004 /* XCRemoteSwiftPackageReference "secp256k1" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/GigaBitcoin/secp256k1.swift";
+			requirement = {
+				kind = exactVersion;
+				version = 0.19.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		170726AB2F96CD3900CCFF45 /* SwarmKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SwarmKit;
+		};
+		17E52F200000000000000002 /* web3.swift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 17E52F100000000000000001 /* XCRemoteSwiftPackageReference "web3" */;
+			productName = web3.swift;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
