@@ -34,12 +34,9 @@ struct Mnemonic: Equatable {
     let words: [String]
 
     init(strength: Strength = .bits256) {
-        let byteCount = strength.rawValue / 8
-        var entropy = Data(count: byteCount)
-        let status = entropy.withUnsafeMutableBytes { buf -> Int32 in
-            SecRandomCopyBytes(kSecRandomDefault, byteCount, buf.baseAddress!)
+        guard let entropy = Data.secureRandom(count: strength.rawValue / 8) else {
+            preconditionFailure("SecRandomCopyBytes failed — no seed source")
         }
-        precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         self = try! Mnemonic(entropy: entropy)
     }
 
