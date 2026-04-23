@@ -29,20 +29,40 @@ struct HomePage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                header
-                if !bookmarks.isEmpty {
-                    bookmarksSection
+            VStack(spacing: 0) {
+                heroContent
+                VStack(alignment: .leading, spacing: 28) {
+                    if !bookmarks.isEmpty {
+                        bookmarksSection
+                    }
+                    if !recentDistinct.isEmpty {
+                        recentSection
+                    }
+                    exploreSection
                 }
-                if !recentDistinct.isEmpty {
-                    recentSection
-                }
-                exploreSection
+                .padding(.horizontal, 20)
+                .padding(.top, 32)
+                .padding(.bottom, 20)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 40)
-            .padding(.bottom, 20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // .background is explicitly bounded to the ScrollView's frame
+        // (= viewport), so scaledToFill can't leak its 3:2 image into the
+        // enclosing layout the way a ZStack sibling would. Image stays put
+        // while content scrolls over it — standard fixed-backdrop pattern.
+        .background {
+            Image("HomeHero")
+                .resizable()
+                .scaledToFill()
+                .clipped()
+                .overlay(
+                    LinearGradient(
+                        colors: [.black.opacity(0.35), .clear],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .ignoresSafeArea()
         }
         .sheet(isPresented: $isShowingHistory) {
             HistoryView(onSelect: onNavigate)
@@ -52,21 +72,32 @@ struct HomePage: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Freedom").font(.largeTitle).bold()
-            Text("Browse the decentralized web via Swarm")
-                .font(.subheadline).foregroundStyle(.secondary)
+    private var heroContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Image("FreedomLogoWhite")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 180)
+            Text("The decentralized web is here. Powered by built-in nodes, this browser connects you directly to peers, keeping the network strong and user-controlled.")
+                .font(.subheadline)
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .padding(.leading, 20)
+        .padding(.top, 40)
+        .padding(.trailing, 40)
+        .padding(.bottom, 160)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var bookmarksSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Bookmarks").font(.headline)
+                Text("Bookmarks").font(.headline).foregroundStyle(.white)
                 Spacer()
                 Button("See all") { isShowingBookmarks = true }
                     .font(.subheadline)
+                    .foregroundStyle(.white)
             }
             ForEach(bookmarks, id: \.id) { bookmark in
                 LaunchCard(
@@ -85,10 +116,11 @@ struct HomePage: View {
     private var recentSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Recent").font(.headline)
+                Text("Recent").font(.headline).foregroundStyle(.white)
                 Spacer()
                 Button("See all") { isShowingHistory = true }
                     .font(.subheadline)
+                    .foregroundStyle(.white)
             }
             ForEach(recentDistinct, id: \.id) { entry in
                 LaunchCard(
@@ -106,7 +138,7 @@ struct HomePage: View {
 
     private var exploreSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Explore").font(.headline)
+            Text("Explore").font(.headline).foregroundStyle(.white)
             ForEach(ExploreEntry.mainnetCurated, id: \.self) { entry in
                 LaunchCard(title: entry.title, subtitle: entry.subtitle, url: entry.url.url) {
                     onNavigate(entry.url)
