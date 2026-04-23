@@ -9,27 +9,37 @@ struct TabSwitcher: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(tabStore.records, id: \.id) { record in
-                        TabCard(
-                            record: record,
-                            isActive: record.id == tabStore.activeRecordID,
-                            onActivate: {
-                                tabStore.activate(record.id)
-                                isPresented = false
-                            }
-                        )
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        ForEach(tabStore.records, id: \.id) { record in
+                            TabCard(
+                                record: record,
+                                isActive: record.id == tabStore.activeRecordID,
+                                onActivate: {
+                                    tabStore.activate(record.id)
+                                    isPresented = false
+                                }
+                            )
+                            .id(record.id)
+                        }
                     }
+                    .padding()
+                    .animation(.spring, value: tabStore.records.count)
                 }
-                .padding()
-                .animation(.spring, value: tabStore.records.count)
-            }
-            .task {
-                // Capture the active tab's current state so its card in the
-                // grid isn't stale/blank — snapshots are otherwise only taken
-                // on switch-away or background.
-                await tabStore.captureActive()
+                .task {
+                    // Land the viewport on the active card — Safari-style —
+                    // so users with many tabs don't have to hunt for the one
+                    // they're currently viewing. Scroll is synchronous and
+                    // runs first so the position is right from frame one;
+                    // captureActive then runs in parallel effectively,
+                    // refreshing the card's snapshot (otherwise only taken
+                    // on switch-away or background).
+                    if let active = tabStore.activeRecordID {
+                        proxy.scrollTo(active, anchor: .center)
+                    }
+                    await tabStore.captureActive()
+                }
             }
             .navigationTitle("Tabs")
             .navigationBarTitleDisplayMode(.inline)
