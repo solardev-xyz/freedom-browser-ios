@@ -25,6 +25,23 @@ enum RPCSession {
         let error: ErrorBody?
     }
 
+    /// Pre-encoded JSON body POST with task-group timeout. Returns raw bytes —
+    /// caller decodes. Used directly by wallet RPC which has its own envelope
+    /// machinery, and via `post` for the ENS / consensus paths.
+    static func postBytes(url: URL, body: Data, timeout: TimeInterval) async throws -> Data {
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = body
+        let (data, response) = try await withTimeout(seconds: timeout) {
+            try await shared.data(for: req)
+        }
+        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            throw RPCError.httpStatus(http.statusCode)
+        }
+        return data
+    }
+
     /// JSON-RPC POST with task-group-based timeout. Caller interprets
     /// Response.error per its needs — revert-vs-error distinctions live
     /// at call sites, not here.
@@ -33,18 +50,8 @@ enum RPCSession {
         body: Body,
         timeout: TimeInterval
     ) async throws -> Response<R> {
-        var builder = URLRequest(url: url)
-        builder.httpMethod = "POST"
-        builder.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        builder.httpBody = try encoder.encode(body)
-        let req = builder
-
-        let (data, response) = try await withTimeout(seconds: timeout) {
-            try await shared.data(for: req)
-        }
-        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-            throw RPCError.httpStatus(http.statusCode)
-        }
+        let encoded = try encoder.encode(body)
+        let data = try await postBytes(url: url, body: encoded, timeout: timeout)
         return try decoder.decode(Response<R>.self, from: data)
     }
 
@@ -69,6 +76,6 @@ enum RPCSession {
         }
     }
 
-    private static let encoder = JSONEncoder()
-    private static let decoder = JSONDecoder()
+    static let encoder = JSONEncoder()
+    static let decoder = JSONDecoder()
 }
