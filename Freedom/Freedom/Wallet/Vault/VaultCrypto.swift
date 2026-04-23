@@ -2,19 +2,29 @@ import CryptoKit
 import Foundation
 import Security
 
-/// On-disk encryption for the wallet seed. Two tiers selected at store time:
+/// On-disk encryption for the wallet seed. Three tiers — the caller picks a
+/// preferred tier at construction, and the store path falls back to
+/// `.deviceBound` whenever the preferred tier can't be realised on the
+/// current device (no passcode enrolled, Secure Enclave unavailable, etc).
 ///
-///   - **protected**: a Secure Enclave P-256 key wraps a random 32-byte DEK
-///     via ECIES; the DEK decrypts the vault blob on unlock. Every unlock
-///     traverses the SE, which enforces the `.userPresence` ACL — biometric
-///     or device passcode — at the kernel level.
-///   - **deviceBound**: device has no passcode (or SE unavailable), so the
-///     DEK is stored directly in Keychain with `.whenUnlockedThisDeviceOnly`.
-///     Still encrypted at rest, still device-bound, but with no user-presence
-///     gate — there is nothing to gate.
+///   - **cloudSynced** (v1 default): DEK stored in iCloud-synced Keychain
+///     with a `.userPresence` ACL. Biometric/passcode gated on every
+///     unlock; backed up via iCloud Keychain so device loss doesn't
+///     strand funds. Trade: slightly weaker than `.protected` (Apple-ID
+///     compromise becomes a path) for much better UX.
 ///
-/// Which tier is active is recorded alongside the blob and honored on load.
-/// Mixing them within a single vault is impossible by construction.
+///   - **protected**: Secure Enclave P-256 key wraps a random 32-byte DEK
+///     via ECIES; SE's `.userPresence` ACL gates every unwrap. Keys never
+///     leave the chip, so the vault is strictly this-device-only. Kept
+///     wired up for a future "advanced security" opt-in — not selected by
+///     default in v1.
+///
+///   - **deviceBound**: raw DEK in Keychain (`.whenUnlockedThisDeviceOnly`,
+///     no ACL). The fallback when the preferred tier can't be created.
+///     Still encrypted at rest by system hardware keys; no user-presence
+///     gate because there's nothing to gate on.
+///
+/// Which tier was chosen is recorded alongside the blob and honored on load.
 final class VaultCrypto {
     enum Error: Swift.Error {
         case noVault
@@ -27,14 +37,14 @@ final class VaultCrypto {
     private let dek: KeychainItem
     private let level: KeychainItem
     private let seKeyTag: Data
-    private let preferProtected: Bool
+    private let preferred: VaultSecurityLevel
 
-    init(service: String = "com.freedom.wallet", preferProtected: Bool = true) {
+    init(service: String = "com.freedom.wallet", preferred: VaultSecurityLevel = .cloudSynced) {
         self.blob = KeychainItem(account: "blob", service: service)
         self.dek = KeychainItem(account: "dek", service: service)
         self.level = KeychainItem(account: "level", service: service)
         self.seKeyTag = Data("\(service).se".utf8)
-        self.preferProtected = preferProtected
+        self.preferred = preferred
     }
 
     var existingLevel: VaultSecurityLevel? {
@@ -46,19 +56,12 @@ final class VaultCrypto {
     func store(mnemonic: Mnemonic) throws -> VaultSecurityLevel {
         guard let dekBytes = Data.secureRandom(count: 32) else { throw Error.cryptoFailed }
 
-        let resolvedLevel: VaultSecurityLevel
-        if preferProtected, let sePublic = try createOrFetchSEPublicKey() {
-            let wrapped = try encrypt(dek: dekBytes, with: sePublic)
-            try dek.write(wrapped)
-            resolvedLevel = .protected
-        } else {
-            try dek.write(dekBytes)
-            resolvedLevel = .deviceBound
-        }
-
-        try blob.write(try sealBlob(mnemonic: mnemonic, dek: dekBytes))
-        try level.write(Data(resolvedLevel.rawValue.utf8))
-        return resolvedLevel
+        let resolved = try writeDek(dekBytes, preferred: preferred)
+        let blobProtection: KeychainItem.Protection =
+            (resolved == .cloudSynced) ? .cloudSynced : .deviceOnly
+        try blob.write(try sealBlob(mnemonic: mnemonic, dek: dekBytes), protection: blobProtection)
+        try level.write(Data(resolved.rawValue.utf8), protection: blobProtection)
+        return resolved
     }
 
     func load() throws -> Mnemonic {
@@ -70,7 +73,9 @@ final class VaultCrypto {
         switch resolvedLevel {
         case .protected:
             dekBytes = try decrypt(wrappedDek: storedDek, with: try fetchSEPrivateKey())
-        case .deviceBound:
+        case .cloudSynced, .deviceBound:
+            // cloudSynced: read triggered the `.userPresence` prompt already.
+            // deviceBound: no gate.
             dekBytes = storedDek
         }
         return try openBlob(sealed, dek: dekBytes)
@@ -83,7 +88,34 @@ final class VaultCrypto {
         _ = try? deleteSEKey()
     }
 
-    // MARK: - Secure Enclave
+    // MARK: - DEK writing per tier
+
+    private func writeDek(_ dekBytes: Data, preferred: VaultSecurityLevel) throws -> VaultSecurityLevel {
+        switch preferred {
+        case .cloudSynced:
+            // `.userPresence` ACL creation can fail on devices without a
+            // passcode — that's exactly when we want to fall back.
+            do {
+                try dek.write(dekBytes, protection: .cloudSyncedGated)
+                return .cloudSynced
+            } catch {
+                try dek.write(dekBytes, protection: .deviceOnly)
+                return .deviceBound
+            }
+        case .protected:
+            if let sePublic = try createOrFetchSEPublicKey() {
+                try dek.write(try encrypt(dek: dekBytes, with: sePublic), protection: .deviceOnly)
+                return .protected
+            }
+            try dek.write(dekBytes, protection: .deviceOnly)
+            return .deviceBound
+        case .deviceBound:
+            try dek.write(dekBytes, protection: .deviceOnly)
+            return .deviceBound
+        }
+    }
+
+    // MARK: - Secure Enclave (`.protected` tier)
 
     private func createOrFetchSEPublicKey() throws -> SecKey? {
         if let existing = try? fetchSEPrivateKey() {
@@ -107,9 +139,9 @@ final class VaultCrypto {
                 kSecAttrAccessControl as String: access,
             ],
         ]
-        // Returning nil (not throwing) on SE unavailability is intentional —
-        // the caller falls back to .deviceBound storage. No passcode set,
-        // simulator quirks, or legacy hardware land here.
+        // nil (not throw) on SE unavailability is intentional: the caller
+        // falls back to .deviceBound. Triggered by no passcode, simulator
+        // quirks, or legacy hardware.
         var createError: Unmanaged<CFError>?
         return SecKeyCreateRandomKey(attrs as CFDictionary, &createError)
             .flatMap { SecKeyCopyPublicKey($0) }

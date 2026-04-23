@@ -4,6 +4,7 @@ import Observation
 /// Stored alongside the vault blob and read back verbatim. Pinned raw values
 /// keep the on-disk format decoupled from Swift case names.
 enum VaultSecurityLevel: String {
+    case cloudSynced = "cloud-synced"
     case protected = "protected"
     case deviceBound = "device-bound"
 }

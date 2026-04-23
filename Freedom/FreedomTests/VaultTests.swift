@@ -10,8 +10,12 @@ final class VaultTests: XCTestCase {
 
     /// The device-bound path has no biometric gate and behaves identically
     /// across simulator and device — our workhorse for deterministic tests.
+    /// Forces the deviceBound tier — no biometric gate, no iCloud dependency,
+    /// behaves identically on simulator and device. Workhorse for
+    /// deterministic tests. `.cloudSynced` and `.protected` each have a
+    /// dedicated tolerant test below.
     private func makeCrypto() -> VaultCrypto {
-        VaultCrypto(service: service, preferProtected: false)
+        VaultCrypto(service: service, preferred: .deviceBound)
     }
 
     override func setUp() {
@@ -106,12 +110,34 @@ final class VaultTests: XCTestCase {
         XCTAssertNotEqual(firstAddr, secondAddr)
     }
 
+    /// Exercises the real `.cloudSynced` path — the v1 default. On simulator
+    /// `.userPresence` ACL creation sometimes fails (no passcode enrolled),
+    /// so accept either `.cloudSynced` or `.deviceBound`. Whichever was
+    /// chosen at create-time must round-trip on unlock.
+    func testCloudSyncedPathRoundTripsIfAvailable() async throws {
+        let crypto = VaultCrypto(service: service, preferred: .cloudSynced)
+        let mnemonic = try Mnemonic(phrase: "test test test test test test test test test test test junk")
+        let v = Vault(crypto: crypto)
+        try await v.create(mnemonic: mnemonic)
+        let chosenLevel = v.securityLevel
+        XCTAssertTrue(chosenLevel == .cloudSynced || chosenLevel == .deviceBound,
+                      "unexpected level \(String(describing: chosenLevel))")
+
+        let reopened = Vault(crypto: VaultCrypto(service: service, preferred: .cloudSynced))
+        XCTAssertEqual(reopened.securityLevel, chosenLevel)
+        try await reopened.unlock()
+        XCTAssertEqual(
+            try reopened.signingKey(at: .mainUser).ethereumAddress,
+            "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+        )
+    }
+
     /// The only test that exercises the real SE path. On simulator, SE key
     /// creation may fail for reasons that don't reproduce on device — so we
     /// accept *either* level as success. The important invariant is that
     /// whatever was chosen at create-time round-trips on unlock.
     func testProtectedPathRoundTripsIfAvailable() async throws {
-        let crypto = VaultCrypto(service: service, preferProtected: true)
+        let crypto = VaultCrypto(service: service, preferred: .protected)
         let mnemonic = try Mnemonic(phrase: "test test test test test test test test test test test junk")
         let v = Vault(crypto: crypto)
         try await v.create(mnemonic: mnemonic)
@@ -119,7 +145,7 @@ final class VaultTests: XCTestCase {
         XCTAssertTrue(chosenLevel == .protected || chosenLevel == .deviceBound,
                       "unexpected level \(String(describing: chosenLevel))")
 
-        let reopened = Vault(crypto: VaultCrypto(service: service, preferProtected: true))
+        let reopened = Vault(crypto: VaultCrypto(service: service, preferred: .protected))
         XCTAssertEqual(reopened.securityLevel, chosenLevel)
         try await reopened.unlock()
         XCTAssertEqual(
@@ -132,13 +158,13 @@ final class VaultTests: XCTestCase {
     /// second create() would try to wrap a new DEK with the leftover key
     /// and roundtrip to it, producing silent divergence.
     func testWipeRemovesSEKeyAfterProtectedVault() async throws {
-        let crypto = VaultCrypto(service: service, preferProtected: true)
+        let crypto = VaultCrypto(service: service, preferred: .protected)
         let v = Vault(crypto: crypto)
         try await v.create(mnemonic: Mnemonic())
         let firstLevel = v.securityLevel
         try await v.wipe()
 
-        let reopened = Vault(crypto: VaultCrypto(service: service, preferProtected: true))
+        let reopened = Vault(crypto: VaultCrypto(service: service, preferred: .protected))
         XCTAssertEqual(reopened.state, .empty)
         try await reopened.create(mnemonic: Mnemonic())
         XCTAssertEqual(reopened.securityLevel, firstLevel)
