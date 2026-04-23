@@ -10,6 +10,7 @@
 		170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */ = {isa = PBXBuildFile; productRef = 170726AB2F96CD3900CCFF45 /* SwarmKit */; };
 		17E52F300000000000000003 /* web3.swift in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F200000000000000002 /* web3.swift */; };
 		17E52F50000000000000000E /* ENSNormalize in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F60000000000000000F /* ENSNormalize */; };
+		17E52F80000000000000000A /* secp256k1 in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F90000000000000000B /* secp256k1 */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -61,6 +62,7 @@
 				170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */,
 				17E52F300000000000000003 /* web3.swift in Frameworks */,
 				17E52F50000000000000000E /* ENSNormalize in Frameworks */,
+				17E52F80000000000000000A /* secp256k1 in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -115,6 +117,7 @@
 				170726AB2F96CD3900CCFF45 /* SwarmKit */,
 				17E52F200000000000000002 /* web3.swift */,
 				17E52F60000000000000000F /* ENSNormalize */,
+				17E52F90000000000000000B /* secp256k1 */,
 			);
 			productName = Freedom;
 			productReference = 1707269C2F96CCE500CCFF45 /* Freedom.app */;
@@ -552,6 +555,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 17E52F70000000000000000D /* XCRemoteSwiftPackageReference "ENSNormalize" */;
 			productName = ENSNormalize;
+		};
+		17E52F90000000000000000B /* secp256k1 */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 17E52F400000000000000004 /* XCRemoteSwiftPackageReference "secp256k1" */;
+			productName = secp256k1;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

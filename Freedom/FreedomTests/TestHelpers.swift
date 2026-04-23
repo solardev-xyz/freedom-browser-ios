@@ -31,3 +31,13 @@ func abiEncodeBytes(_ payload: Data) -> Data {
     let full = try! encoder.encoded()
     return Data(full.dropFirst(4))  // strip 4-byte method id
 }
+
+extension Data {
+    /// Lowercase hex, no `0x` prefix. Test vectors in the BIP-39/BIP-32/
+    /// Ethereum specs are presented without the prefix, so comparing against
+    /// `.web3.hexString` (which prepends `0x`) would force a drop at every
+    /// assertion site — this avoids that noise.
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
+    }
+}
