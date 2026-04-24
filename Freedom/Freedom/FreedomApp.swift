@@ -34,13 +34,6 @@ struct FreedomApp: App {
             self._faviconStore = State(wrappedValue: favicons)
             self._settings = State(wrappedValue: settings)
             self._ensResolver = State(wrappedValue: resolver)
-            self._tabStore = State(wrappedValue: TabStore(
-                context: container.mainContext,
-                historyStore: history,
-                faviconStore: favicons,
-                ensResolver: resolver,
-                settings: settings
-            ))
             let vault = Vault()
             let registry = ChainRegistry(mainnetPool: pool)
             self._vault = State(wrappedValue: vault)
@@ -48,6 +41,14 @@ struct FreedomApp: App {
             self._transactionService = State(wrappedValue: TransactionService(
                 vault: vault,
                 registry: registry
+            ))
+            self._tabStore = State(wrappedValue: TabStore(
+                context: container.mainContext,
+                historyStore: history,
+                faviconStore: favicons,
+                ensResolver: resolver,
+                settings: settings,
+                chainRegistry: registry
             ))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")

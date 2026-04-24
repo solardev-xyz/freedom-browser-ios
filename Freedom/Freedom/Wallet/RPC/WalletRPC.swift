@@ -78,12 +78,10 @@ struct WalletRPC {
         try await fanOut(method: method, params: params, on: chain, allowNull: true)
     }
 
-    /// Shared provider-fan-out: encodes the request once, iterates URLs,
-    /// buckets transport / decoding errors, throws on RPC-level errors
-    /// without retrying. `allowNull` controls whether an envelope with
-    /// `"result": null` is treated as a successful nil response (used by
-    /// methods like `eth_getTransactionByHash`) or as malformed and
-    /// retry-the-next-URL (every other caller).
+    /// Typed fan-out: encodes an `Encodable` request once, decodes the
+    /// envelope via `JSONDecoder`. `allowNull` controls whether an envelope
+    /// with `"result": null` is treated as a successful nil response (used
+    /// by `eth_getTransactionByHash`) or as malformed and retry-next-URL.
     private func fanOut<P: Encodable, R: Decodable>(
         method: String,
         params: P,
@@ -91,37 +89,58 @@ struct WalletRPC {
         allowNull: Bool
     ) async throws -> R? {
         let body = try RPCSession.encoder.encode(Request(method: method, params: params))
+        return try await fanOutBody(body, on: chain) { data -> ParseResult<R?> in
+            do {
+                let envelope = try RPCSession.decoder.decode(RPCSession.Response<R>.self, from: data)
+                if let err = envelope.error {
+                    return .rpcError(code: err.code, message: err.message)
+                }
+                if let result = envelope.result {
+                    return .success(result)
+                }
+                return allowNull ? .success(nil) : .malformed(Error.invalidResponse)
+            } catch {
+                return .malformed(error)
+            }
+        }
+    }
+
+    private enum ParseResult<T> {
+        case success(T)
+        case rpcError(code: Int, message: String)
+        case malformed(Swift.Error)
+    }
+
+    /// Provider fan-out at the raw-bytes level: iterates the chain's URLs,
+    /// buckets transport + malformed errors, throws on RPC-level errors
+    /// without retrying (those are deterministic). Typed and untyped
+    /// callers supply their own envelope parser.
+    private func fanOutBody<T>(
+        _ body: Data,
+        on chain: Chain,
+        parse: (Data) -> ParseResult<T>
+    ) async throws -> T {
         let urls = registry.rpcURLs(for: chain)
         guard !urls.isEmpty else { throw Error.noProviders }
-
-        var transportErrors: [Swift.Error] = []
+        var errors: [Swift.Error] = []
         for url in urls {
             let data: Data
             do {
                 data = try await transport(url, body)
             } catch {
-                transportErrors.append(error)
+                errors.append(error)
                 continue
             }
-            let envelope: RPCSession.Response<R>
-            do {
-                envelope = try RPCSession.decoder.decode(RPCSession.Response<R>.self, from: data)
-            } catch {
-                transportErrors.append(error)
-                continue
+            switch parse(data) {
+            case .success(let value):
+                return value
+            case .rpcError(let code, let message):
+                throw Error.rpc(code: code, message: message)
+            case .malformed(let err):
+                errors.append(err)
             }
-            if let err = envelope.error {
-                throw Error.rpc(code: err.code, message: err.message)
-            }
-            if let result = envelope.result {
-                return result
-            }
-            if allowNull {
-                return nil
-            }
-            transportErrors.append(Error.invalidResponse)
         }
-        throw Error.allProvidersFailed(transportErrors)
+        throw Error.allProvidersFailed(errors)
     }
 
     // MARK: - Typed methods
@@ -161,6 +180,33 @@ struct WalletRPC {
 
     func sendRawTransaction(rawHex: String, on chain: Chain) async throws -> String {
         try await call("eth_sendRawTransaction", params: [rawHex], on: chain)
+    }
+
+    /// Untyped JSON pass-through for the EIP-1193 bridge. Dapp-supplied
+    /// params (e.g. `eth_call`) have open-ended shapes we can't statically
+    /// type, so params + return are `Any` / `[Any]` and we encode via
+    /// `JSONSerialization` instead of `Encodable`.
+    func callJSON(method: String, params: [Any], on chain: Chain) async throws -> Any {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        ])
+        return try await fanOutBody(body, on: chain) { data -> ParseResult<Any> in
+            guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return .malformed(Error.invalidResponse)
+            }
+            if let errObj = envelope["error"] as? [String: Any] {
+                let code = errObj["code"] as? Int ?? 0
+                let message = errObj["message"] as? String ?? "unknown error"
+                return .rpcError(code: code, message: message)
+            }
+            if let result = envelope["result"] {
+                return .success(result)
+            }
+            return .malformed(Error.invalidResponse)
+        }
     }
 
     struct TransactionInfo: Decodable {

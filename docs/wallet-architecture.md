@@ -102,9 +102,11 @@ Wallet/
 │   ├── SendFlowView.swift           ✅ form with debounced quote
 │   └── SendReviewView.swift         ✅ review + inline progress / confirmation
 ├── Bridge/                          (M5.4)
-│   ├── EthereumBridge.swift         WKUserContentController + WKScriptMessageHandler
-│   ├── EthereumBridge.js            window.ethereum shim (EIP-1193 + legacy compat)
-│   ├── EIP6963.js                   announce-provider on load
+│   ├── EthereumBridge.swift         WKUserContentController + WKScriptMessageHandler;
+│   │                                   regenerates the __FREEDOM_PROVIDER_CONFIG__
+│   │                                   preamble per navigation (§6.3).
+│   ├── EthereumBridge.js            single preload — EIP-6963 announce plus
+│   │                                   window.ethereum (EIP-1193 + legacy compat).
 │   ├── RPCRouter.swift              method → handler dispatch
 │   └── OriginIdentity.swift         displayURL → permission key
 ├── Permissions/                     (M5.4/M5.5)
@@ -177,18 +179,20 @@ The chosen tier is written alongside the blob as a plain-text marker (see §5.3)
 
 ### 6.1 Origin identity (the permission key)
 
-**Permissions bind to the address-bar identity, not to `WKWebView.url`.** This is a subtle but critical point that desktop already got right (`src/shared/origin-utils.js`):
+**Permissions bind to the address-bar identity, not to `WKWebView.url`.** This is a subtle but critical point that desktop already got right (`src/shared/origin-utils.js`). The key shapes match desktop *exactly* — ENS keys are bare lowercased names (no scheme), dweb/web keys carry their scheme:
 
-- User navigates to `foo.eth`. ENS resolves to `bzz://abc123.../`. **Identity is `ens://foo.eth`.**
-- ENS owner rotates the content-hash to `bzz://def456.../`. **Identity is still `ens://foo.eth`.** Permissions survive rotation because the user granted them to *the name*, not to a particular hash.
-- User navigates directly to `https://app.uniswap.org/pool/123`. **Identity is `https://app.uniswap.org`** — path stripped.
-- User navigates to `bzz://abc123.../path/`. **Identity is `bzz://abc123`** — path stripped, raw-hash surface.
+- User navigates to `foo.eth`. ENS resolves to `bzz://abc123.../`. **Identity is `foo.eth`** (bare, lowercased — no `ens://` prefix).
+- ENS owner rotates the content-hash to `bzz://def456.../`. **Identity is still `foo.eth`.** Permissions survive rotation because the user granted them to *the name*, not to a particular hash.
+- User navigates directly to `https://app.uniswap.org/pool/123`. **Identity is `https://app.uniswap.org`** — `URL.origin`, path stripped.
+- User navigates to `bzz://abc123.../path/`. **Identity is `bzz://abc123`** — scheme + root ref, path stripped, case preserved (multi-base encoded hashes are case-sensitive).
 
-`OriginIdentity.swift` derives this from `BrowserTab.displayURL` (which already prefers `ensURL` when present, exactly for this reason — see `BrowserTab.swift:53`). The native side reads it fresh at every message-receive; the JS side never gets to supply it.
+Display vs. storage: approval sheets and the "Connected sites" list are free to render ENS identities with an `ens://` scheme marker for visual consistency with `bzz://` / `https://`, but the **storage key is the bare name**. Rendering is a UI concern; the key shape is a contract with desktop.
 
-Why this matters: if we keyed permissions on `webView.url`, a user who granted Uniswap access at `ens://app.uniswap.eth` would see their grant silently break whenever the resolved `bzz://<hash>` rotated, forcing a reconnect every deploy. That's wrong-by-construction.
+`OriginIdentity.swift` derives this from `BrowserTab.displayURL` (which already prefers `ensURL` when present, exactly for this reason — see `BrowserTab.swift:54`). The native side reads it fresh at every message-receive; the JS side never gets to supply it.
 
-**iOS and desktop should produce byte-identical origin strings for the same displayed URL.** Keep the Swift and JS normalizations aligned; add round-trip tests against known desktop fixtures.
+Why this matters: if we keyed permissions on `webView.url`, a user who granted Uniswap access to `app.uniswap.eth` would see their grant silently break whenever the resolved `bzz://<hash>` rotated, forcing a reconnect every deploy. That's wrong-by-construction.
+
+**iOS and desktop produce byte-identical origin keys for the same displayed URL.** `OriginIdentityTests.swift` mirrors the fixtures above and any further cases desktop's `origin-utils.js` handles — a drift on either side should fail that suite.
 
 ### 6.2 Shape
 
@@ -228,14 +232,32 @@ WKWebView talks to native via `WKScriptMessageHandler` (one direction) and evalu
 
 ### 6.3 The injected JS (`EthereumBridge.js`)
 
-Hand-written, ~250 lines. The surface **matches desktop's `webview-preload-ethereum-inject.js`** — that surface was shaped by real-world dapp testing, and iOS diverging from it means some dapps that work on desktop would silently break here. Specifically we ship:
+Hand-written, ~250 lines. The surface **matches desktop's `webview-preload-ethereum-inject.js`** — that surface was shaped by real-world dapp testing, and iOS diverging from it means some dapps that work on desktop would silently break here.
 
-- **EIP-1193 standard**: `request({method, params})`, `on`/`removeListener`/`removeAllListeners`, events `connect` / `disconnect` / `accountsChanged` / `chainChanged` / `message`.
-- **Legacy compat (still widely checked)**: `enable()` (calls `eth_requestAccounts`), `send(methodOrPayload, paramsOrCallback)` handling both forms, `sendAsync(payload, callback)`, `selectedAddress`, `networkVersion`.
-- **Wallet-identity flags**: `isMetaMask: true` (pragmatic — many dapps gate features on this; we spoof to match MM's feature envelope, same as desktop), `isFreedomBrowser: true`, `isFreedom: true`.
-- **Discovery signals**: EIP-6963 `announceProvider` on `eip6963:requestProvider`, and the legacy `ethereum#initialized` `Event` dispatched on window once the provider is wired up.
+#### 6.3.1 EIP-6963 is the primary discovery path
 
-The deliberate refusals (below in §6.4) are *semantic*, not surface — the provider object exists and accepts calls to `eth_sign`/`eth_signTransaction`, it just rejects them with an error payload. Dapps that feature-detect by trying-and-catching get a clean signal.
+Modern wallet-connection stacks (Wagmi, Web3Modal / Reown, RainbowKit, ConnectKit) discover providers by listening for `eip6963:announceProvider` events — *not* by grabbing whoever sat on `window.ethereum` first. EIP-6963 is the standard, and it's the mechanism that lets Freedom show up in a wallet picker **as Freedom**, with our own name and icon, rather than masquerading as something else. Desktop already does this (`src/main/webview-preload-ethereum-inject.js:164-189` + `src/main/ipc-handlers.js:240-251`) and it works well.
+
+Shape on iOS:
+
+- Native prepends a `window.__FREEDOM_PROVIDER_CONFIG__ = {uuid, name, icon, rdns}` preamble to `EthereumBridge.js` at every load. Fresh UUID per page session (stable across re-announces within that session), `name = "Freedom Browser"`, `icon = data:image/png;base64,…` (small inlined PNG loaded once at app start), `rdns = "baby.freedom.browser"` (matches desktop's `brand.appId`; keeping the same rdns means a user who connected on desktop is recognizably the same wallet on iOS).
+- The preload freezes both `info` and the wrapping `detail` object, then dispatches `CustomEvent('eip6963:announceProvider', { detail: { info, provider: window.ethereum } })` immediately, and again on every `eip6963:requestProvider`.
+- Injection of the preamble escapes `<` as `<` so a future config-value containing `</script>` can't break out of the injected `<script>` tag.
+- If the preamble is missing (bridge-setup race / bug), log and skip the 6963 announce — `window.ethereum` is still installed and `ethereum#initialized` still fires, so dapps degrade to the legacy path rather than losing provider access entirely.
+
+#### 6.3.2 `window.ethereum` is the legacy compat path
+
+Pre-EIP-6963 dapps grab `window.ethereum` directly and sniff `isMetaMask: true` as a feature gate. We install the provider object and set the flag so those dapps keep working — it's **explicitly a compat shim**, not our wallet identity. The name and icon a user sees in a modern picker come from the EIP-6963 announce above; everything on `window.ethereum` is about keeping older code paths functional.
+
+Specifically we ship (shape matches desktop):
+
+- **EIP-1193 core**: `request({method, params})`, `on`/`removeListener`/`addListener`/`removeAllListeners`, `isConnected()`, and the event types `connect` / `disconnect` / `accountsChanged` / `chainChanged` / `message`. The event plumbing is wired but individual events only fire as their underlying state machines come online — `chainChanged` with M5.7's per-origin chain state, `accountsChanged`/`connect`/`disconnect` with M5.5's connect sheet.
+- **Legacy method shims (still widely checked)**: `enable()` (calls `eth_requestAccounts`), `send(methodOrPayload, paramsOrCallback)` handling both forms, `sendAsync(payload, callback)`.
+- **Legacy properties**: `selectedAddress`, `networkVersion` (decimal chainID), `chainId` (hex).
+- **Identity flags**: `isMetaMask: true`, `isFreedomBrowser: true`.
+- **Legacy init signal**: `window.dispatchEvent(new Event('ethereum#initialized'))` after wiring.
+
+The deliberate refusals (below in §6.4) are *semantic*, not surface — the provider exists and accepts calls to `eth_sign`/`eth_signTransaction`, it just rejects them with an error payload. Dapps that feature-detect by trying-and-catching get a clean signal.
 
 Injected via `WKUserScript(source:, injectionTime: .atDocumentStart, forMainFrameOnly: false)` on a `WKUserContentController` shared across tabs (messages carry the tab identifier; the handler looks up the tab's `OriginIdentity` at dispatch time).
 

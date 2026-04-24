@@ -70,17 +70,42 @@ final class BrowserTab {
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private let navDelegate = NavDelegate()
     @ObservationIgnored private var activeResolveTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate var walletBridge: EthereumBridge?
 
-    init(recordID: UUID = UUID(), ensResolver: ENSResolver, settings: SettingsStore) {
+    init(
+        recordID: UUID = UUID(),
+        ensResolver: ENSResolver,
+        settings: SettingsStore,
+        chainRegistry: ChainRegistry
+    ) {
         self.recordID = recordID
         self.ensResolver = ensResolver
         self.settings = settings
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BzzSchemeHandler(), forURLScheme: "bzz")
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+        let contentController = WKUserContentController()
+        config.userContentController = contentController
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = navDelegate
         navDelegate.owner = self
+
+        // Active chain read live so a wallet-UI chain switch is picked up
+        // by dapp reads without rebuilding the router.
+        let router = RPCRouter(
+            registry: chainRegistry,
+            activeChain: {
+                let raw = UserDefaults.standard.integer(forKey: WalletDefaults.activeChainID)
+                let id = raw == 0 ? Chain.defaultChain.id : raw
+                return Chain.find(id: id) ?? .defaultChain
+            }
+        )
+        self.walletBridge = EthereumBridge(
+            tab: self,
+            router: router,
+            contentController: contentController
+        )
+
         observeWebView()
         installPullToRefresh()
     }
@@ -279,6 +304,13 @@ final class BrowserTab {
 
 private final class NavDelegate: NSObject, WKNavigationDelegate {
     weak var owner: BrowserTab?
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        // Fresh EIP-6963 UUID per page session — reinstall the preload.
+        MainActor.assumeIsolated {
+            owner?.walletBridge?.reinstallForNewNavigation()
+        }
+    }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let url = webView.url else { return }

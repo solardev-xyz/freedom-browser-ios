@@ -16,6 +16,7 @@ final class TabStore {
     @ObservationIgnored private let faviconStore: FaviconStore
     @ObservationIgnored private let ensResolver: ENSResolver
     @ObservationIgnored private let settings: SettingsStore
+    @ObservationIgnored private let chainRegistry: ChainRegistry
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
     init(
@@ -23,13 +24,15 @@ final class TabStore {
         historyStore: HistoryStore,
         faviconStore: FaviconStore,
         ensResolver: ENSResolver,
-        settings: SettingsStore
+        settings: SettingsStore,
+        chainRegistry: ChainRegistry
     ) {
         self.context = context
         self.historyStore = historyStore
         self.faviconStore = faviconStore
         self.ensResolver = ensResolver
         self.settings = settings
+        self.chainRegistry = chainRegistry
         reloadRecords()
     }
 
@@ -117,7 +120,12 @@ final class TabStore {
     @discardableResult
     private func ensureLiveTab(for id: UUID) -> BrowserTab {
         if let existing = liveTabs[id] { return existing }
-        let tab = BrowserTab(recordID: id, ensResolver: ensResolver, settings: settings)
+        let tab = BrowserTab(
+            recordID: id,
+            ensResolver: ensResolver,
+            settings: settings,
+            chainRegistry: chainRegistry
+        )
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }
             // Key history AND favicons on the ens:// form when we navigated
