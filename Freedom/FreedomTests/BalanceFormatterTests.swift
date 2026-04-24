@@ -75,4 +75,55 @@ final class BalanceFormatterTests: XCTestCase {
             "—"
         )
     }
+
+    // MARK: - parseAmount (inverse — "0.1" → wei)
+
+    func testParseWhole() {
+        XCTAssertEqual(BalanceFormatter.parseAmount("1"), BigUInt(10).power(18))
+    }
+
+    func testParseFraction() {
+        // 0.5 → 5 × 10^17
+        XCTAssertEqual(BalanceFormatter.parseAmount("0.5"), BigUInt(5) * BigUInt(10).power(17))
+    }
+
+    func testParseLeadingZeros() {
+        XCTAssertEqual(BalanceFormatter.parseAmount("0.0001"), BigUInt(10).power(14))
+    }
+
+    func testParseNoWholePart() {
+        // ".5" should still be 5 × 10^17 — users do type this.
+        XCTAssertEqual(BalanceFormatter.parseAmount(".5"), BigUInt(5) * BigUInt(10).power(17))
+    }
+
+    func testParseFullPrecision() {
+        // Exactly 18 fractional digits — the limit for wei precision.
+        XCTAssertEqual(BalanceFormatter.parseAmount("0.123456789012345678"), BigUInt("123456789012345678", radix: 10))
+    }
+
+    func testParseTooManyFractionalDigitsRejected() {
+        // 19 fractional digits → rejected. Silently truncating would
+        // round-trip the user's intent back at them incorrectly.
+        XCTAssertNil(BalanceFormatter.parseAmount("0.1234567890123456789"))
+    }
+
+    func testParseEmptyRejected() {
+        XCTAssertNil(BalanceFormatter.parseAmount(""))
+        XCTAssertNil(BalanceFormatter.parseAmount("   "))
+    }
+
+    func testParseGarbageRejected() {
+        XCTAssertNil(BalanceFormatter.parseAmount("one"))
+        XCTAssertNil(BalanceFormatter.parseAmount("0.5.5"))
+        XCTAssertNil(BalanceFormatter.parseAmount("-1"))
+    }
+
+    func testParseFormatRoundTrip() throws {
+        // Anything we format back correctly should also parse back.
+        for amount in ["0.5", "1", "0.123456", "100"] {
+            let wei = try XCTUnwrap(BalanceFormatter.parseAmount(amount))
+            let roundTrip = BalanceFormatter.format(wei: wei, symbol: "X")
+            XCTAssertEqual(roundTrip, "\(amount) X")
+        }
+    }
 }

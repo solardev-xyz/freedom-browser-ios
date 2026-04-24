@@ -13,8 +13,24 @@ enum BalanceFormatter {
     }
 
     static func parse(weiHex: String) -> BigUInt? {
-        let stripped = weiHex.hasPrefix("0x") ? String(weiHex.dropFirst(2)) : weiHex
-        return BigUInt(stripped, radix: 16)
+        Hex.bigUInt(weiHex)
+    }
+
+    /// Inverse of `format` — user-typed "0.1" → 10¹⁷ wei. Returns `nil` for
+    /// malformed input or values with more fractional digits than the token
+    /// has decimals (18). The intentional round-trip guarantees we never
+    /// silently truncate what the user typed.
+    static func parseAmount(_ input: String) -> BigUInt? {
+        let trimmed = input.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        let parts = trimmed.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count <= 2 else { return nil }
+        let whole = String(parts[0])
+        let fraction = parts.count == 2 ? String(parts[1]) : ""
+        guard whole.allSatisfy(\.isNumber), fraction.allSatisfy(\.isNumber) else { return nil }
+        guard fraction.count <= decimals else { return nil }
+        let padded = fraction + String(repeating: "0", count: decimals - fraction.count)
+        return BigUInt((whole.isEmpty ? "0" : whole) + padded)
     }
 
     static func format(wei: BigUInt, symbol: String, maxFractionDigits: Int = 6) -> String {

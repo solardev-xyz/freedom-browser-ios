@@ -41,6 +41,41 @@ struct WalletRPC {
         params: P,
         on chain: Chain
     ) async throws -> R {
+        // fanOut(allowNull: false) never returns nil — a nil result buckets
+        // into transportErrors and eventually throws `allProvidersFailed`.
+        try await fanOut(method: method, params: params, on: chain, allowNull: false)!
+    }
+
+    /// Convenience for no-params calls like `eth_blockNumber`. Separate
+    /// overload avoids the `params: [String]()` incantation at call sites.
+    func call<R: Decodable>(_ method: String, on chain: Chain) async throws -> R {
+        try await call(method, params: [String](), on: chain)
+    }
+
+    /// Like `call`, but treats a `null` RPC result as a valid response —
+    /// returning `nil` — rather than as a malformed response. Use for
+    /// methods like `eth_getTransactionByHash` where "null" means "not
+    /// found / still pending" and is the well-defined absence case.
+    func callOptional<P: Encodable, R: Decodable>(
+        _ method: String,
+        params: P,
+        on chain: Chain
+    ) async throws -> R? {
+        try await fanOut(method: method, params: params, on: chain, allowNull: true)
+    }
+
+    /// Shared provider-fan-out: encodes the request once, iterates URLs,
+    /// buckets transport / decoding errors, throws on RPC-level errors
+    /// without retrying. `allowNull` controls whether an envelope with
+    /// `"result": null` is treated as a successful nil response (used by
+    /// methods like `eth_getTransactionByHash`) or as malformed and
+    /// retry-the-next-URL (every other caller).
+    private func fanOut<P: Encodable, R: Decodable>(
+        method: String,
+        params: P,
+        on chain: Chain,
+        allowNull: Bool
+    ) async throws -> R? {
         let body = try RPCSession.encoder.encode(Request(method: method, params: params))
         let urls = registry.rpcURLs(for: chain)
         guard !urls.isEmpty else { throw Error.noProviders }
@@ -64,19 +99,15 @@ struct WalletRPC {
             if let err = envelope.error {
                 throw Error.rpc(code: err.code, message: err.message)
             }
-            guard let result = envelope.result else {
-                transportErrors.append(Error.invalidResponse)
-                continue
+            if let result = envelope.result {
+                return result
             }
-            return result
+            if allowNull {
+                return nil
+            }
+            transportErrors.append(Error.invalidResponse)
         }
         throw Error.allProvidersFailed(transportErrors)
-    }
-
-    /// Convenience for no-params calls like `eth_blockNumber`. Separate
-    /// overload avoids the `params: [String]()` incantation at call sites.
-    func call<R: Decodable>(_ method: String, on chain: Chain) async throws -> R {
-        try await call(method, params: [String](), on: chain)
     }
 
     // MARK: - Typed methods
@@ -91,6 +122,43 @@ struct WalletRPC {
 
     func chainID(on chain: Chain) async throws -> String {
         try await call("eth_chainId", on: chain)
+    }
+
+    func gasPrice(on chain: Chain) async throws -> String {
+        try await call("eth_gasPrice", on: chain)
+    }
+
+    /// `"pending"` tag — counts in-mempool txs so we don't collide with our
+    /// own outstanding sends.
+    func transactionCount(of address: String, on chain: Chain) async throws -> String {
+        try await call("eth_getTransactionCount", params: [address, "pending"], on: chain)
+    }
+
+    func estimateGas(
+        from: String,
+        to: String,
+        valueHex: String,
+        dataHex: String,
+        on chain: Chain
+    ) async throws -> String {
+        let tx: [String: String] = ["from": from, "to": to, "value": valueHex, "data": dataHex]
+        return try await call("eth_estimateGas", params: [tx], on: chain)
+    }
+
+    func sendRawTransaction(rawHex: String, on chain: Chain) async throws -> String {
+        try await call("eth_sendRawTransaction", params: [rawHex], on: chain)
+    }
+
+    struct TransactionInfo: Decodable {
+        /// Hex block number, or nil while the tx is still in the mempool.
+        let blockNumber: String?
+    }
+
+    /// `eth_getTransactionByHash` returns `null` for unknown-or-pending txs.
+    /// `callOptional` treats that nil as success-with-nil rather than as a
+    /// malformed envelope.
+    func getTransaction(hash: String, on chain: Chain) async throws -> TransactionInfo? {
+        try await callOptional("eth_getTransactionByHash", params: [hash], on: chain)
     }
 
     private struct Request<P: Encodable>: Encodable {

@@ -5,6 +5,10 @@ struct Chain: Equatable, Hashable, Identifiable {
     let displayName: String
     let explorerBase: URL
     let nativeSymbol: String
+    /// Target block time — `TransactionService.awaitConfirmation` uses this
+    /// as its default polling interval, so we don't fire faster than blocks
+    /// actually produce.
+    let pollInterval: Duration
 
     /// EIP-155 chain ID, `0x`-prefixed hex (EIP-1193 wire format).
     var hexChainID: String { "0x" + String(id, radix: 16) }
@@ -13,14 +17,16 @@ struct Chain: Equatable, Hashable, Identifiable {
         id: 1,
         displayName: "Ethereum",
         explorerBase: URL(string: "https://etherscan.io")!,
-        nativeSymbol: "ETH"
+        nativeSymbol: "ETH",
+        pollInterval: .seconds(8)
     )
 
     static let gnosis = Chain(
         id: 100,
         displayName: "Gnosis Chain",
         explorerBase: URL(string: "https://gnosisscan.io")!,
-        nativeSymbol: "xDAI"
+        nativeSymbol: "xDAI",
+        pollInterval: .seconds(3)
     )
 
     static let all: [Chain] = [.gnosis, .mainnet]
