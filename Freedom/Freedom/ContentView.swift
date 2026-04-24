@@ -30,6 +30,7 @@ struct ContentView: View {
     @State private var isShowingHistory = false
     @State private var isShowingBookmarks = false
     @State private var isShowingSettings = false
+    @State private var isShowingWallet = false
     @FocusState private var addressFocused: Bool
 
     private var activeURL: URL? { tabStore.activeTab?.displayURL }
@@ -70,6 +71,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingSettings) {
             SettingsView()
+        }
+        .sheet(isPresented: $isShowingWallet) {
+            WalletSheet(isPresented: $isShowingWallet)
         }
         .onChange(of: tabStore.activeTab?.displayURL) { _, new in
             guard !addressFocused else { return }
@@ -212,6 +216,8 @@ struct ContentView: View {
             Button { isShowingTabSwitcher = true } label: {
                 tabsButtonLabel.frame(width: 44, height: 44)
             }
+            Spacer()
+            toolbarButton("creditcard.fill", enabled: true) { isShowingWallet = true }
             Spacer()
             menuButton
         }

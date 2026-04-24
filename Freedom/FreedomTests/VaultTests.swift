@@ -10,10 +10,10 @@ final class VaultTests: XCTestCase {
 
     /// The device-bound path has no biometric gate and behaves identically
     /// across simulator and device — our workhorse for deterministic tests.
-    /// Forces the deviceBound tier — no biometric gate, no iCloud dependency,
-    /// behaves identically on simulator and device. Workhorse for
-    /// deterministic tests. `.cloudSynced` and `.protected` each have a
-    /// dedicated tolerant test below.
+    /// Forces the deviceBound tier — no biometric, no iCloud dependency,
+    /// behaves identically across simulator and device. Workhorse for the
+    /// majority of tests. The `.cloudSynced` and `.protected` paths each
+    /// have a dedicated test using their own prompter / fallback.
     private func makeCrypto() -> VaultCrypto {
         VaultCrypto(service: service, preferred: .deviceBound)
     }
@@ -110,26 +110,39 @@ final class VaultTests: XCTestCase {
         XCTAssertNotEqual(firstAddr, secondAddr)
     }
 
-    /// Exercises the real `.cloudSynced` path — the v1 default. On simulator
-    /// `.userPresence` ACL creation sometimes fails (no passcode enrolled),
-    /// so accept either `.cloudSynced` or `.deviceBound`. Whichever was
-    /// chosen at create-time must round-trip on unlock.
-    func testCloudSyncedPathRoundTripsIfAvailable() async throws {
-        let crypto = VaultCrypto(service: service, preferred: .cloudSynced)
+    /// Exercises the `.cloudSynced` tier using an always-allow prompter —
+    /// the real LAContext would hang waiting for user interaction. This
+    /// test covers create + persist + unlock (with simulated biometric
+    /// success) for the default production tier.
+    func testCloudSyncedPathRoundTrips() async throws {
+        let prompter = AlwaysAllowPrompter()
+        let crypto = VaultCrypto(service: service, preferred: .cloudSynced, prompter: prompter)
         let mnemonic = try Mnemonic(phrase: "test test test test test test test test test test test junk")
         let v = Vault(crypto: crypto)
         try await v.create(mnemonic: mnemonic)
-        let chosenLevel = v.securityLevel
-        XCTAssertTrue(chosenLevel == .cloudSynced || chosenLevel == .deviceBound,
-                      "unexpected level \(String(describing: chosenLevel))")
+        XCTAssertEqual(v.securityLevel, .cloudSynced)
 
-        let reopened = Vault(crypto: VaultCrypto(service: service, preferred: .cloudSynced))
-        XCTAssertEqual(reopened.securityLevel, chosenLevel)
+        let reopened = Vault(crypto: VaultCrypto(
+            service: service,
+            preferred: .cloudSynced,
+            prompter: prompter
+        ))
+        XCTAssertEqual(reopened.securityLevel, .cloudSynced)
         try await reopened.unlock()
         XCTAssertEqual(
             try reopened.signingKey(at: .mainUser).ethereumAddress,
             "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
         )
+    }
+
+    /// When the prompter says auth isn't available (no passcode / biometric),
+    /// the create path must fall back to `.deviceBound` rather than silently
+    /// storing a plaintext DEK in iCloud Keychain.
+    func testCloudSyncedFallsBackWhenPrompterUnavailable() async throws {
+        let crypto = VaultCrypto(service: service, preferred: .cloudSynced, prompter: NeverPrompter())
+        let v = Vault(crypto: crypto)
+        try await v.create(mnemonic: Mnemonic())
+        XCTAssertEqual(v.securityLevel, .deviceBound)
     }
 
     /// The only test that exercises the real SE path. On simulator, SE key

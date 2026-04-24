@@ -32,6 +32,21 @@ func abiEncodeBytes(_ payload: Data) -> Data {
     return Data(full.dropFirst(4))  // strip 4-byte method id
 }
 
+/// Stubs for `VaultCrypto`'s biometric gate. Real `LAContext` would hang
+/// waiting for simulator-user interaction; these drive deterministic
+/// success / "can't gate" paths.
+struct AlwaysAllowPrompter: BiometricPrompter {
+    func canPrompt() -> Bool { true }
+    func prompt(reason: String) async throws {}
+}
+
+struct NeverPrompter: BiometricPrompter {
+    func canPrompt() -> Bool { false }
+    func prompt(reason: String) async throws {
+        throw CancellationError()
+    }
+}
+
 extension Data {
     /// Lowercase hex, no `0x` prefix. Test vectors in the BIP-39/BIP-32/
     /// Ethereum specs are presented without the prefix, so comparing against

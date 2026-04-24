@@ -7,11 +7,14 @@ import Security
 /// `.deviceBound` whenever the preferred tier can't be realised on the
 /// current device (no passcode enrolled, Secure Enclave unavailable, etc).
 ///
-///   - **cloudSynced** (v1 default): DEK stored in iCloud-synced Keychain
-///     with a `.userPresence` ACL. Biometric/passcode gated on every
-///     unlock; backed up via iCloud Keychain so device loss doesn't
-///     strand funds. Trade: slightly weaker than `.protected` (Apple-ID
-///     compromise becomes a path) for much better UX.
+///   - **cloudSynced** (v1 default): DEK and blob stored in iCloud-synced
+///     Keychain (no `SecAccessControl` — iCloud Keychain refuses items
+///     that carry one). The biometric/passcode gate is applied at the app
+///     layer via `LAContext.evaluatePolicy` on the unlock path, not at
+///     the Keychain layer. Backed up via iCloud Keychain so device loss
+///     doesn't strand funds. Trade: slightly weaker than `.protected`
+///     (Apple-ID compromise becomes a path; a jailbroken device could
+///     bypass the app-level gate) for dramatically better UX.
 ///
 ///   - **protected**: Secure Enclave P-256 key wraps a random 32-byte DEK
 ///     via ECIES; SE's `.userPresence` ACL gates every unwrap. Keys never
@@ -38,13 +41,19 @@ final class VaultCrypto {
     private let level: KeychainItem
     private let seKeyTag: Data
     private let preferred: VaultSecurityLevel
+    private let prompter: BiometricPrompter
 
-    init(service: String = "com.freedom.wallet", preferred: VaultSecurityLevel = .cloudSynced) {
+    init(
+        service: String = "com.freedom.wallet",
+        preferred: VaultSecurityLevel = .cloudSynced,
+        prompter: BiometricPrompter = LocalAuthenticationPrompter()
+    ) {
         self.blob = KeychainItem(account: "blob", service: service)
         self.dek = KeychainItem(account: "dek", service: service)
         self.level = KeychainItem(account: "level", service: service)
         self.seKeyTag = Data("\(service).se".utf8)
         self.preferred = preferred
+        self.prompter = prompter
     }
 
     var existingLevel: VaultSecurityLevel? {
@@ -64,18 +73,24 @@ final class VaultCrypto {
         return resolved
     }
 
-    func load() throws -> Mnemonic {
+    func load() async throws -> Mnemonic {
         guard let resolvedLevel = existingLevel else { throw Error.noVault }
+        // App-level biometric gate — see §5.2 on why this can't live on
+        // the Keychain item itself for the cloudSynced tier. Throws if
+        // the user cancels or the device's passcode has been removed
+        // since create-time.
+        if resolvedLevel == .cloudSynced {
+            try await prompter.prompt(reason: "Unlock your wallet")
+        }
         guard let storedDek = try dek.read(), let sealed = try blob.read() else {
             throw Error.corrupted
         }
         let dekBytes: Data
         switch resolvedLevel {
         case .protected:
+            // SE decrypt triggers the system prompt at the kernel level.
             dekBytes = try decrypt(wrappedDek: storedDek, with: try fetchSEPrivateKey())
         case .cloudSynced, .deviceBound:
-            // cloudSynced: read triggered the `.userPresence` prompt already.
-            // deviceBound: no gate.
             dekBytes = storedDek
         }
         return try openBlob(sealed, dek: dekBytes)
@@ -93,15 +108,17 @@ final class VaultCrypto {
     private func writeDek(_ dekBytes: Data, preferred: VaultSecurityLevel) throws -> VaultSecurityLevel {
         switch preferred {
         case .cloudSynced:
-            // `.userPresence` ACL creation can fail on devices without a
-            // passcode — that's exactly when we want to fall back.
-            do {
-                try dek.write(dekBytes, protection: .cloudSyncedGated)
+            // Can only land on this tier if the device has a usable
+            // biometric or passcode — that's what the prompter evaluates
+            // at unlock time. Without one, there's nothing to gate on,
+            // so we'd effectively be storing a plaintext DEK in iCloud.
+            // Fall back to .deviceBound in that case.
+            if prompter.canPrompt() {
+                try dek.write(dekBytes, protection: .cloudSynced)
                 return .cloudSynced
-            } catch {
-                try dek.write(dekBytes, protection: .deviceOnly)
-                return .deviceBound
             }
+            try dek.write(dekBytes, protection: .deviceOnly)
+            return .deviceBound
         case .protected:
             if let sePublic = try createOrFetchSEPublicKey() {
                 try dek.write(try encrypt(dek: dekBytes, with: sePublic), protection: .deviceOnly)

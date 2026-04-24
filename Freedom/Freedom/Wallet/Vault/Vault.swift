@@ -55,7 +55,7 @@ final class Vault {
     func unlock() async throws {
         guard state == .locked else { throw Error.noVault }
         let derivedSeed = try await Task.detached(priority: .userInitiated) { [crypto] in
-            try crypto.load().seed()
+            try await crypto.load().seed()
         }.value
         self.seed = derivedSeed
         self.state = .unlocked

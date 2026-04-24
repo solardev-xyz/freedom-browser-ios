@@ -9,5 +9,7 @@
 		<string>_p2p._udp</string>
 		<string>_p2p._tcp</string>
 	</array>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Freedom uses Face ID to unlock your wallet.</string>
 </dict>
 </plist>

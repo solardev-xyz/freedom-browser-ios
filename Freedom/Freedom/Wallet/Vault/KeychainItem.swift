@@ -11,22 +11,19 @@ struct KeychainItem {
     /// items — is handled by read/delete using `kSecAttrSynchronizableAny`,
     /// so this enum only needs to describe what to write.
     enum Protection {
-        /// Never leaves the device. No biometric gate.
-        /// Historical default; used by the `protected` and `deviceBound` tiers.
+        /// Never leaves the device. No biometric gate. Used by the
+        /// `protected` and `deviceBound` tiers.
         case deviceOnly
-        /// iCloud-Keychain synced, device-wide. No biometric gate — for
-        /// metadata the caller wants visible across the user's devices
-        /// without gating (e.g. the tier marker, the encrypted blob when
-        /// the gate is held by the DEK item).
+        /// iCloud-Keychain synced (`.whenUnlocked` + `synchronizable`). No
+        /// `SecAccessControl` — iCloud Keychain silently refuses to sync
+        /// items with access control flags, so user-presence gating has
+        /// to happen at the app layer via `LAContext.evaluatePolicy` on
+        /// the read side.
         case cloudSynced
-        /// iCloud-Keychain synced and gated by `.userPresence` (biometric
-        /// or passcode). Used for the DEK in the cloudSynced tier — reading
-        /// it triggers the system auth prompt on this device.
-        case cloudSyncedGated
     }
 
     let account: String
-    var service: String = "com.freedom.wallet"
+    let service: String
 
     func read() throws -> Data? {
         var query = baseQuery
@@ -89,21 +86,6 @@ struct KeychainItem {
             return [
                 kSecValueData as String: data,
                 kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
-                kSecAttrSynchronizable as String: true,
-            ]
-        case .cloudSyncedGated:
-            var accessError: Unmanaged<CFError>?
-            guard let access = SecAccessControlCreateWithFlags(
-                nil,
-                kSecAttrAccessibleWhenUnlocked,
-                [.userPresence],
-                &accessError
-            ) else {
-                throw Error.status(errSecParam)
-            }
-            return [
-                kSecValueData as String: data,
-                kSecAttrAccessControl as String: access,
                 kSecAttrSynchronizable as String: true,
             ]
         }

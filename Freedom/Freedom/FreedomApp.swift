@@ -12,6 +12,7 @@ struct FreedomApp: App {
     @State private var faviconStore: FaviconStore
     @State private var tabStore: TabStore
     @State private var ensResolver: ENSResolver
+    @State private var vault: Vault
     private let modelContainer: ModelContainer
 
     init() {
@@ -38,6 +39,7 @@ struct FreedomApp: App {
                 ensResolver: resolver,
                 settings: settings
             ))
+            self._vault = State(wrappedValue: Vault())
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
         }
@@ -58,6 +60,7 @@ struct FreedomApp: App {
                 .environment(bookmarkStore)
                 .environment(faviconStore)
                 .environment(ensResolver)
+                .environment(vault)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
         }

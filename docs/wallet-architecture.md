@@ -140,11 +140,11 @@ Nothing here imports anything outside `Wallet/` except `EthereumRPCPool` (for `e
 Three tiers. `VaultCrypto` is constructed with a **preferred tier** and silently falls back to `.deviceBound` whenever the preferred tier can't be created on the current device.
 
 1. **cloudSynced** (v1 default):
-   - Data encryption key (AES-256-GCM, 32 random bytes) stored in Keychain with `.userPresence` access control + `kSecAttrAccessibleWhenUnlocked` + `kSecAttrSynchronizable = true`.
-   - Vault blob (`{version, mnemonic}` JSON → AES-GCM with the DEK) stored in Keychain with the same sync settings but no ACL (the DEK holds the gate).
-   - Unlock = read DEK (system prompts for biometric/passcode due to `.userPresence`) → decrypt blob → seed in memory.
+   - Data encryption key (AES-256-GCM, 32 random bytes) and blob both stored in Keychain with `kSecAttrAccessibleWhenUnlocked` + `kSecAttrSynchronizable = true`. **No `SecAccessControl`** — iCloud Keychain silently refuses to sync items that carry one (access control is a device-local concept; sync is device-agnostic; the two are mutually exclusive by Apple's design).
+   - Biometric/passcode gate is therefore **applied at the app layer**: on unlock, `VaultCrypto` calls `LAContext.evaluatePolicy(.deviceOwnerAuthentication, …)` via a `BiometricPrompter` abstraction. If the user authenticates, we proceed to read the DEK; if they cancel, we throw.
+   - At create, `prompter.canPrompt()` gates which tier we land on — no usable biometric/passcode means falling back to `.deviceBound` so we never store a plaintext DEK into iCloud Keychain.
    - Recovery story: **iCloud Keychain carries the DEK and blob**. User replaces device, signs into iCloud on the new one, Face-IDs on the first unlock, vault is there.
-   - Trade vs `.protected`: slightly weaker (Apple-ID compromise becomes a path, mitigated by iCloud Keychain's trusted-device approval for new sign-ins) for dramatically better UX.
+   - Trades vs `.protected`: slightly weaker — a jailbroken device can bypass the app-level gate since iOS can no longer enforce it at the kernel, and Apple-ID compromise is a theoretical path (mitigated by iCloud Keychain's trusted-device approval for new sign-ins). For a browser wallet with typically-modest balances, we take this trade for dramatically better UX — matches what MetaMask-mobile and Rainbow do.
 2. **protected** (code path retained, not selected by default):
    - Secure Enclave ECC P-256 key with `.privateKeyUsage + .userPresence` ACL. Key literally cannot leave the chip.
    - Random 32-byte DEK, encrypted to the SE public key via ECIES (`.eciesEncryptionCofactorVariableIVX963SHA256AESGCM`). Wrapped DEK lives in Keychain `.whenUnlockedThisDeviceOnly, synchronizable=false`.
