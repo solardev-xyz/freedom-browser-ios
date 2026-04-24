@@ -89,8 +89,7 @@ final class TransactionService {
         quote: Quote,
         on chain: Chain
     ) async throws -> String {
-        let hdKey = try vault.signingKey(at: .mainUser)
-        let account = try EthereumAccount(keyStorage: HDKeyStorage(privateKey: hdKey.privateKey))
+        let account = try vault.signingAccount()
 
         let tx = EthereumTransaction(
             from: quote.from,

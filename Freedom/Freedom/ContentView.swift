@@ -91,7 +91,12 @@ struct ContentView: View {
             WalletSheet(isPresented: $isShowingWallet)
         }
         .sheet(item: approvalBinding) { approval in
-            ApproveConnectSheet(approval: approval)
+            switch approval.kind {
+            case .connect:
+                ApproveConnectSheet(approval: approval)
+            case .personalSign, .typedData:
+                ApproveSignSheet(approval: approval)
+            }
         }
         .onChange(of: tabStore.activeTab?.displayURL) { _, new in
             guard !addressFocused else { return }

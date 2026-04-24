@@ -1,4 +1,5 @@
 import Foundation
+import web3
 
 /// Parked user decision while an approval sheet is visible. Same instance
 /// reaches both the sheet (tap-to-decide) and the presenting Binding
@@ -23,10 +24,12 @@ final class ApprovalResolver {
 struct ApprovalRequest: Identifiable {
     enum Kind {
         case connect
+        case personalSign(PersonalSignCoder.Preview)
+        case typedData(TypedData)
     }
 
     enum Decision {
-        case approved(account: String)
+        case approved
         case denied
     }
 

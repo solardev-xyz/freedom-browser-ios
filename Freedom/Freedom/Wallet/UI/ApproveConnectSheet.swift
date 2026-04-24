@@ -1,14 +1,8 @@
 import SwiftUI
 
-/// `eth_requestAccounts` approval. The sheet is driven by
-/// `BrowserTab.pendingEthereumApproval`; the bridge parked a continuation
-/// and is waiting on the `approval.decide(…)` callback. Swipe-to-dismiss
-/// counts as deny (the presenting Binding's setter fires `.denied`
-/// before clearing state).
-///
-/// Vault states the sheet handles: `.empty` blocks approval and nudges
-/// the user to set up the wallet; `.locked` shows an unlock step before
-/// revealing the account; `.unlocked` shows the account and Approve.
+/// `eth_requestAccounts` approval. Address is derived from the unlocked
+/// vault for display; the bridge re-derives after `.approved` fires (same
+/// single account in v1, so no drift).
 @MainActor
 struct ApproveConnectSheet: View {
     @Environment(Vault.self) private var vault
@@ -18,18 +12,18 @@ struct ApproveConnectSheet: View {
 
     @State private var address: String?
     @State private var deriveError: String?
-    @State private var unlockError: String?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    originStrip
+                    ApprovalOriginStrip(origin: approval.origin, caption: "This site wants to connect")
                     switch vault.state {
                     case .empty:
-                        emptyBody
+                        Label("Set up a wallet first, then try again.", systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.secondary)
                     case .locked:
-                        lockedBody
+                        ApprovalUnlockStrip()
                     case .unlocked:
                         unlockedBody
                     }
@@ -48,46 +42,6 @@ struct ApproveConnectSheet: View {
             }
         }
         .task(id: vault.state) { await deriveAddressIfUnlocked() }
-    }
-
-    private var originStrip: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("This site wants to connect").font(.caption).foregroundStyle(.secondary)
-            Text(approval.origin.displayString)
-                .font(.headline)
-                .textSelection(.enabled)
-            Text(approval.origin.schemeDisplayLabel)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding()
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    @ViewBuilder private var emptyBody: some View {
-        Label(
-            "Set up a wallet first from the wallet tab, then try again.",
-            systemImage: "exclamationmark.circle"
-        )
-        .foregroundStyle(.secondary)
-    }
-
-    @ViewBuilder private var lockedBody: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Wallet is locked", systemImage: "lock.fill")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            PrimaryActionButton(
-                title: "Unlock to continue",
-                systemImage: "faceid",
-                action: { Task { await attemptUnlock() } }
-            )
-            if let unlockError {
-                Text(unlockError).font(.caption).foregroundStyle(.red)
-            }
-        }
     }
 
     @ViewBuilder private var unlockedBody: some View {
@@ -114,18 +68,8 @@ struct ApproveConnectSheet: View {
     }
 
     private func approve() {
-        guard let address else { return }
-        approval.decide(.approved(account: address))
+        approval.decide(.approved)
         dismiss()
-    }
-
-    private func attemptUnlock() async {
-        unlockError = nil
-        do {
-            try await vault.unlock()
-        } catch {
-            unlockError = error.localizedDescription
-        }
     }
 
     private func deriveAddressIfUnlocked() async {

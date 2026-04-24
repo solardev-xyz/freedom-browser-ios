@@ -1,16 +1,17 @@
 import Foundation
 import UIKit
 import WebKit
+import web3
 
 /// Per-`BrowserTab` EIP-1193 bridge. Origin identity is derived from
 /// `tab.displayURL` at every message receipt — the JS side never supplies
 /// it, so a page that postMessages through the handler directly still
 /// only acts on permissions granted to its real display identity.
 ///
-/// Interactive methods (`eth_requestAccounts` today; signing/send in
-/// WP10/WP11) short-circuit the router: they park a continuation here,
-/// set `tab.pendingEthereumApproval`, and resume when the approval sheet
-/// calls `decide`.
+/// Interactive methods (connect, `personal_sign`, `eth_signTypedData_v4`;
+/// tx send in WP11) short-circuit the router: they park a continuation
+/// here, set `tab.pendingEthereumApproval`, and resume when the approval
+/// sheet calls `decide`.
 @MainActor
 final class EthereumBridge: NSObject, WKScriptMessageHandler {
     static let messageHandlerName = "freedomEthereum"
@@ -127,6 +128,12 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         case "eth_requestAccounts", "enable":
             await handleConnect(id: id, origin: origin)
             return
+        case "personal_sign":
+            await handlePersonalSign(id: id, origin: origin, params: params)
+            return
+        case "eth_signTypedData_v4":
+            await handleTypedDataSign(id: id, origin: origin, params: params)
+            return
         default:
             break
         }
@@ -139,44 +146,154 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
+    // MARK: - Approval plumbing
+
+    private func assertEligibleAndFree(id: Int, origin: OriginIdentity) -> Bool {
+        guard origin.isEligibleForWallet else {
+            reply(id: id, error: .init(code: 4100, message: "Origin not permitted."))
+            return false
+        }
+        // -32002 "resource unavailable" — MetaMask's code for stacked approvals.
+        guard tab?.pendingEthereumApproval == nil else {
+            reply(id: id, error: .init(code: -32002, message: "Another approval is already pending."))
+            return false
+        }
+        return true
+    }
+
+    private func requireConnectedOrigin(id: Int, origin: OriginIdentity) -> Bool {
+        guard permissionStore.isConnected(origin.key) else {
+            reply(id: id, error: .init(code: 4100, message: "Connect first — \(origin.displayString) isn't authorized."))
+            return false
+        }
+        return true
+    }
+
+    private func parkAndAwait(
+        origin: OriginIdentity,
+        kind: ApprovalRequest.Kind
+    ) async -> ApprovalRequest.Decision {
+        let decision: ApprovalRequest.Decision = await withCheckedContinuation { cont in
+            let request = ApprovalRequest(
+                id: UUID(),
+                origin: origin,
+                kind: kind,
+                resolver: ApprovalResolver(cont)
+            )
+            tab?.pendingEthereumApproval = request
+        }
+        tab?.pendingEthereumApproval = nil
+        return decision
+    }
+
     // MARK: - Connect flow
 
     private func handleConnect(id: Int, origin: OriginIdentity) async {
-        guard origin.isEligibleForWallet else {
-            return reply(id: id, error: .init(code: 4100, message: "Origin not permitted."))
-        }
+        guard assertEligibleAndFree(id: id, origin: origin) else { return }
 
         if permissionStore.isConnected(origin.key) {
             permissionStore.touchLastUsed(origin: origin.key)
             return reply(id: id, result: permissionStore.accounts(for: origin.key))
         }
 
-        // Prevent concurrent approval races on a single tab. -32002 is
-        // EIP-1474's "resource unavailable" — MetaMask uses the same.
-        guard tab?.pendingEthereumApproval == nil else {
-            return reply(id: id, error: .init(code: -32002, message: "Another approval is already pending."))
-        }
-
-        let decision: ApprovalRequest.Decision = await withCheckedContinuation { cont in
-            let request = ApprovalRequest(
-                id: UUID(),
-                origin: origin,
-                kind: .connect,
-                resolver: ApprovalResolver(cont)
-            )
-            tab?.pendingEthereumApproval = request
-        }
-        tab?.pendingEthereumApproval = nil
-
+        let decision = await parkAndAwait(origin: origin, kind: .connect)
         switch decision {
-        case .approved(let account):
-            permissionStore.grant(origin: origin.key, account: account)
-            emit(event: "accountsChanged", data: [account])
-            emit(event: "connect", data: ["chainId": router.currentChainHex()])
-            reply(id: id, result: [account])
+        case .approved:
+            do {
+                let address = try vault.signingKey(at: .mainUser).ethereumAddress
+                permissionStore.grant(origin: origin.key, account: address)
+                emit(event: "accountsChanged", data: [address])
+                emit(event: "connect", data: ["chainId": router.currentChainHex()])
+                reply(id: id, result: [address])
+            } catch {
+                reply(id: id, error: .init(code: -32603, message: "Couldn't derive address: \(error.localizedDescription)"))
+            }
         case .denied:
             reply(id: id, error: .init(code: 4001, message: "User rejected the request."))
         }
+    }
+
+    // MARK: - Sign flow
+
+    private func handlePersonalSign(id: Int, origin: OriginIdentity, params: [Any]) async {
+        guard assertEligibleAndFree(id: id, origin: origin),
+              requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        let decoded: PersonalSignCoder.Decoded
+        do {
+            decoded = try PersonalSignCoder.decode(params: params)
+        } catch {
+            return reply(id: id, error: .init(code: -32602, message: "Invalid personal_sign params."))
+        }
+        guard matchesGrantedAccount(decoded.declaredAddress, origin: origin) else {
+            return reply(id: id, error: .init(code: -32602, message: "Account in params doesn't match the connected account."))
+        }
+
+        switch await parkAndAwait(origin: origin, kind: .personalSign(decoded.preview)) {
+        case .approved:
+            do {
+                let signature = try MessageSigner.signPersonalMessage(decoded.message, vault: vault)
+                permissionStore.touchLastUsed(origin: origin.key)
+                reply(id: id, result: signature)
+            } catch {
+                reply(id: id, error: .init(code: -32603, message: "Signing failed: \(error.localizedDescription)"))
+            }
+        case .denied:
+            reply(id: id, error: .init(code: 4001, message: "User rejected the request."))
+        }
+    }
+
+    private func handleTypedDataSign(id: Int, origin: OriginIdentity, params: [Any]) async {
+        guard assertEligibleAndFree(id: id, origin: origin),
+              requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        guard params.count == 2, let addressParam = params.first as? String else {
+            return reply(id: id, error: .init(code: -32602, message: "Expected [address, typedData]."))
+        }
+        guard matchesGrantedAccount(addressParam, origin: origin) else {
+            return reply(id: id, error: .init(code: -32602, message: "Account in params doesn't match the connected account."))
+        }
+
+        let typedData: TypedData
+        do {
+            typedData = try decodeTypedData(params[1])
+        } catch {
+            return reply(id: id, error: .init(code: -32602, message: "Invalid typed-data payload: \(error.localizedDescription)"))
+        }
+
+        switch await parkAndAwait(origin: origin, kind: .typedData(typedData)) {
+        case .approved:
+            do {
+                let signature = try MessageSigner.signTypedData(typedData, vault: vault)
+                permissionStore.touchLastUsed(origin: origin.key)
+                reply(id: id, result: signature)
+            } catch {
+                reply(id: id, error: .init(code: -32603, message: "Signing failed: \(error.localizedDescription)"))
+            }
+        case .denied:
+            reply(id: id, error: .init(code: 4001, message: "User rejected the request."))
+        }
+    }
+
+    private func matchesGrantedAccount(_ address: String, origin: OriginIdentity) -> Bool {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X") else { return false }
+        guard let granted = permissionStore.accounts(for: origin.key).first else { return false }
+        return granted.caseInsensitiveCompare(trimmed) == .orderedSame
+    }
+
+    /// Dapps pass `typedData` either as a JSON string or as a JSON object —
+    /// decode both via JSONSerialization, then through the typed decoder.
+    private func decodeTypedData(_ param: Any) throws -> TypedData {
+        let data: Data
+        if let string = param as? String {
+            data = Data(string.utf8)
+        } else if let object = param as? [String: Any] {
+            data = try JSONSerialization.data(withJSONObject: object)
+        } else {
+            throw PersonalSignCoder.Error.badParams
+        }
+        return try JSONDecoder().decode(TypedData.self, from: data)
     }
 
     // MARK: - Event emission

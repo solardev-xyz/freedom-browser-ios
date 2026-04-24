@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import web3
 
 /// Stored alongside the vault blob and read back verbatim. Pinned raw values
 /// keep the on-disk format decoupled from Swift case names.
@@ -73,6 +74,14 @@ final class Vault {
     func signingKey(at path: HDKey.Path) throws -> HDKey {
         guard let seed else { throw Error.notUnlocked }
         return try HDKey(seed: seed).derive(path)
+    }
+
+    /// Sugar over `signingKey(at:)` for callers that want to hand the
+    /// derived key straight to Argent's `EthereumAccount` for signing.
+    /// Same one-shot lifetime contract.
+    func signingAccount(at path: HDKey.Path = .mainUser) throws -> EthereumAccount {
+        let hdKey = try signingKey(at: path)
+        return try EthereumAccount(keyStorage: HDKeyStorage(privateKey: hdKey.privateKey))
     }
 
     /// Re-reads the mnemonic from Keychain storage, triggering a fresh
