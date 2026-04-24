@@ -1,11 +1,19 @@
+import SwiftData
 import SwiftUI
 
 @MainActor
 struct WalletHomeView: View {
     @Environment(Vault.self) private var vault
     @Environment(ChainRegistry.self) private var chains
+    @Environment(PermissionStore.self) private var permissions
 
     @AppStorage(WalletDefaults.activeChainID) private var activeChainID: Int = Chain.defaultChain.id
+
+    // Live dapp grants — SwiftData refreshes on every `context.save()` that
+    // grant/revoke perform, so the row list stays in sync without manual
+    // invalidation.
+    @Query(sort: \DappPermission.lastUsedAt, order: .reverse)
+    private var grants: [DappPermission]
 
     @State private var address: String?
     @State private var balance: BalanceState = .loading
@@ -42,6 +50,7 @@ struct WalletHomeView: View {
                 Button("Lock wallet") { vault.lock() }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
+                connectedSitesSection
                 advancedSection
             }
             .padding(20)
@@ -65,6 +74,13 @@ struct WalletHomeView: View {
             }
         }
         .pickerStyle(.segmented)
+        .onChange(of: activeChainID) { _, new in
+            NotificationCenter.default.post(
+                name: .walletActiveChainChanged,
+                object: nil,
+                userInfo: ["chainID": new]
+            )
+        }
     }
 
     private var balanceCard: some View {
@@ -87,6 +103,45 @@ struct WalletHomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder private var connectedSitesSection: some View {
+        if !grants.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Connected sites").font(.caption).foregroundStyle(.secondary)
+                VStack(spacing: 0) {
+                    ForEach(Array(grants.enumerated()), id: \.element.id) { index, grant in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(grant.origin)
+                                    .font(.callout)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(grant.account)
+                                    .font(.caption2)
+                                    .monospaced()
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Spacer()
+                            Button("Revoke", role: .destructive) {
+                                permissions.revoke(origin: grant.origin)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 12)
+                        if index < grants.count - 1 {
+                            Divider().padding(.leading, 12)
+                        }
+                    }
+                }
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+        }
     }
 
     private var advancedSection: some View {

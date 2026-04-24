@@ -1,8 +1,18 @@
+import SwiftData
 import XCTest
 @testable import Freedom
 
 @MainActor
 final class RPCRouterTests: XCTestCase {
+    private var permissionContainer: ModelContainer!
+    private var permissionStore: PermissionStore!
+
+    override func setUp() async throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        permissionContainer = try ModelContainer(for: DappPermission.self, configurations: config)
+        permissionStore = PermissionStore(context: permissionContainer.mainContext)
+    }
+
     // MARK: - Stub infra (mirror of TransactionServiceTests' StubRPC)
 
     private final class StubRPC: @unchecked Sendable {
@@ -32,7 +42,11 @@ final class RPCRouterTests: XCTestCase {
     private func makeRouter(stub: StubRPC, chain: Chain = .gnosis) -> RPCRouter {
         let registry = ChainRegistry(mainnetPool: EthereumRPCPool(settings: SettingsStore()))
         registry.walletRPC = WalletRPC(registry: registry, transport: stub.transport)
-        return RPCRouter(registry: registry, activeChain: { chain })
+        return RPCRouter(
+            registry: registry,
+            permissionStore: permissionStore,
+            activeChain: { chain }
+        )
     }
 
     private func eligibleOrigin() -> OriginIdentity {
@@ -70,6 +84,13 @@ final class RPCRouterTests: XCTestCase {
         let router = makeRouter(stub: StubRPC())
         let result = try await router.handle(method: "eth_accounts", params: [], origin: eligibleOrigin())
         XCTAssertEqual(result as? [String], [])
+    }
+
+    func testEthAccountsReturnsGrantedAccount() async throws {
+        permissionStore.grant(origin: "https://app.uniswap.org", account: "0xabc")
+        let router = makeRouter(stub: StubRPC())
+        let result = try await router.handle(method: "eth_accounts", params: [], origin: eligibleOrigin())
+        XCTAssertEqual(result as? [String], ["0xabc"])
     }
 
     // MARK: - RPC-backed reads

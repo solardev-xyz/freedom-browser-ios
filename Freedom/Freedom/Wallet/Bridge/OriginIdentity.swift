@@ -26,6 +26,20 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
         scheme == .ens ? "ens://\(key)" : key
     }
 
+    /// Human label for approval-sheet scheme subtitles.
+    var schemeDisplayLabel: String {
+        switch scheme {
+        case .ens: return "via Swarm (ENS name)"
+        case .bzz: return "Swarm content-address"
+        case .https: return "Web over HTTPS"
+        case .http: return "Web over HTTP"
+        case .ipfs: return "IPFS content-address"
+        case .ipns: return "IPNS name"
+        case .rad: return "Radicle"
+        case .other: return "Unknown origin"
+        }
+    }
+
     static func from(displayURL: URL?) -> OriginIdentity? {
         guard let url = displayURL else { return nil }
         return from(string: url.absoluteString)

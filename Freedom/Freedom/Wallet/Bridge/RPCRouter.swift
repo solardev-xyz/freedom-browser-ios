@@ -20,12 +20,21 @@ final class RPCRouter {
     }
 
     @ObservationIgnored private let registry: ChainRegistry
+    @ObservationIgnored private let permissionStore: PermissionStore
     private let activeChain: @MainActor () -> Chain
 
-    init(registry: ChainRegistry, activeChain: @escaping @MainActor () -> Chain) {
+    init(
+        registry: ChainRegistry,
+        permissionStore: PermissionStore,
+        activeChain: @escaping @MainActor () -> Chain
+    ) {
         self.registry = registry
+        self.permissionStore = permissionStore
         self.activeChain = activeChain
     }
+
+    /// Bridge helper — needed for `connect` event payload after a grant.
+    func currentChainHex() -> String { activeChain().hexChainID }
 
     func handle(method: String, params: [Any], origin: OriginIdentity) async throws -> Any {
         guard origin.isEligibleForWallet else {
@@ -40,8 +49,7 @@ final class RPCRouter {
         case "net_version":
             return String(chain.id)
         case "eth_accounts":
-            // Empty until PermissionStore (WP9) + connect sheet (M5.5).
-            return [String]()
+            return permissionStore.accounts(for: origin.key)
         case "eth_blockNumber":
             let hex: String = try await registry.walletRPC.blockNumber(on: chain)
             return hex

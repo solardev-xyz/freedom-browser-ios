@@ -36,6 +36,20 @@ struct ContentView: View {
 
     private var activeURL: URL? { tabStore.activeTab?.displayURL }
 
+    /// Swipe-dismiss goes through `resolvePendingApproval(.denied)` on the
+    /// tab, which is the single point that resumes the bridge's parked
+    /// continuation.
+    private var approvalBinding: Binding<ApprovalRequest?> {
+        Binding(
+            get: { tabStore.activeTab?.pendingEthereumApproval },
+            set: { newValue in
+                if newValue == nil {
+                    tabStore.activeTab?.resolvePendingApproval(.denied)
+                }
+            }
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             nodeStatusBar
@@ -75,6 +89,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingWallet) {
             WalletSheet(isPresented: $isShowingWallet)
+        }
+        .sheet(item: approvalBinding) { approval in
+            ApproveConnectSheet(approval: approval)
         }
         .onChange(of: tabStore.activeTab?.displayURL) { _, new in
             guard !addressFocused else { return }

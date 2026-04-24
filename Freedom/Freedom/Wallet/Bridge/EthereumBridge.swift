@@ -6,24 +6,46 @@ import WebKit
 /// `tab.displayURL` at every message receipt — the JS side never supplies
 /// it, so a page that postMessages through the handler directly still
 /// only acts on permissions granted to its real display identity.
+///
+/// Interactive methods (`eth_requestAccounts` today; signing/send in
+/// WP10/WP11) short-circuit the router: they park a continuation here,
+/// set `tab.pendingEthereumApproval`, and resume when the approval sheet
+/// calls `decide`.
 @MainActor
 final class EthereumBridge: NSObject, WKScriptMessageHandler {
     static let messageHandlerName = "freedomEthereum"
 
     private weak var tab: BrowserTab?
     private let router: RPCRouter
+    private let vault: Vault
+    private let permissionStore: PermissionStore
     // `WKUserContentController.add(_:name:)` strongly retains us, so this
     // side of the edge must be weak — otherwise BrowserTab's deinit would
     // never fire and tab-close would leak the bridge + webView + config.
     private weak var contentController: WKUserContentController?
+    private var notificationTokens: [NSObjectProtocol] = []
 
-    init(tab: BrowserTab, router: RPCRouter, contentController: WKUserContentController) {
+    init(
+        tab: BrowserTab,
+        router: RPCRouter,
+        contentController: WKUserContentController,
+        vault: Vault,
+        permissionStore: PermissionStore
+    ) {
         self.tab = tab
         self.router = router
+        self.vault = vault
+        self.permissionStore = permissionStore
         self.contentController = contentController
         super.init()
         contentController.add(self, name: Self.messageHandlerName)
         installUserScript()
+        subscribeToNotifications()
+    }
+
+    deinit {
+        // removeObserver is thread-safe; fine to run from any isolation.
+        notificationTokens.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
     /// Regenerate the EIP-6963 UUID and reinstall the preload. `removeAllUserScripts`
@@ -100,12 +122,103 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         guard let origin else {
             return reply(id: id, error: .init(code: 4100, message: "No origin identity — cannot route request."))
         }
+
+        switch method {
+        case "eth_requestAccounts", "enable":
+            await handleConnect(id: id, origin: origin)
+            return
+        default:
+            break
+        }
+
         do {
             let result = try await router.handle(method: method, params: params, origin: origin)
             reply(id: id, result: result)
         } catch {
             reply(id: id, error: router.errorPayload(for: error))
         }
+    }
+
+    // MARK: - Connect flow
+
+    private func handleConnect(id: Int, origin: OriginIdentity) async {
+        guard origin.isEligibleForWallet else {
+            return reply(id: id, error: .init(code: 4100, message: "Origin not permitted."))
+        }
+
+        if permissionStore.isConnected(origin.key) {
+            permissionStore.touchLastUsed(origin: origin.key)
+            return reply(id: id, result: permissionStore.accounts(for: origin.key))
+        }
+
+        // Prevent concurrent approval races on a single tab. -32002 is
+        // EIP-1474's "resource unavailable" — MetaMask uses the same.
+        guard tab?.pendingEthereumApproval == nil else {
+            return reply(id: id, error: .init(code: -32002, message: "Another approval is already pending."))
+        }
+
+        let decision: ApprovalRequest.Decision = await withCheckedContinuation { cont in
+            let request = ApprovalRequest(
+                id: UUID(),
+                origin: origin,
+                kind: .connect,
+                resolver: ApprovalResolver(cont)
+            )
+            tab?.pendingEthereumApproval = request
+        }
+        tab?.pendingEthereumApproval = nil
+
+        switch decision {
+        case .approved(let account):
+            permissionStore.grant(origin: origin.key, account: account)
+            emit(event: "accountsChanged", data: [account])
+            emit(event: "connect", data: ["chainId": router.currentChainHex()])
+            reply(id: id, result: [account])
+        case .denied:
+            reply(id: id, error: .init(code: 4001, message: "User rejected the request."))
+        }
+    }
+
+    // MARK: - Event emission
+
+    private func emit(event: String, data: Any) {
+        guard let webView = tab?.webView else { return }
+        let js = "window.__freedomEthereum && window.__freedomEthereum.__handleEvent(\(jsonLiteral(event)), \(jsonLiteral(data)));"
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    private func subscribeToNotifications() {
+        let center = NotificationCenter.default
+        let chainToken = center.addObserver(
+            forName: .walletActiveChainChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated { self?.emitChainChangedIfConnected(note) }
+        }
+        let revokeToken = center.addObserver(
+            forName: .walletPermissionRevoked,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated { self?.emitDisconnectIfMatch(note) }
+        }
+        notificationTokens = [chainToken, revokeToken]
+    }
+
+    private func emitChainChangedIfConnected(_ note: Notification) {
+        guard let origin = OriginIdentity.from(displayURL: tab?.displayURL),
+              permissionStore.isConnected(origin.key),
+              let chainID = note.userInfo?["chainID"] as? Int else { return }
+        emit(event: "chainChanged", data: "0x" + String(chainID, radix: 16))
+    }
+
+    private func emitDisconnectIfMatch(_ note: Notification) {
+        guard let origin = OriginIdentity.from(displayURL: tab?.displayURL),
+              let revokedOrigin = note.userInfo?["origin"] as? String,
+              origin.key == revokedOrigin else { return }
+        emit(event: "accountsChanged", data: [String]())
+        emit(event: "disconnect", data: NSNull())
     }
 
     // MARK: - Reply path

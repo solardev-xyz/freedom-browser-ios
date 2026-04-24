@@ -15,12 +15,14 @@ struct FreedomApp: App {
     @State private var vault: Vault
     @State private var chainRegistry: ChainRegistry
     @State private var transactionService: TransactionService
+    @State private var permissionStore: PermissionStore
     private let modelContainer: ModelContainer
 
     init() {
         do {
             let container = try ModelContainer(
-                for: TabRecord.self, HistoryEntry.self, Bookmark.self, Favicon.self
+                for: TabRecord.self, HistoryEntry.self, Bookmark.self, Favicon.self,
+                DappPermission.self
             )
             self.modelContainer = container
             let history = HistoryStore(context: container.mainContext)
@@ -36,8 +38,10 @@ struct FreedomApp: App {
             self._ensResolver = State(wrappedValue: resolver)
             let vault = Vault()
             let registry = ChainRegistry(mainnetPool: pool)
+            let permissions = PermissionStore(context: container.mainContext)
             self._vault = State(wrappedValue: vault)
             self._chainRegistry = State(wrappedValue: registry)
+            self._permissionStore = State(wrappedValue: permissions)
             self._transactionService = State(wrappedValue: TransactionService(
                 vault: vault,
                 registry: registry
@@ -48,7 +52,9 @@ struct FreedomApp: App {
                 faviconStore: favicons,
                 ensResolver: resolver,
                 settings: settings,
-                chainRegistry: registry
+                chainRegistry: registry,
+                vault: vault,
+                permissionStore: permissions
             ))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
@@ -73,6 +79,7 @@ struct FreedomApp: App {
                 .environment(vault)
                 .environment(chainRegistry)
                 .environment(transactionService)
+                .environment(permissionStore)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
         }

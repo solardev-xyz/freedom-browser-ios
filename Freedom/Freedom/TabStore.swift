@@ -17,6 +17,8 @@ final class TabStore {
     @ObservationIgnored private let ensResolver: ENSResolver
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private let chainRegistry: ChainRegistry
+    @ObservationIgnored private let vault: Vault
+    @ObservationIgnored private let permissionStore: PermissionStore
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
     init(
@@ -25,7 +27,9 @@ final class TabStore {
         faviconStore: FaviconStore,
         ensResolver: ENSResolver,
         settings: SettingsStore,
-        chainRegistry: ChainRegistry
+        chainRegistry: ChainRegistry,
+        vault: Vault,
+        permissionStore: PermissionStore
     ) {
         self.context = context
         self.historyStore = historyStore
@@ -33,6 +37,8 @@ final class TabStore {
         self.ensResolver = ensResolver
         self.settings = settings
         self.chainRegistry = chainRegistry
+        self.vault = vault
+        self.permissionStore = permissionStore
         reloadRecords()
     }
 
@@ -77,7 +83,11 @@ final class TabStore {
         // Cancel any in-flight ENS resolution or page load before dropping
         // the reference — otherwise the Task retains the tab + webview past
         // removal here and may call webView.load(...) on a detached view.
+        // `resolvePendingApproval(.denied)` un-parks any CheckedContinuation
+        // the bridge is waiting on, so closing a tab mid-approval doesn't
+        // leak the awaiting task.
         liveTabs[id]?.stop()
+        liveTabs[id]?.resolvePendingApproval(.denied)
         liveTabs.removeValue(forKey: id)
         if let record = record(for: id) {
             context.delete(record)
@@ -124,7 +134,9 @@ final class TabStore {
             recordID: id,
             ensResolver: ensResolver,
             settings: settings,
-            chainRegistry: chainRegistry
+            chainRegistry: chainRegistry,
+            vault: vault,
+            permissionStore: permissionStore
         )
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }

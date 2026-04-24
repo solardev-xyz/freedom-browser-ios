@@ -53,6 +53,18 @@ final class BrowserTab {
     /// URL the UI presents — ENS form if set, otherwise the live webview URL.
     var displayURL: URL? { ensURL ?? url }
 
+    /// Parked approval. The bridge awaits `ApprovalResolver`; the sheet
+    /// presents via ContentView. Call `resolvePendingApproval` from any
+    /// dismissal path (tab close, swipe) so the resolver fires exactly once
+    /// — `ApprovalResolver` is the fire-once guard.
+    var pendingEthereumApproval: ApprovalRequest?
+
+    func resolvePendingApproval(_ decision: ApprovalRequest.Decision) {
+        let pending = pendingEthereumApproval
+        pendingEthereumApproval = nil
+        pending?.decide(decision)
+    }
+
     // The WKWebView is stored, not lazy or computed, because SwiftUI's
     // UIViewRepresentable vends it via `tab.webView` every time the
     // representable is materialized — which happens when the view tree
@@ -76,7 +88,9 @@ final class BrowserTab {
         recordID: UUID = UUID(),
         ensResolver: ENSResolver,
         settings: SettingsStore,
-        chainRegistry: ChainRegistry
+        chainRegistry: ChainRegistry,
+        vault: Vault,
+        permissionStore: PermissionStore
     ) {
         self.recordID = recordID
         self.ensResolver = ensResolver
@@ -94,6 +108,7 @@ final class BrowserTab {
         // by dapp reads without rebuilding the router.
         let router = RPCRouter(
             registry: chainRegistry,
+            permissionStore: permissionStore,
             activeChain: {
                 let raw = UserDefaults.standard.integer(forKey: WalletDefaults.activeChainID)
                 let id = raw == 0 ? Chain.defaultChain.id : raw
@@ -103,7 +118,9 @@ final class BrowserTab {
         self.walletBridge = EthereumBridge(
             tab: self,
             router: router,
-            contentController: contentController
+            contentController: contentController,
+            vault: vault,
+            permissionStore: permissionStore
         )
 
         observeWebView()
