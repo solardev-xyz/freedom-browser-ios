@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
     @Environment(TabStore.self) private var tabStore
     @Environment(BookmarkStore.self) private var bookmarkStore
+    @Environment(Vault.self) private var vault
     @Environment(\.scenePhase) private var scenePhase
 
     // Drives the bookmark toolbar button's fill state — toggling a bookmark
@@ -95,6 +96,10 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, new in
             if new == .background {
                 Task { await tabStore.captureActive() }
+                // Auto-lock on background — if a thief grabs an unlocked
+                // phone and switches away from Freedom, the wallet relocks
+                // immediately. `lock()` is a no-op when already locked/empty.
+                vault.lock()
             }
         }
     }
