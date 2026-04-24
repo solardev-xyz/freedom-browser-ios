@@ -96,6 +96,40 @@ final class TransactionServiceTests: XCTestCase {
 
     // MARK: - send
 
+    /// Diagnostic: EIP-155 requires v = chainId*2 + 35 + recid. For Gnosis
+    /// (chainId=100) that's 235 or 236. If this test fails with v=208/209,
+    /// Argent's legacy-tx signing is mis-encoding v for non-mainnet chains.
+    /// We decode from raw RLP bytes since SignedTransaction.v is internal.
+    func testSignedVIsEIP155ValidForGnosis() async throws {
+        let vault = try await makeUnlockedVault()
+        let hdKey = try vault.signingKey(at: .mainUser)
+        let account = try EthereumAccount(
+            keyStorage: HDKeyStorage(privateKey: hdKey.privateKey)
+        )
+        let tx = EthereumTransaction(
+            from: EthereumAddress(try hdKey.ethereumAddress),
+            to: EthereumAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+            value: BigUInt(10).power(15),
+            data: Data(),
+            nonce: 0,
+            gasPrice: BigUInt(2_000_000_000),
+            gasLimit: BigUInt(21_000),
+            chainId: 100
+        )
+        let signed = try account.sign(transaction: tx)
+        let raw = try XCTUnwrap(signed.raw)
+        // RLP-encoded legacy tx ends with [v, r, s]. r and s each serialize
+        // as 0xa0 + 32 bytes = 33 bytes. The byte before that 66-byte tail
+        // is v's value (RLP single-byte for v≤127, or the byte after an
+        // 0x81 prefix for v≥128 — either way the last byte IS v).
+        let vByte = try XCTUnwrap(raw.dropLast(66).last)
+        let v = Int(vByte)
+        XCTAssertTrue(
+            v == 235 || v == 236,
+            "expected EIP-155 v for chainId 100 (235 or 236), got \(v) (raw last-32: \(raw.suffix(100).map { String(format: "%02x", $0) }.joined()))"
+        )
+    }
+
     func testSendBroadcastsSignedRawAndReturnsHash() async throws {
         let vault = try await makeUnlockedVault()
         let stub = StubRPC()
@@ -126,6 +160,14 @@ final class TransactionServiceTests: XCTestCase {
         let params = try XCTUnwrap(parsed["params"] as? [String])
         let raw = try XCTUnwrap(params.first)
         XCTAssertTrue(raw.hasPrefix("0x"))
+        // Double-0x prefix got shipped once — check specifically. A valid
+        // signed tx hex never starts with "0x0".
+        XCTAssertFalse(raw.hasPrefix("0x0x"))
+        // After the prefix, everything must be a hex digit.
+        XCTAssertTrue(
+            raw.dropFirst(2).allSatisfy(\.isHexDigit),
+            "body after 0x must be hex: \(raw.prefix(20))…"
+        )
         XCTAssertGreaterThan(raw.count, 150, "signed tx hex should be ≥ ~75 bytes")
     }
 

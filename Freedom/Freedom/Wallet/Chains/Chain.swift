@@ -13,6 +13,12 @@ struct Chain: Equatable, Hashable, Identifiable {
     /// EIP-155 chain ID, `0x`-prefixed hex (EIP-1193 wire format).
     var hexChainID: String { "0x" + String(id, radix: 16) }
 
+    /// Block-explorer URL for a tx hash. Keeps the `/tx/` path convention
+    /// here rather than leaking it into every view that wants to link out.
+    func explorerURL(forTx hash: String) -> URL {
+        explorerBase.appendingPathComponent("tx").appendingPathComponent(hash)
+    }
+
     static let mainnet = Chain(
         id: 1,
         displayName: "Ethereum",

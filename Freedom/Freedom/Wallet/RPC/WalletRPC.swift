@@ -6,7 +6,7 @@ import Foundation
 /// consensus isn't worth it.
 @MainActor
 struct WalletRPC {
-    enum Error: Swift.Error {
+    enum Error: Swift.Error, LocalizedError {
         /// JSON-RPC error envelope returned by the provider. Deterministic
         /// across providers — retrying won't change the answer.
         case rpc(code: Int, message: String)
@@ -16,6 +16,20 @@ struct WalletRPC {
         case invalidResponse
         /// The chain has no URLs configured.
         case noProviders
+
+        var errorDescription: String? {
+            switch self {
+            case .rpc(let code, let message):
+                return "RPC \(code): \(message)"
+            case .allProvidersFailed(let errors):
+                let first = errors.first?.localizedDescription ?? "unknown cause"
+                return "All \(errors.count) providers failed. \(first)"
+            case .invalidResponse:
+                return "Invalid response from all providers."
+            case .noProviders:
+                return "No RPC providers configured for this chain."
+            }
+        }
     }
 
     /// Single-URL transport. Takes pre-encoded JSON, returns the raw

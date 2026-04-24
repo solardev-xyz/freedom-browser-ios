@@ -5,8 +5,7 @@ struct WalletHomeView: View {
     @Environment(Vault.self) private var vault
     @Environment(ChainRegistry.self) private var chains
 
-    /// Persisted across app launches so the user's chain choice sticks.
-    @AppStorage("walletActiveChainID") private var activeChainID: Int = Chain.defaultChain.id
+    @AppStorage(WalletDefaults.activeChainID) private var activeChainID: Int = Chain.defaultChain.id
 
     @State private var address: String?
     @State private var balance: BalanceState = .loading
@@ -34,6 +33,12 @@ struct WalletHomeView: View {
                 }
                 chainPicker
                 balanceCard
+                NavigationLink {
+                    SendFlowView()
+                } label: {
+                    Label("Send", systemImage: "arrow.up.right")
+                }
+                .buttonStyle(PrimaryActionStyle())
                 Button("Lock wallet") { vault.lock() }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)

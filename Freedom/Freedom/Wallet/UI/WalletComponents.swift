@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// Well-known UserDefaults keys the wallet feature persists. Centralised
+/// so any typo (`walletActiveChainID` vs `wallet.activeChainID` vs
+/// `walletActiveChainId`) trips at compile-time instead of silently
+/// fragmenting storage.
+enum WalletDefaults {
+    static let activeChainID = "walletActiveChainID"
+}
+
 /// Shared lifecycle for the create and import flows. `.idle` covers both
 /// "waiting for input" in import and "waiting for the Create button" in create.
 enum SetupStage: Equatable {
@@ -7,6 +15,25 @@ enum SetupStage: Equatable {
     case working
     case done(address: String)
     case failed(message: String)
+}
+
+/// Button style for the wallet's primary filled action. Used by
+/// `PrimaryActionButton`, `NavigationLink`-driven send button, and any
+/// future "go ahead and do the thing" affordance. Exists so the styling
+/// doesn't drift between Button and NavigationLink call sites.
+struct PrimaryActionStyle: ButtonStyle {
+    var isEnabled: Bool = true
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(isEnabled ? Color.accentColor : Color.accentColor.opacity(0.3))
+            .foregroundStyle(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .opacity(configuration.isPressed ? 0.85 : 1.0)
+            .fontWeight(.semibold)
+    }
 }
 
 /// Monospaced address with the chrome used everywhere the wallet shows a
@@ -93,14 +120,9 @@ struct PrimaryActionButton: View {
                     Image(systemName: systemImage)
                 }
                 Text(isWorking ? (busyTitle ?? title) : title)
-                    .fontWeight(.semibold)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(isEnabled ? Color.accentColor : Color.accentColor.opacity(0.3))
-            .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
         }
+        .buttonStyle(PrimaryActionStyle(isEnabled: isEnabled))
         .disabled(!isEnabled || isWorking)
     }
 }

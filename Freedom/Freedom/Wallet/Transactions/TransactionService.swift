@@ -11,12 +11,22 @@ import web3
 @MainActor
 @Observable
 final class TransactionService {
-    enum Error: Swift.Error {
+    enum Error: Swift.Error, LocalizedError {
         case recipientInvalid
         case gasEstimateFailed
         case signingFailed
         case broadcastMalformed
         case confirmationTimeout
+
+        var errorDescription: String? {
+            switch self {
+            case .recipientInvalid: return "Recipient isn't a valid Ethereum address."
+            case .gasEstimateFailed: return "The network couldn't estimate gas — the transaction may be rejected. Check the recipient and amount."
+            case .signingFailed: return "Couldn't sign the transaction. Unlock the wallet and try again."
+            case .broadcastMalformed: return "Signed transaction is malformed — please report this."
+            case .confirmationTimeout: return "Transaction hasn't confirmed within the expected window. It may still land — check the explorer."
+            }
+        }
     }
 
     @ObservationIgnored let vault: Vault
@@ -102,8 +112,11 @@ final class TransactionService {
         guard let raw = signed.raw else { throw Error.broadcastMalformed }
 
         do {
+            // `raw.web3.hexString` already includes the `0x` prefix;
+            // prepending another is how we shipped "0x0x..." as the RPC
+            // param and got -32602 back. Don't.
             let hash = try await registry.walletRPC.sendRawTransaction(
-                rawHex: "0x" + raw.web3.hexString,
+                rawHex: raw.web3.hexString,
                 on: chain
             )
             nonceTracker.markSent(address: quote.from.asString(), on: chain, usedNonce: quote.nonce)
