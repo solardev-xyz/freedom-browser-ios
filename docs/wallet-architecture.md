@@ -61,58 +61,63 @@ This covers all three signing operations without us reaching for curve ops direc
 
 ## 4. Module layout
 
-New code, all under `Freedom/Freedom/Wallet/`:
+Target shape, under `Freedom/Freedom/Wallet/`. `✅` = shipped; unmarked = planned for the milestone shown. Source of truth for what's actually in the tree is the filesystem — see §10 for WP-by-WP progress.
 
 ```
 Wallet/
 ├── Vault/
-│   ├── Vault.swift                  ← @Observable root: locked/unlocked state, accounts
-│   ├── VaultCrypto.swift            ← three-tier at-rest encryption (§5.2)
-│   ├── Mnemonic.swift               ← BIP-39 (generate, validate, seed derivation)
-│   ├── HDKey.swift                  ← BIP-32; see §5.1 for the exact paths we
-│   │                                   reserve across user/Bee/multi-account
-│   └── KeychainItem.swift           ← thin SecItem wrapper (get/set/delete)
-├── Signing/
-│   └── Signer.swift                 ← thin wrapper over EthereumAccount:
-│                                      personal_sign / signTypedData_v4 / tx
-│                                    delegates to web3.swift; exists to hold
-│                                    the authZ guard ("is vault unlocked for
-│                                    this origin right now?") and to zero the
-│                                    key buffer after each op.
-├── Bridge/
-│   ├── EthereumBridge.swift         ← WKUserContentController + WKScriptMessageHandler
-│   ├── EthereumBridge.js            ← injected at document-start, the window.ethereum shim
-│   ├── EIP6963.js                   ← announce-provider event on load
-│   ├── RPCRouter.swift              ← maps incoming method calls to handlers
-│   └── OriginIdentity.swift         ← maps a BrowserTab to its permission-key
-│                                       origin (see §6.1). Swift port of desktop's
-│                                       shared/origin-utils.js — keep them
-│                                       semantically identical so permissions
-│                                       stay portable.
-├── RPC/
-│   └── WalletRPC.swift              ← single-shot-with-fallback over EthereumRPCPool
-│                                       (not the ENS consensus wave — see §9)
-├── Permissions/
-│   ├── DappPermission.swift         ← @Model: origin, account, chainID, grantedAt
-│   ├── PermissionStore.swift        ← check/grant/revoke, SwiftData-backed
-│   └── AutoApproveRule.swift        ← @Model: origin + contract + selector + chainID
-├── Transactions/
-│   ├── TransactionService.swift     ← build/sign/broadcast, nonce fetch, gas estimate
-│   ├── GasOracle.swift              ← eth_feeHistory + EIP-1559 fee suggestion
-│   └── NonceTracker.swift           ← per-(account,chain) in-memory nonce, invalidate on error
+│   ├── Vault.swift                  ✅ @Observable, lock/unlock, revealMnemonic
+│   ├── VaultCrypto.swift            ✅ three-tier at-rest encryption (§5.2)
+│   ├── BiometricPrompter.swift      ✅ LAContext adapter for cloudSynced gate
+│   ├── Mnemonic.swift               ✅ BIP-39
+│   ├── BIP39English.swift           ✅ canonical wordlist
+│   ├── HDKey.swift                  ✅ BIP-32 + reserved paths (§5.1)
+│   ├── KeychainItem.swift           ✅ SecItem wrapper with Protection enum
+│   └── Data+SecureRandom.swift      ✅ SecRandomCopyBytes helper
 ├── Chains/
-│   ├── Chain.swift                  ← id, name, rpcPool, explorer, nativeSymbol
-│   └── ChainRegistry.swift          ← fixed set (Gnosis [default], Mainnet);
-│                                       no dapp-added chains in v1 — see §6.3
-└── UI/
-    ├── WalletHomeView.swift         ← top-level: accounts, balance, receive/send buttons
-    ├── VaultSetupView.swift         ← create/import mnemonic flow
-    ├── VaultUnlockView.swift        ← biometric + passcode fallback
-    ├── ApproveConnectSheet.swift    ← dapp → eth_requestAccounts
-    ├── ApproveSignSheet.swift       ← personal_sign / signTypedData_v4
-    ├── ApproveTxSheet.swift         ← eth_sendTransaction
-    └── SendFlowView.swift           ← user-initiated send
+│   ├── Chain.swift                  ✅ id, name, explorer, native symbol, poll interval
+│   └── ChainRegistry.swift          ✅ Gnosis/Mainnet, fixed set (§6.4)
+├── RPC/
+│   └── WalletRPC.swift              ✅ single-shot-with-fallback + callOptional
+├── Transactions/                    ✅ WP6
+│   ├── TransactionService.swift     ✅ @Observable orchestrator
+│   ├── NonceTracker.swift           ✅ per-(account,chain) optimistic cache
+│   ├── GasOracle.swift              ✅ eth_gasPrice wrapper (EIP-1559 ⇒ M5.7)
+│   └── HDKeyStorage.swift           ✅ web3.swift signing adapter
+├── Hex.swift                        ✅ shared 0x-hex parser
+├── UI/                              ✅ WP4/5/7 all here
+│   ├── WalletSheet.swift            ✅ state dispatcher + closeWalletSheet env
+│   ├── WalletComponents.swift       ✅ SetupStage, AddressPill, VaultResultView,
+│   │                                   VaultFailureView, PrimaryActionButton,
+│   │                                   PrimaryActionStyle, WalletAdvancedSection,
+│   │                                   WipeWalletButton, SecurityLevelBadge,
+│   │                                   WalletDefaults
+│   ├── VaultSetupView.swift         ✅ Create / Import chooser
+│   ├── VaultCreateView.swift        ✅ quick-option create
+│   ├── VaultImportView.swift        ✅ paste + validate phrase
+│   ├── WalletLockedView.swift       ✅ unlock + advanced/wipe
+│   ├── WalletHomeView.swift         ✅ address, chain picker, balance, send
+│   ├── RecoveryPhraseView.swift     ✅ 24-word grid, auto-hide on background
+│   ├── BalanceFormatter.swift       ✅ format + parseAmount
+│   ├── SendFlowView.swift           ✅ form with debounced quote
+│   └── SendReviewView.swift         ✅ review + inline progress / confirmation
+├── Bridge/                          (M5.4)
+│   ├── EthereumBridge.swift         WKUserContentController + WKScriptMessageHandler
+│   ├── EthereumBridge.js            window.ethereum shim (EIP-1193 + legacy compat)
+│   ├── EIP6963.js                   announce-provider on load
+│   ├── RPCRouter.swift              method → handler dispatch
+│   └── OriginIdentity.swift         displayURL → permission key
+├── Permissions/                     (M5.4/M5.5)
+│   ├── DappPermission.swift         @Model: origin, account, chainID
+│   ├── PermissionStore.swift        SwiftData-backed grant/revoke
+│   └── AutoApproveRule.swift        (M5.7) opt-in per origin+selector rules
+└── UI/ (M5.5 adds)
+    ├── ApproveConnectSheet.swift    eth_requestAccounts
+    ├── ApproveSignSheet.swift       personal_sign / signTypedData_v4
+    └── ApproveTxSheet.swift         (M5.6) eth_sendTransaction
 ```
+
+Shipping note: the standalone `Signing/Signer.swift` originally sketched here didn't pan out as a separate file — signing lives in `TransactionService.swift` which feeds `web3.swift`'s `EthereumAccount` via `HDKeyStorage`. When M5.5 lands `personal_sign` and `signTypedData_v4`, the expectation is we extend that same pattern rather than introduce a new `Signer` shell.
 
 Nothing here imports anything outside `Wallet/` except `EthereumRPCPool` (for `eth_call` reads and gas/nonce queries) and `SettingsStore`.
 
@@ -287,9 +292,10 @@ Three sheets, shared visual language:
 
 ## 9. Integration with existing pieces
 
-- **`BrowserTab`**: gains `walletBridge: EthereumBridge`. Wired up at tab construction, listens on the tab's `WKUserContentController`. The bridge derives `OriginIdentity` from `BrowserTab.displayURL` at message-receive time (§6.1).
-- **`FreedomApp`**: constructs a single `Vault`, `PermissionStore`, `TransactionService`, `ChainRegistry`, `WalletRPC`, injects them into the environment. `TODO: Keychain in M4` at `FreedomApp.swift:72` (Swarm bootnode password) can ride the same Keychain plumbing we build here.
-- **`SettingsStore`**: gains `walletIdleLockMinutes`, `walletDefaultChainID` (Gnosis), `walletRequireBiometric`.
+- **`BrowserTab`** (pending, M5.4): will gain `walletBridge: EthereumBridge`. Wired up at tab construction, listens on the tab's `WKUserContentController`. The bridge derives `OriginIdentity` from `BrowserTab.displayURL` at message-receive time (§6.1).
+- **`FreedomApp`** ✅ constructs + injects `Vault`, `ChainRegistry`, `TransactionService` (which owns `NonceTracker` + `GasOracle` internally). `WalletRPC` is exposed lazily via `ChainRegistry.walletRPC`. `PermissionStore` lands in M5.4 alongside the bridge. Auto-lock on app background fires `vault.lock()` from `ContentView`'s scenePhase observer. `TODO: Keychain in M4` at `FreedomApp.swift:72` (Swarm bootnode password) is unrelated rot, still open.
+- **`SettingsStore`**: not extended yet. `WalletDefaults.activeChainID` ( `@AppStorage`) covers the one persisted wallet preference in v1; `walletIdleLockMinutes` + `walletRequireBiometric` are M5.7.
+- **`ContentView`** ✅ adds a `creditcard.fill` toolbar button that presents `WalletSheet`. `Info.plist` declares `NSFaceIDUsageDescription` so iOS permits Face ID instead of silently falling back to passcode.
 
 ### 9.1 Why the wallet doesn't consensus-resolve RPC
 
@@ -304,19 +310,19 @@ Running a K-wide consensus per `eth_call` would mean 3-5 RPCs for every balance 
 
 `eth_sendRawTransaction` specifically: broadcast to one provider; the tx hash we get back is the one we show the user. If the first provider errors, fall through to the next. We don't fan out to all providers in parallel — redundant broadcasts are fine for propagation but create UX weirdness ("which provider's hash do we display?") for no real benefit.
 
-- **`ENSResolver`**: the wallet's Send-to-ENS-name flow reuses this directly. `vitalik.eth` in the To: field resolves through the same hardened pipeline as an address-bar ENS navigation — no duplicate code path. ENS-name resolution of the recipient is the one place the wallet still uses the full consensus wave, because the threat model there *is* ENS-forge.
+- **`ENSResolver`** (pending, M5.7): the wallet's Send-to-ENS-name flow will reuse the consensus pipeline. Shipping note: `ENSResolver.resolveContent` today does the `contenthash(bytes32)` call for the browser; adding the `addr(bytes32)` path for recipient resolution is the remaining work. ENS-name resolution of the recipient is the one place the wallet uses the full consensus wave, because the threat model there *is* ENS-forge.
 
 ## 10. Milestones
 
 The wallet is a first-class feature — no global feature flag. Each milestone lands as a stand-alone commit series; the earliest ones put the wallet icon in the bottom toolbar but clicking it just shows an empty "Not set up yet" state until M5.2.
 
-- **M5.1 — Vault primitives** ✅. Mnemonic + HD derivation (WP1), Secure Enclave + Keychain three-tier storage (WP2). Tested against BIP-39/BIP-32 vectors and Hardhat cross-check. No UI.
-- **M5.2 — Wallet Home UI (read-only)**. Create/import flow, unlock flow, show account + ETH balance + xDAI balance. No signing.
-- **M5.3 — User-initiated send**. Build + sign + broadcast an EIP-1559 tx from the Wallet Home. Recipient can be address or ENS name. Gas estimate via `eth_estimateGas`, fee suggestion via `eth_feeHistory`.
+- **M5.1 — Vault primitives** ✅. Mnemonic + HD derivation (WP1), Secure Enclave + Keychain three-tier storage with iCloud-synced default (WP2). BIP-39/BIP-32 vectors, Hardhat cross-check. No UI.
+- **M5.2 — Wallet Home UI (read-only)** ✅. Chain registry + single-shot-with-fallback WalletRPC (WP3), create/import setup flow behind app-level biometric gate (WP4), real wallet home with Gnosis/Mainnet balance, chain picker, recovery-phrase reveal, wipe, security-level badge (WP5). Plus vault auto-lock on app backgrounding.
+- **M5.3 — User-initiated send** ✅. Build → sign → broadcast → confirm-poll tx pipeline with nonce tracker + gas oracle via `eth_gasPrice` (WP6), SendFlowView + SendReviewView UI with inline pending/confirmed/timed-out progress (WP7). **Legacy (pre-EIP-1559) tx shape** — Argent's `EthereumTransaction` is legacy-only and writing type-2 RLP by hand has real bug surface; EIP-1559 + `eth_feeHistory` deferred to M5.7 alongside the advanced fee UX. **Hex recipients only** — ENS name resolution would need address-path consensus in `ENSResolver` beyond the contenthash path it runs for the browser; deferred to M5.7.
 - **M5.4 — EIP-1193 bridge (read-only)**. Inject `window.ethereum`. Wire up `eth_chainId`, `eth_accounts`, `eth_call`, `eth_getBalance`, `eth_blockNumber`. No signing yet. Permission store scaffolding, but no connect sheet — dapps see `eth_accounts: []` for now.
-- **M5.5 — Connect + sign**. ApproveConnectSheet, ApproveSignSheet, `personal_sign`, `eth_signTypedData_v4`. Enable wallet flag by default.
-- **M5.6 — Send from dapps**. ApproveTxSheet, `eth_sendTransaction`, nonce/gas pipeline. End-to-end tx on Gnosis with a live dapp.
-- **M5.7 — Polish**. Auto-approve rules, chain-switch UX, connected-sites settings, idle-lock tuning, biometric failure fallbacks.
+- **M5.5 — Connect + sign**. ApproveConnectSheet, ApproveSignSheet, `personal_sign`, `eth_signTypedData_v4`.
+- **M5.6 — Send from dapps**. ApproveTxSheet, `eth_sendTransaction`, reuses the WP6 tx pipeline. End-to-end tx on Gnosis with a live dapp.
+- **M5.7 — Polish**. ENS recipient resolution, EIP-1559 tx + fee-tier UI, auto-approve rules, chain-switch UX, connected-sites settings, idle-lock-while-foregrounded timer, biometric failure fallbacks.
 
 Each milestone gets its own commit series and /simplify pass.
 
