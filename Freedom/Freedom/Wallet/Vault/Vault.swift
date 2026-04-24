@@ -75,6 +75,16 @@ final class Vault {
         return try HDKey(seed: seed).derive(path)
     }
 
+    /// Re-reads the mnemonic from Keychain storage, triggering a fresh
+    /// biometric prompt on the cloudSynced tier. Used for "Show recovery
+    /// phrase" — we deliberately don't cache the words on the Vault, so
+    /// displaying them always costs an explicit re-auth.
+    func revealMnemonic() async throws -> Mnemonic {
+        try await Task.detached(priority: .userInitiated) { [crypto] in
+            try await crypto.load()
+        }.value
+    }
+
     func wipe() async throws {
         try await Task.detached(priority: .userInitiated) { [crypto] in
             try crypto.wipe()

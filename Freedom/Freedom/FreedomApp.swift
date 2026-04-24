@@ -13,6 +13,7 @@ struct FreedomApp: App {
     @State private var tabStore: TabStore
     @State private var ensResolver: ENSResolver
     @State private var vault: Vault
+    @State private var chainRegistry: ChainRegistry
     private let modelContainer: ModelContainer
 
     init() {
@@ -40,6 +41,7 @@ struct FreedomApp: App {
                 settings: settings
             ))
             self._vault = State(wrappedValue: Vault())
+            self._chainRegistry = State(wrappedValue: ChainRegistry(mainnetPool: pool))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
         }
@@ -61,6 +63,7 @@ struct FreedomApp: App {
                 .environment(faviconStore)
                 .environment(ensResolver)
                 .environment(vault)
+                .environment(chainRegistry)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
         }

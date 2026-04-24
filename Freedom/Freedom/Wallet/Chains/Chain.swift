@@ -25,4 +25,8 @@ struct Chain: Equatable, Hashable, Identifiable {
 
     static let all: [Chain] = [.gnosis, .mainnet]
     static let defaultChain: Chain = .gnosis
+
+    static func find(id: Int) -> Chain? {
+        all.first(where: { $0.id == id })
+    }
 }

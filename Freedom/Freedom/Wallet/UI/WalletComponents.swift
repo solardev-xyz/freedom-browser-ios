@@ -105,6 +105,45 @@ struct PrimaryActionButton: View {
     }
 }
 
+struct WipeWalletButton: View {
+    @Environment(Vault.self) private var vault
+    @State private var isShowingConfirm = false
+
+    var body: some View {
+        Button("Wipe wallet", role: .destructive) {
+            isShowingConfirm = true
+        }
+        .buttonStyle(.bordered)
+        .frame(maxWidth: .infinity)
+        .confirmationDialog(
+            "Wipe this wallet?",
+            isPresented: $isShowingConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Wipe wallet", role: .destructive) {
+                Task { try? await vault.wipe() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Unless you have your recovery phrase saved elsewhere, funds held by this wallet will be lost permanently. iCloud Keychain propagates the deletion to your other Apple devices.")
+        }
+    }
+}
+
+struct WalletAdvancedSection<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        DisclosureGroup("Advanced") {
+            VStack(spacing: 12) {
+                content()
+            }
+            .padding(.top, 8)
+        }
+        .tint(.secondary)
+    }
+}
+
 struct SecurityLevelBadge: View {
     let level: VaultSecurityLevel
 

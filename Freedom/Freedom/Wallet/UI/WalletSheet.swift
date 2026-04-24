@@ -11,8 +11,10 @@ struct WalletSheet: View {
                 switch vault.state {
                 case .empty:
                     VaultSetupView()
-                case .locked, .unlocked:
-                    WalletHomePlaceholder()
+                case .locked:
+                    WalletLockedView()
+                case .unlocked:
+                    WalletHomeView()
                 }
             }
             .navigationTitle("Wallet")

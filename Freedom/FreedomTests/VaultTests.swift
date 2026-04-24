@@ -135,6 +135,17 @@ final class VaultTests: XCTestCase {
         )
     }
 
+    /// `revealMnemonic` re-reads from storage (triggering a fresh biometric
+    /// prompt on the cloudSynced tier) — we deliberately don't cache the
+    /// words on Vault so this path always costs an explicit re-auth.
+    func testRevealMnemonicReturnsStoredPhrase() async throws {
+        let mnemonic = try Mnemonic(phrase: "test test test test test test test test test test test junk")
+        let v = Vault(crypto: makeCrypto())
+        try await v.create(mnemonic: mnemonic)
+        let revealed = try await v.revealMnemonic()
+        XCTAssertEqual(revealed.words, mnemonic.words)
+    }
+
     /// When the prompter says auth isn't available (no passcode / biometric),
     /// the create path must fall back to `.deviceBound` rather than silently
     /// storing a plaintext DEK in iCloud Keychain.

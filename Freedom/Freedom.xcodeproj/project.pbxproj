@@ -11,6 +11,7 @@
 		17E52F300000000000000003 /* web3.swift in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F200000000000000002 /* web3.swift */; };
 		17E52F50000000000000000E /* ENSNormalize in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F60000000000000000F /* ENSNormalize */; };
 		17E52F80000000000000000A /* secp256k1 in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F90000000000000000B /* secp256k1 */; };
+		17E52FA0000000000000000C /* BigInt in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52FB0000000000000000D /* BigInt */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -63,6 +64,7 @@
 				17E52F300000000000000003 /* web3.swift in Frameworks */,
 				17E52F50000000000000000E /* ENSNormalize in Frameworks */,
 				17E52F80000000000000000A /* secp256k1 in Frameworks */,
+				17E52FA0000000000000000C /* BigInt in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -118,6 +120,7 @@
 				17E52F200000000000000002 /* web3.swift */,
 				17E52F60000000000000000F /* ENSNormalize */,
 				17E52F90000000000000000B /* secp256k1 */,
+				17E52FB0000000000000000D /* BigInt */,
 			);
 			productName = Freedom;
 			productReference = 1707269C2F96CCE500CCFF45 /* Freedom.app */;
@@ -175,6 +178,7 @@
 				17E52F100000000000000001 /* XCRemoteSwiftPackageReference "web3" */,
 				17E52F400000000000000004 /* XCRemoteSwiftPackageReference "secp256k1" */,
 				17E52F70000000000000000D /* XCRemoteSwiftPackageReference "ENSNormalize" */,
+				17E52FC0000000000000000E /* XCRemoteSwiftPackageReference "BigInt" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1707269D2F96CCE500CCFF45 /* Products */;
@@ -539,6 +543,14 @@
 				revision = d848cc56f5ba8a9cb60dc26b61c96ca51509ef52;
 			};
 		};
+		17E52FC0000000000000000E /* XCRemoteSwiftPackageReference "BigInt" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/attaswift/BigInt";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -560,6 +572,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 17E52F400000000000000004 /* XCRemoteSwiftPackageReference "secp256k1" */;
 			productName = secp256k1;
+		};
+		17E52FB0000000000000000D /* BigInt */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 17E52FC0000000000000000E /* XCRemoteSwiftPackageReference "BigInt" */;
+			productName = BigInt;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
