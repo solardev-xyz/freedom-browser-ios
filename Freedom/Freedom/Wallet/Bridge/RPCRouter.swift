@@ -17,6 +17,18 @@ final class RPCRouter {
     struct ErrorPayload: Equatable {
         let code: Int
         let message: String
+
+        /// EIP-1193 + EIP-1474 + EIP-3326 error codes. Grouped here so the
+        /// magic numbers in bridge handlers map back to a spec reference.
+        enum Code {
+            static let userRejected = 4001         // EIP-1193 §5.1
+            static let unauthorized = 4100         // EIP-1193 §5.1
+            static let unsupportedMethod = 4200    // EIP-1193 §5.1
+            static let unrecognizedChain = 4902    // EIP-3326
+            static let resourceUnavailable = -32002 // EIP-1474
+            static let invalidParams = -32602      // EIP-1474
+            static let internalError = -32603      // EIP-1474
+        }
     }
 
     @ObservationIgnored private let registry: ChainRegistry

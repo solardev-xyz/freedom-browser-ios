@@ -81,12 +81,3 @@ final class PermissionStore {
     }
 }
 
-extension Notification.Name {
-    /// Posted when the user revokes a dapp's grant. `userInfo["origin"]`
-    /// carries the `OriginIdentity.key` so observers can match affected tabs.
-    static let walletPermissionRevoked = Notification.Name("walletPermissionRevoked")
-
-    /// Posted when the user switches chains in the wallet UI.
-    /// `userInfo["chainID"]` carries the new Int chain ID.
-    static let walletActiveChainChanged = Notification.Name("walletActiveChainChanged")
-}

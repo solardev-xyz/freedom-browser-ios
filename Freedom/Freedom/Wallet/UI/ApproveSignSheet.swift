@@ -126,8 +126,8 @@ private struct TypedDataBody: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
-                labeledRow("Domain", value: domainSummary)
-                labeledRow("Type", value: typed.primaryType)
+                ApprovalLabeledRow(label: "Domain", value: domainSummary)
+                ApprovalLabeledRow(label: "Type", value: typed.primaryType)
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -156,18 +156,6 @@ private struct TypedDataBody: View {
         .task {
             messageJSON = typed.description
             domainSummary = formatDomain()
-        }
-    }
-
-    private func labeledRow(_ label: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .font(.caption)
-                .monospaced()
-                .lineLimit(1)
-                .truncationMode(.middle)
         }
     }
 

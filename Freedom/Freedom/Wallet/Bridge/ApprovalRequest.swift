@@ -28,6 +28,7 @@ struct ApprovalRequest: Identifiable {
         case personalSign(PersonalSignCoder.Preview)
         case typedData(TypedData)
         case sendTransaction(SendTransactionDetails)
+        case switchChain(SwitchChainDetails)
     }
 
     enum Decision {
@@ -53,4 +54,12 @@ struct SendTransactionDetails {
     let data: Data
     let quote: TransactionService.Quote
     let chain: Chain
+}
+
+/// Payload for `wallet_switchEthereumChain`. Both chains resolved against
+/// `ChainRegistry` before the sheet shows; unknown chains short-circuit
+/// with EIP-3326's `4902` before reaching the sheet.
+struct SwitchChainDetails {
+    let from: Chain
+    let to: Chain
 }

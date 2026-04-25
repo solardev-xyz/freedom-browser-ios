@@ -122,7 +122,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
 
     private func dispatch(id: Int, method: String, params: [Any], origin: OriginIdentity?) async {
         guard let origin else {
-            return reply(id: id, error: .init(code: 4100, message: "No origin identity — cannot route request."))
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.unauthorized, message: "No origin identity — cannot route request."))
         }
 
         switch method {
@@ -137,6 +137,9 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
             return
         case "eth_sendTransaction":
             await handleSendTransaction(id: id, origin: origin, params: params)
+            return
+        case "wallet_switchEthereumChain":
+            await handleSwitchChain(id: id, origin: origin, params: params)
             return
         default:
             break
@@ -154,12 +157,11 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
 
     private func assertEligibleAndFree(id: Int, origin: OriginIdentity) -> Bool {
         guard origin.isEligibleForWallet else {
-            reply(id: id, error: .init(code: 4100, message: "Origin not permitted."))
+            reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.unauthorized, message: "Origin not permitted."))
             return false
         }
-        // -32002 "resource unavailable" — MetaMask's code for stacked approvals.
         guard tab?.pendingEthereumApproval == nil else {
-            reply(id: id, error: .init(code: -32002, message: "Another approval is already pending."))
+            reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.resourceUnavailable, message: "Another approval is already pending."))
             return false
         }
         return true
@@ -167,7 +169,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
 
     private func requireConnectedOrigin(id: Int, origin: OriginIdentity) -> Bool {
         guard permissionStore.isConnected(origin.key) else {
-            reply(id: id, error: .init(code: 4100, message: "Connect first — \(origin.displayString) isn't authorized."))
+            reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.unauthorized, message: "Connect first — \(origin.displayString) isn't authorized."))
             return false
         }
         return true
@@ -210,10 +212,10 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
                 emit(event: "connect", data: ["chainId": router.currentChain().hexChainID])
                 reply(id: id, result: [address])
             } catch {
-                reply(id: id, error: .init(code: -32603, message: "Couldn't derive address: \(error.localizedDescription)"))
+                reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.internalError, message: "Couldn't derive address: \(error.localizedDescription)"))
             }
         case .denied:
-            reply(id: id, error: .init(code: 4001, message: "User rejected the request."))
+            reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.userRejected, message: "User rejected the request."))
         }
     }
 
@@ -227,10 +229,10 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         do {
             decoded = try PersonalSignCoder.decode(params: params)
         } catch {
-            return reply(id: id, error: .init(code: -32602, message: "Invalid personal_sign params."))
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.invalidParams, message: "Invalid personal_sign params."))
         }
         guard matchesGrantedAccount(decoded.declaredAddress, origin: origin) else {
-            return reply(id: id, error: .init(code: -32602, message: "Account in params doesn't match the connected account."))
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.invalidParams, message: "Account in params doesn't match the connected account."))
         }
 
         switch await parkAndAwait(origin: origin, kind: .personalSign(decoded.preview)) {
@@ -240,10 +242,10 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
                 permissionStore.touchLastUsed(origin: origin.key)
                 reply(id: id, result: signature)
             } catch {
-                reply(id: id, error: .init(code: -32603, message: "Signing failed: \(error.localizedDescription)"))
+                reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.internalError, message: "Signing failed: \(error.localizedDescription)"))
             }
         case .denied:
-            reply(id: id, error: .init(code: 4001, message: "User rejected the request."))
+            reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.userRejected, message: "User rejected the request."))
         }
     }
 
@@ -252,17 +254,17 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
               requireConnectedOrigin(id: id, origin: origin) else { return }
 
         guard params.count == 2, let addressParam = params.first as? String else {
-            return reply(id: id, error: .init(code: -32602, message: "Expected [address, typedData]."))
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.invalidParams, message: "Expected [address, typedData]."))
         }
         guard matchesGrantedAccount(addressParam, origin: origin) else {
-            return reply(id: id, error: .init(code: -32602, message: "Account in params doesn't match the connected account."))
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.invalidParams, message: "Account in params doesn't match the connected account."))
         }
 
         let typedData: TypedData
         do {
             typedData = try decodeTypedData(params[1])
         } catch {
-            return reply(id: id, error: .init(code: -32602, message: "Invalid typed-data payload: \(error.localizedDescription)"))
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.invalidParams, message: "Invalid typed-data payload: \(error.localizedDescription)"))
         }
 
         switch await parkAndAwait(origin: origin, kind: .typedData(typedData)) {
@@ -272,10 +274,10 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
                 permissionStore.touchLastUsed(origin: origin.key)
                 reply(id: id, result: signature)
             } catch {
-                reply(id: id, error: .init(code: -32603, message: "Signing failed: \(error.localizedDescription)"))
+                reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.internalError, message: "Signing failed: \(error.localizedDescription)"))
             }
         case .denied:
-            reply(id: id, error: .init(code: 4001, message: "User rejected the request."))
+            reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.userRejected, message: "User rejected the request."))
         }
     }
 
@@ -296,16 +298,16 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         do {
             decoded = try TransactionParamsCoder.decode(params: params)
         } catch {
-            return reply(id: id, error: .init(code: -32602, message: "Invalid eth_sendTransaction params: \(error.localizedDescription)"))
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.invalidParams, message: "Invalid eth_sendTransaction params: \(error.localizedDescription)"))
         }
 
         guard matchesGrantedAccount(decoded.from.asString(), origin: origin) else {
-            return reply(id: id, error: .init(code: -32602, message: "Account in params doesn't match the connected account."))
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.invalidParams, message: "Account in params doesn't match the connected account."))
         }
 
         let chain = router.currentChain()
         if let dappChain = decoded.chainID, dappChain != chain.id {
-            return reply(id: id, error: .init(code: -32602,
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.invalidParams,
                 message: "Wrong chain — wallet is on \(chain.displayName) (id \(chain.id)), tx requested chain \(dappChain). Switch first."))
         }
 
@@ -313,7 +315,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         do {
             quote = try await composeQuote(decoded: decoded, on: chain)
         } catch {
-            return reply(id: id, error: .init(code: -32603, message: "Couldn't estimate gas: \(error.localizedDescription)"))
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.internalError, message: "Couldn't estimate gas: \(error.localizedDescription)"))
         }
 
         let details = SendTransactionDetails(
@@ -337,10 +339,46 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
                 permissionStore.touchLastUsed(origin: origin.key)
                 reply(id: id, result: hash)
             } catch {
-                reply(id: id, error: .init(code: -32603, message: "Broadcast failed: \(error.localizedDescription)"))
+                reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.internalError, message: "Broadcast failed: \(error.localizedDescription)"))
             }
         case .denied:
-            reply(id: id, error: .init(code: 4001, message: "User rejected the request."))
+            reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.userRejected, message: "User rejected the request."))
+        }
+    }
+
+    // MARK: - Chain switch
+
+    /// `wallet_switchEthereumChain` per EIP-3326. Eligibility is enough —
+    /// connection isn't required (dapps commonly switch before connecting).
+    /// Already-on-this-chain returns silent `null`. Unknown chain returns
+    /// `4902` so the dapp can surface "add chain first" UX (we don't
+    /// implement `wallet_addEthereumChain` in v1 — see §6.4).
+    private func handleSwitchChain(id: Int, origin: OriginIdentity, params: [Any]) async {
+        guard assertEligibleAndFree(id: id, origin: origin) else { return }
+
+        let requestedID: Int
+        do {
+            requestedID = try SwitchChainParamsCoder.decodeChainID(params: params)
+        } catch {
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.invalidParams, message: "Expected [{chainId: hex}]."))
+        }
+
+        let current = router.currentChain()
+        if current.id == requestedID {
+            return reply(id: id, result: NSNull())
+        }
+
+        guard let target = Chain.find(id: requestedID) else {
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.unrecognizedChain, message: "Unrecognized chain ID. Add it first."))
+        }
+
+        let details = SwitchChainDetails(from: current, to: target)
+        switch await parkAndAwait(origin: origin, kind: .switchChain(details)) {
+        case .approved:
+            WalletDefaults.setActiveChainID(target.id)
+            reply(id: id, result: NSNull())
+        case .denied:
+            reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.userRejected, message: "User rejected the request."))
         }
     }
 

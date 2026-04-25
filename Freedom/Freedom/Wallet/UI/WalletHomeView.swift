@@ -68,19 +68,19 @@ struct WalletHomeView: View {
     }
 
     private var chainPicker: some View {
-        Picker("Chain", selection: $activeChainID) {
+        // Custom Binding routes the write through `WalletDefaults.setActiveChainID`
+        // so the notification posts from one place — same code path as the
+        // bridge's `wallet_switchEthereumChain` handler.
+        let binding = Binding(
+            get: { activeChainID },
+            set: { WalletDefaults.setActiveChainID($0) }
+        )
+        return Picker("Chain", selection: binding) {
             ForEach(Chain.all) { chain in
                 Text(chain.displayName).tag(chain.id)
             }
         }
         .pickerStyle(.segmented)
-        .onChange(of: activeChainID) { _, new in
-            NotificationCenter.default.post(
-                name: .walletActiveChainChanged,
-                object: nil,
-                userInfo: ["chainID": new]
-            )
-        }
     }
 
     private var balanceCard: some View {

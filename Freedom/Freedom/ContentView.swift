@@ -100,6 +100,8 @@ struct ContentView: View {
                 ApproveSignSheet(approval: approval, kind: .typedData(typed))
             case .sendTransaction(let details):
                 ApproveTxSheet(approval: approval, details: details)
+            case .switchChain(let details):
+                ApproveChainSwitchSheet(approval: approval, details: details)
             }
         }
         .onChange(of: tabStore.activeTab?.displayURL) { _, new in

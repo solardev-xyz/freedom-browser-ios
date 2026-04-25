@@ -1,13 +1,5 @@
 import SwiftUI
 
-/// Well-known UserDefaults keys the wallet feature persists. Centralised
-/// so any typo (`walletActiveChainID` vs `wallet.activeChainID` vs
-/// `walletActiveChainId`) trips at compile-time instead of silently
-/// fragmenting storage.
-enum WalletDefaults {
-    static let activeChainID = "walletActiveChainID"
-}
-
 /// Shared lifecycle for the create and import flows. `.idle` covers both
 /// "waiting for input" in import and "waiting for the Create button" in create.
 enum SetupStage: Equatable {

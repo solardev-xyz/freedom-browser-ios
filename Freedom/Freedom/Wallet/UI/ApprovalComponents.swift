@@ -52,3 +52,24 @@ struct ApprovalUnlockStrip: View {
         }
     }
 }
+
+/// `caption — value` row for approval-sheet detail cards. Shared between
+/// the typed-data, send-tx, and chain-switch sheets.
+@MainActor
+struct ApprovalLabeledRow: View {
+    let label: String
+    let value: String
+    var valueFont: Font = .caption.monospaced()
+    var valueWeight: Font.Weight = .regular
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(valueFont.weight(valueWeight))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+}
