@@ -44,7 +44,8 @@ struct FreedomApp: App {
                 vault: vault,
                 chainRegistry: registry,
                 permissionStore: permissions,
-                transactionService: txService
+                transactionService: txService,
+                ensResolver: resolver
             )
             self._vault = State(wrappedValue: vault)
             self._chainRegistry = State(wrappedValue: registry)

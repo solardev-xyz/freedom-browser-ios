@@ -11,4 +11,5 @@ struct WalletServices {
     let chainRegistry: ChainRegistry
     let permissionStore: PermissionStore
     let transactionService: TransactionService
+    let ensResolver: ENSResolver
 }

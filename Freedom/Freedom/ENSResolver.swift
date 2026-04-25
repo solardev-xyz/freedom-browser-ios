@@ -1,3 +1,4 @@
+import BigInt
 import Foundation
 import web3
 import ENSNormalize
@@ -37,22 +38,33 @@ final class ENSResolver {
     private let settings: SettingsStore
     private let anchor: AnchorCorroboration
     private let legRunner: QuorumWave.LegRunner
+    private let reverseTransport: ReverseTransport
     private let clock: () -> Date
+
+    typealias ReverseTransport = @Sendable (URL, Data, TimeInterval) async throws -> Data
+    nonisolated static let defaultReverseTransport: ReverseTransport = { url, body, timeout in
+        try await RPCSession.postBytes(url: url, body: body, timeout: timeout)
+    }
 
     private var cache: [String: CacheEntry] = [:]
     private var inFlight: [String: Task<CachedOutcome, Never>] = [:]
+    private var addressCache: [String: AddressCacheEntry] = [:]
+    private var addressInFlight: [String: Task<Result<EthereumAddress, ENSResolutionError>, Never>] = [:]
+    private var reverseCache: [String: ReverseCacheEntry] = [:]
 
     init(
         pool: EthereumRPCPool,
         settings: SettingsStore,
         anchor: AnchorCorroboration? = nil,
         legRunner: @escaping QuorumWave.LegRunner = QuorumWave.defaultLegRunner,
+        reverseTransport: @escaping ReverseTransport = ENSResolver.defaultReverseTransport,
         clock: @escaping () -> Date = Date.init
     ) {
         self.pool = pool
         self.settings = settings
         self.anchor = anchor ?? AnchorCorroboration(pool: pool, settings: settings)
         self.legRunner = legRunner
+        self.reverseTransport = reverseTransport
         self.clock = clock
     }
 
@@ -464,5 +476,247 @@ final class ENSResolver {
             ))
         }
         return groups
+    }
+
+    // MARK: - Forward addr(bytes32) resolution
+
+    private static let addrSelector = Data([0x3b, 0x3b, 0x57, 0xde])
+
+    /// Resolve an ENS name to its primary Ethereum address. Same consensus
+    /// pipeline as `resolveContent` — a lying RPC could otherwise misroute
+    /// the user's funds — just with a different selector and a different
+    /// success-payload decode.
+    func resolveAddress(_ name: String) async throws -> EthereumAddress {
+        let normalized: String
+        do {
+            normalized = try name.ensNormalized()
+        } catch {
+            throw ENSResolutionError.invalidName
+        }
+
+        if let cached = addressCache[normalized], clock() < cached.expiresAt {
+            return try cached.outcome.get()
+        }
+        if let task = addressInFlight[normalized] {
+            return try await task.value.get()
+        }
+
+        let task = Task { @MainActor in
+            let outcome = await self.doResolveAddress(normalized)
+            guard !Task.isCancelled else {
+                self.addressInFlight.removeValue(forKey: normalized)
+                return outcome
+            }
+            self.storeAddress(normalized: normalized, outcome: outcome)
+            return outcome
+        }
+        addressInFlight[normalized] = task
+        return try await task.value.get()
+    }
+
+    private func doResolveAddress(_ normalized: String) async -> Result<EthereumAddress, ENSResolutionError> {
+        let dnsEncoded: Data
+        do {
+            dnsEncoded = try ENSNameEncoding.dnsEncode(normalized)
+        } catch {
+            return .failure(.invalidName)
+        }
+        let node = ENSNameEncoding.namehash(normalized)
+        let callData = Self.addrSelector + node
+
+        let consensus: ConsensusResult
+        do {
+            consensus = try await consensusResolve(dnsEncodedName: dnsEncoded, callData: callData)
+        } catch let err as AnchorCorroboration.AnchorError {
+            if case .hashDisagreement(let largest, let total, let threshold) = err {
+                return .failure(.anchorDisagreement(
+                    largestBucketSize: largest, total: total, threshold: threshold
+                ))
+            }
+            return .failure(.allProvidersErrored)
+        } catch ENSResolutionError.customRpcFailed {
+            return .failure(.customRpcFailed)
+        } catch {
+            return .failure(.allProvidersErrored)
+        }
+
+        switch consensus {
+        case .data(let abiEncoded, _, let trust):
+            guard let address = decodeAddress(abiEncoded) else {
+                return .failure(.notFound(reason: .emptyAddress, trust: trust))
+            }
+            // Zero address from `addr()` is ENS's "no address record set".
+            if address == EthereumAddress.zero {
+                return .failure(.notFound(reason: .emptyAddress, trust: trust))
+            }
+            return .success(address)
+        case .notFound(let reason, let trust):
+            return .failure(.notFound(reason: reason, trust: trust))
+        case .conflict(let groups, let trust):
+            return .failure(.conflict(groups: groups, trust: trust))
+        }
+    }
+
+    private func decodeAddress(_ abiEncoded: Data) -> EthereumAddress? {
+        // QuorumLeg already strips UR's outer `(bytes result, address)` —
+        // for `addr() returns (address)` (static), `result` is just the
+        // 32-byte ABI-padded address, no further `bytes` layer to unwrap.
+        // Contrast with contenthash, where the inner return type IS
+        // `bytes`, hence ContenthashDecoder.unwrapABIBytes there.
+        guard let decoded = try? ABIDecoder.decodeData(
+            abiEncoded.web3.hexString, types: [EthereumAddress.self]
+        ).first else { return nil }
+        return try? decoded.decoded()
+    }
+
+    private func storeAddress(
+        normalized: String,
+        outcome: Result<EthereumAddress, ENSResolutionError>
+    ) {
+        if let ttl = addressTTL(for: outcome) {
+            addressCache[normalized] = AddressCacheEntry(
+                outcome: outcome,
+                expiresAt: clock().addingTimeInterval(ttl)
+            )
+            capAddressCache()
+        }
+        addressInFlight.removeValue(forKey: normalized)
+    }
+
+    /// Returns nil for transient failures (network) so retries can hit the
+    /// network; matches the content-cache policy.
+    private func addressTTL(for outcome: Result<EthereumAddress, ENSResolutionError>) -> TimeInterval? {
+        switch outcome {
+        case .success: return 15 * 60
+        case .failure(.allProvidersErrored), .failure(.customRpcFailed): return nil
+        case .failure(.conflict), .failure(.anchorDisagreement): return 10
+        case .failure: return 60
+        }
+    }
+
+    private func capAddressCache() {
+        guard addressCache.count > Self.maxCacheEntries else { return }
+        let now = clock()
+        addressCache = addressCache.filter { $0.value.expiresAt > now }
+        while addressCache.count > Self.maxCacheEntries, let key = addressCache.keys.first {
+            addressCache.removeValue(forKey: key)
+        }
+    }
+
+    // MARK: - Reverse resolution
+
+    /// SLIP-44 coin type for Ethereum mainnet. Second arg to UR's
+    /// `reverse(bytes,uint256)` — picks the canonical Ethereum-address
+    /// primary name vs. other-chain primary names.
+    private static let ethereumCoinType: BigUInt = 60
+
+    /// Reverse-resolve an Ethereum address to its ENS primary name.
+    /// Single-shot via the wallet's RPC pool against Mainnet UR — display-
+    /// only, so the consensus wave isn't worth the latency. Returns nil
+    /// when the address has no primary name set or the call fails (the
+    /// caller treats nil as "no subtitle").
+    func reverseResolve(address: EthereumAddress) async throws -> String? {
+        let key = address.asString().lowercased()
+        if let cached = reverseCache[key], clock() < cached.expiresAt {
+            return cached.name
+        }
+        let name = try await fetchReverseName(address: address)
+        reverseCache[key] = ReverseCacheEntry(
+            name: name,
+            expiresAt: clock().addingTimeInterval(name == nil ? 60 : 15 * 60)
+        )
+        capReverseCache()
+        return name
+    }
+
+    private func capReverseCache() {
+        guard reverseCache.count > Self.maxCacheEntries else { return }
+        let now = clock()
+        reverseCache = reverseCache.filter { $0.value.expiresAt > now }
+        while reverseCache.count > Self.maxCacheEntries, let key = reverseCache.keys.first {
+            reverseCache.removeValue(forKey: key)
+        }
+    }
+
+    private func fetchReverseName(address: EthereumAddress) async throws -> String? {
+        let providers = pool.availableProviders()
+        guard !providers.isEmpty else { throw ReverseError.allProvidersFailed }
+
+        let callData = try abiEncodeReverse(address: address)
+        let body: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_call",
+            "params": [
+                ["to": Self.universalResolverAddress.asString(), "data": callData.web3.hexString],
+                "latest",
+            ],
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
+
+        // Iterate providers on transport / parse / RPC-error failure so a
+        // single flaky RPC doesn't poison the result. The Universal
+        // Resolver doesn't revert for well-formed addresses (it catches
+        // inner reverts and returns empty); any `error` envelope we see
+        // is the provider misbehaving (Cloudflare's -32603, Ankr's
+        // -32000 unauthorized, etc.), not a definitive "no name" signal.
+        // Empty `result` after a successful call IS the no-name answer.
+        for url in providers {
+            let response: Data
+            do {
+                response = try await reverseTransport(url, bodyData, timeout)
+            } catch {
+                continue
+            }
+            guard let envelope = (try? JSONSerialization.jsonObject(with: response)) as? [String: Any] else {
+                continue
+            }
+            if envelope["error"] != nil { continue }
+            guard let resultHex = envelope["result"] as? String,
+                  let primary = decodeReverseResult(resultHex) else {
+                continue
+            }
+            return primary.isEmpty ? nil : primary
+        }
+        // Every provider failed — transient, not cacheable. Caller's `try?`
+        // turns this into a silent nil.
+        throw ReverseError.allProvidersFailed
+    }
+
+    enum ReverseError: Error {
+        case allProvidersFailed
+    }
+
+    private func abiEncodeReverse(address: EthereumAddress) throws -> Data {
+        guard let addressBytes = address.asString().web3.hexData else {
+            throw ENSResolutionError.invalidName
+        }
+        let encoder = ABIFunctionEncoder("reverse")
+        try encoder.encode(addressBytes)
+        try encoder.encode(Self.ethereumCoinType)
+        return try encoder.encoded()
+    }
+
+    private func decodeReverseResult(_ hex: String) -> String? {
+        guard let decoded = try? ABIDecoder.decodeData(
+            hex,
+            types: [String.self, EthereumAddress.self, EthereumAddress.self]
+        ), let primary = try? decoded[0].decoded() as String else {
+            return nil
+        }
+        return primary
+    }
+
+    // MARK: - Address cache state
+
+    private struct AddressCacheEntry {
+        let outcome: Result<EthereumAddress, ENSResolutionError>
+        let expiresAt: Date
+    }
+
+    private struct ReverseCacheEntry {
+        let name: String?
+        let expiresAt: Date
     }
 }

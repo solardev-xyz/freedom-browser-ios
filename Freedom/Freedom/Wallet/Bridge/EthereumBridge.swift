@@ -311,19 +311,28 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
                 message: "Wrong chain — wallet is on \(chain.displayName) (id \(chain.id)), tx requested chain \(dappChain). Switch first."))
         }
 
+        // Run gas estimation + reverse lookup in parallel — they don't
+        // depend on each other, and the sheet only shows once both land.
+        // Swallows reverse errors: recipientName is decorative, the hex
+        // is canonical regardless.
+        async let quoteTask = composeQuote(decoded: decoded, on: chain)
+        async let nameTask: String? = (try? services.ensResolver.reverseResolve(address: decoded.to)) ?? nil
+
         let quote: TransactionService.Quote
         do {
-            quote = try await composeQuote(decoded: decoded, on: chain)
+            quote = try await quoteTask
         } catch {
             return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.internalError, message: "Couldn't estimate gas: \(error.localizedDescription)"))
         }
+        let recipientName = await nameTask
 
         let details = SendTransactionDetails(
             to: decoded.to,
             valueWei: decoded.valueWei,
             data: decoded.data,
             quote: quote,
-            chain: chain
+            chain: chain,
+            recipientName: recipientName
         )
 
         switch await parkAndAwait(origin: origin, kind: .sendTransaction(details)) {

@@ -47,13 +47,16 @@ struct ApprovalRequest: Identifiable {
 }
 
 /// Pre-decoded payload for `eth_sendTransaction` approval. `from` lives
-/// on the Quote.
+/// on the Quote. `recipientName` is best-effort reverse-lookup from ENS;
+/// nil when none set (or the reverse RPC failed) — UI silently degrades
+/// to the hex-only display.
 struct SendTransactionDetails {
     let to: EthereumAddress
     let valueWei: BigUInt
     let data: Data
     let quote: TransactionService.Quote
     let chain: Chain
+    var recipientName: String? = nil
 }
 
 /// Payload for `wallet_switchEthereumChain`. Both chains resolved against

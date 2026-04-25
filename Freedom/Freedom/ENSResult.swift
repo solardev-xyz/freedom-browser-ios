@@ -22,6 +22,11 @@ enum ENSNotFoundReason {
     /// silently pin a verified "no content" verdict when the name does
     /// have content that just requires an offchain hop the user opted out of.
     case ccipDisabled
+    /// `addr(bytes32)` returned the zero address — the name has a resolver
+    /// but no Ethereum address record set. Distinct from `.noResolver`
+    /// (no resolver at all) so the UI can show "name has no address" vs
+    /// "name doesn't exist".
+    case emptyAddress
 }
 
 struct ENSConflictGroup: Equatable {

@@ -5,6 +5,10 @@ import web3
 @MainActor
 struct SendReviewView: View {
     let recipient: EthereumAddress
+    /// Display-only — set when the user typed an ENS name in SendFlow, OR
+    /// when reverse lookup hit on a hex-typed recipient. Bridge tx send
+    /// (M5.6) doesn't go through this view, so this is forward-only here.
+    var recipientName: String? = nil
     let amount: BigUInt
     let quote: TransactionService.Quote
     let chain: Chain
@@ -73,7 +77,7 @@ struct SendReviewView: View {
         VStack(alignment: .leading, spacing: 0) {
             row("Network", chain.displayName)
             divider
-            row("To", recipient.asString())
+            recipientRow
             divider
             row("Amount", BalanceFormatter.format(wei: amount, symbol: chain.nativeSymbol))
             divider
@@ -84,6 +88,30 @@ struct SendReviewView: View {
         .padding()
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder private var recipientRow: some View {
+        if let recipientName {
+            // Two-line: ENS name on top (bold-ish), hex address below as
+            // the small monospace cross-check. Address stays the canonical
+            // recipient — name is decorative.
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("To").foregroundStyle(.secondary)
+                    Spacer()
+                    Text(recipientName).font(.callout)
+                }
+                Text(recipient.toChecksumAddress())
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .padding(.vertical, 8)
+        } else {
+            row("To", recipient.toChecksumAddress())
+        }
     }
 
     private func row(_ label: String, _ value: String) -> some View {

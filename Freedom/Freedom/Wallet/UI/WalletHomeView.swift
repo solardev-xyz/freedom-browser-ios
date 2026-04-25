@@ -1,11 +1,13 @@
 import SwiftData
 import SwiftUI
+import web3
 
 @MainActor
 struct WalletHomeView: View {
     @Environment(Vault.self) private var vault
     @Environment(ChainRegistry.self) private var chains
     @Environment(PermissionStore.self) private var permissions
+    @Environment(ENSResolver.self) private var ensResolver
 
     @AppStorage(WalletDefaults.activeChainID) private var activeChainID: Int = Chain.defaultChain.id
 
@@ -16,6 +18,7 @@ struct WalletHomeView: View {
     private var grants: [DappPermission]
 
     @State private var address: String?
+    @State private var primaryName: String?
     @State private var balance: BalanceState = .loading
     @State private var revealedPhrase: [String]?
     @State private var revealError: String?
@@ -37,7 +40,14 @@ struct WalletHomeView: View {
                     SecurityLevelBadge(level: level)
                 }
                 if let address {
-                    AddressPill(address: address)
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let primaryName {
+                            Text(primaryName)
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 4)
+                        }
+                        AddressPill(address: address)
+                    }
                 }
                 chainPicker
                 balanceCard
@@ -61,6 +71,14 @@ struct WalletHomeView: View {
         // `balance = .loaded(...)` clobbering after the user swipes away.
         .task(id: activeChainID) {
             await refreshBalance()
+        }
+        // Re-runs whenever the address changes (vault create / wipe / import) —
+        // can't dedup by `primaryName != nil` because that's stale across rotations.
+        .task(id: address) {
+            guard let address else { return }
+            primaryName = try? await ensResolver.reverseResolve(
+                address: EthereumAddress(address)
+            )
         }
         .navigationDestination(item: $revealedPhrase) { words in
             RecoveryPhraseView(words: words)

@@ -348,6 +348,8 @@ enum ENSErrorFormatting {
             return "No content set on this ENS name."
         case ENSResolutionError.notFound(.ccipDisabled, _):
             return "This ENS name resolves via an offchain gateway (CCIP-Read). Enable it in Settings → Advanced to load it."
+        case ENSResolutionError.notFound(.emptyAddress, _):
+            return "This ENS name has no Ethereum address set."
         case ENSResolutionError.unsupportedCodec:
             return "Unsupported contenthash codec."
         case ENSResolutionError.conflict:
