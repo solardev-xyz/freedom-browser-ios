@@ -31,8 +31,8 @@ enum PersonalSignCoder {
             throw Error.badParams
         }
 
-        let p0IsAddress = isAddressLike(p0)
-        let p1IsAddress = isAddressLike(p1)
+        let p0IsAddress = Hex.isAddressShape(p0)
+        let p1IsAddress = Hex.isAddressShape(p1)
         let address: String
         let messageString: String
         switch (p0IsAddress, p1IsAddress) {
@@ -53,12 +53,6 @@ enum PersonalSignCoder {
 
         let (bytes, preview) = decodeMessage(messageString)
         return Decoded(message: bytes, declaredAddress: address, preview: preview)
-    }
-
-    private static func isAddressLike(_ s: String) -> Bool {
-        s.count == 42
-            && (s.hasPrefix("0x") || s.hasPrefix("0X"))
-            && s.dropFirst(2).allSatisfy(\.isHexDigit)
     }
 
     private static func decodeMessage(_ s: String) -> (Data, Preview) {

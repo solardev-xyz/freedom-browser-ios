@@ -18,28 +18,26 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
 
     private weak var tab: BrowserTab?
     private let router: RPCRouter
-    private let vault: Vault
-    private let permissionStore: PermissionStore
-    private let transactionService: TransactionService
+    private let services: WalletServices
     // `WKUserContentController.add(_:name:)` strongly retains us, so this
     // side of the edge must be weak — otherwise BrowserTab's deinit would
     // never fire and tab-close would leak the bridge + webView + config.
     private weak var contentController: WKUserContentController?
     private var notificationTokens: [NSObjectProtocol] = []
 
+    private var vault: Vault { services.vault }
+    private var permissionStore: PermissionStore { services.permissionStore }
+    private var transactionService: TransactionService { services.transactionService }
+
     init(
         tab: BrowserTab,
         router: RPCRouter,
         contentController: WKUserContentController,
-        vault: Vault,
-        permissionStore: PermissionStore,
-        transactionService: TransactionService
+        services: WalletServices
     ) {
         self.tab = tab
         self.router = router
-        self.vault = vault
-        self.permissionStore = permissionStore
-        self.transactionService = transactionService
+        self.services = services
         self.contentController = contentController
         super.init()
         contentController.add(self, name: Self.messageHandlerName)

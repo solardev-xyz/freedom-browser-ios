@@ -79,7 +79,7 @@ final class TransactionParamsCoderTests: XCTestCase {
 
     func testInvalidHexValueThrows() {
         XCTAssertThrowsError(try TransactionParamsCoder.decode(params: [tx(["value": "xyz"])])) { error in
-            guard case TransactionParamsCoder.Error.invalidHex(let field, _) = error else {
+            guard case Hex.Error.invalidHex(let field, _) = error else {
                 return XCTFail("wrong error: \(error)")
             }
             XCTAssertEqual(field, "value")

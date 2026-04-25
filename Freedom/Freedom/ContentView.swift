@@ -94,8 +94,10 @@ struct ContentView: View {
             switch approval.kind {
             case .connect:
                 ApproveConnectSheet(approval: approval)
-            case .personalSign, .typedData:
-                ApproveSignSheet(approval: approval)
+            case .personalSign(let preview):
+                ApproveSignSheet(approval: approval, kind: .personalSign(preview))
+            case .typedData(let typed):
+                ApproveSignSheet(approval: approval, kind: .typedData(typed))
             case .sendTransaction(let details):
                 ApproveTxSheet(approval: approval, details: details)
             }

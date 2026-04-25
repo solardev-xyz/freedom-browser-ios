@@ -1,16 +1,23 @@
 import SwiftUI
 import web3
 
+/// Narrowed input for the sign sheet — exhaustivity makes routing bugs
+/// a compile error rather than a runtime assert.
+enum SignKind {
+    case personalSign(PersonalSignCoder.Preview)
+    case typedData(TypedData)
+}
+
 /// `personal_sign` + `eth_signTypedData_v4` approval. Actual signing
 /// happens in the bridge after `.approved` fires — the sheet only shows
-/// intent. Connect flow is `ApproveConnectSheet`; ContentView routes by
-/// kind.
+/// intent. Connect flow is `ApproveConnectSheet`; ContentView routes.
 @MainActor
 struct ApproveSignSheet: View {
     @Environment(Vault.self) private var vault
     @Environment(\.dismiss) private var dismiss
 
     let approval: ApprovalRequest
+    let kind: SignKind
 
     var body: some View {
         NavigationStack {
@@ -43,32 +50,25 @@ struct ApproveSignSheet: View {
     }
 
     private var caption: String {
-        switch approval.kind {
+        switch kind {
         case .personalSign: return "This site wants you to sign a message"
         case .typedData: return "This site wants you to sign typed data"
-        default: return ""
         }
     }
 
     private var navTitle: String {
-        switch approval.kind {
+        switch kind {
         case .personalSign: return "Sign message"
         case .typedData: return "Sign data"
-        default: return ""
         }
     }
 
     @ViewBuilder private var unlockedBody: some View {
-        switch approval.kind {
+        switch kind {
         case .personalSign(let preview):
             PersonalSignBody(preview: preview, approve: approve)
         case .typedData(let typed):
             TypedDataBody(typed: typed, approve: approve)
-        default:
-            // ContentView routes other kinds to their own sheet; reached
-            // only on a routing bug.
-            let _ = assertionFailure("non-sign kind reached ApproveSignSheet")
-            EmptyView()
         }
     }
 

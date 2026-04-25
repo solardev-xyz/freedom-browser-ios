@@ -40,8 +40,7 @@ struct SendFlowView: View {
     /// error instead of silently producing a zero address.
     private var validatedRecipient: EthereumAddress? {
         let trimmed = recipientInput.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("0x"), trimmed.count == 42,
-              trimmed.dropFirst(2).allSatisfy({ $0.isHexDigit }) else { return nil }
+        guard Hex.isAddressShape(trimmed) else { return nil }
         return EthereumAddress(trimmed)
     }
 

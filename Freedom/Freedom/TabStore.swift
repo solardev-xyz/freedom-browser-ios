@@ -16,10 +16,7 @@ final class TabStore {
     @ObservationIgnored private let faviconStore: FaviconStore
     @ObservationIgnored private let ensResolver: ENSResolver
     @ObservationIgnored private let settings: SettingsStore
-    @ObservationIgnored private let chainRegistry: ChainRegistry
-    @ObservationIgnored private let vault: Vault
-    @ObservationIgnored private let permissionStore: PermissionStore
-    @ObservationIgnored private let transactionService: TransactionService
+    @ObservationIgnored private let wallet: WalletServices
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
     init(
@@ -28,20 +25,14 @@ final class TabStore {
         faviconStore: FaviconStore,
         ensResolver: ENSResolver,
         settings: SettingsStore,
-        chainRegistry: ChainRegistry,
-        vault: Vault,
-        permissionStore: PermissionStore,
-        transactionService: TransactionService
+        wallet: WalletServices
     ) {
         self.context = context
         self.historyStore = historyStore
         self.faviconStore = faviconStore
         self.ensResolver = ensResolver
         self.settings = settings
-        self.chainRegistry = chainRegistry
-        self.vault = vault
-        self.permissionStore = permissionStore
-        self.transactionService = transactionService
+        self.wallet = wallet
         reloadRecords()
     }
 
@@ -137,10 +128,7 @@ final class TabStore {
             recordID: id,
             ensResolver: ensResolver,
             settings: settings,
-            chainRegistry: chainRegistry,
-            vault: vault,
-            permissionStore: permissionStore,
-            transactionService: transactionService
+            wallet: wallet
         )
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }

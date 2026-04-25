@@ -40,6 +40,12 @@ struct FreedomApp: App {
             let registry = ChainRegistry(mainnetPool: pool)
             let permissions = PermissionStore(context: container.mainContext)
             let txService = TransactionService(vault: vault, registry: registry)
+            let wallet = WalletServices(
+                vault: vault,
+                chainRegistry: registry,
+                permissionStore: permissions,
+                transactionService: txService
+            )
             self._vault = State(wrappedValue: vault)
             self._chainRegistry = State(wrappedValue: registry)
             self._permissionStore = State(wrappedValue: permissions)
@@ -50,10 +56,7 @@ struct FreedomApp: App {
                 faviconStore: favicons,
                 ensResolver: resolver,
                 settings: settings,
-                chainRegistry: registry,
-                vault: vault,
-                permissionStore: permissions,
-                transactionService: txService
+                wallet: wallet
             ))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")

@@ -88,10 +88,7 @@ final class BrowserTab {
         recordID: UUID = UUID(),
         ensResolver: ENSResolver,
         settings: SettingsStore,
-        chainRegistry: ChainRegistry,
-        vault: Vault,
-        permissionStore: PermissionStore,
-        transactionService: TransactionService
+        wallet: WalletServices
     ) {
         self.recordID = recordID
         self.ensResolver = ensResolver
@@ -108,8 +105,8 @@ final class BrowserTab {
         // Active chain read live so a wallet-UI chain switch is picked up
         // by dapp reads without rebuilding the router.
         let router = RPCRouter(
-            registry: chainRegistry,
-            permissionStore: permissionStore,
+            registry: wallet.chainRegistry,
+            permissionStore: wallet.permissionStore,
             activeChain: {
                 let raw = UserDefaults.standard.integer(forKey: WalletDefaults.activeChainID)
                 let id = raw == 0 ? Chain.defaultChain.id : raw
@@ -120,9 +117,7 @@ final class BrowserTab {
             tab: self,
             router: router,
             contentController: contentController,
-            vault: vault,
-            permissionStore: permissionStore,
-            transactionService: transactionService
+            services: wallet
         )
 
         observeWebView()
