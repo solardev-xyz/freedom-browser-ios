@@ -61,7 +61,7 @@ struct ApproveTxSheet: View {
             Text("Transactions are irreversible once broadcast. Only approve if you recognise the site.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            PrimaryActionButton(title: "Approve", systemImage: "checkmark", action: approve)
+            SlideToApprove(action: approve)
         }
     }
 
