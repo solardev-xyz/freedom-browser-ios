@@ -82,6 +82,7 @@ final class TransactionServiceTests: XCTestCase {
             from: EthereumAddress("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"),
             to: EthereumAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
             valueWei: BigUInt("de0b6b3a7640000", radix: 16)!,  // 1 xDAI
+            data: Data(),
             on: .gnosis
         )
 
@@ -148,6 +149,7 @@ final class TransactionServiceTests: XCTestCase {
         let hash = try await service.send(
             to: EthereumAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
             valueWei: BigUInt("de0b6b3a7640000", radix: 16)!,
+            data: Data(),
             quote: quote,
             on: .gnosis
         )

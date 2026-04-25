@@ -180,6 +180,7 @@ struct SendFlowView: View {
                 from: EthereumAddress(fromHex),
                 to: recipient,
                 valueWei: amount,
+                data: Data(),
                 on: activeChain
             )
             if Task.isCancelled { return }

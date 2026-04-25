@@ -33,8 +33,9 @@ final class RPCRouter {
         self.activeChain = activeChain
     }
 
-    /// Bridge helper — needed for `connect` event payload after a grant.
-    func currentChainHex() -> String { activeChain().hexChainID }
+    /// Bridge helper — feeds gas estimation, broadcast, and the `connect`
+    /// event payload (`.hexChainID`).
+    func currentChain() -> Chain { activeChain() }
 
     func handle(method: String, params: [Any], origin: OriginIdentity) async throws -> Any {
         guard origin.isEligibleForWallet else {

@@ -90,7 +90,8 @@ final class BrowserTab {
         settings: SettingsStore,
         chainRegistry: ChainRegistry,
         vault: Vault,
-        permissionStore: PermissionStore
+        permissionStore: PermissionStore,
+        transactionService: TransactionService
     ) {
         self.recordID = recordID
         self.ensResolver = ensResolver
@@ -120,7 +121,8 @@ final class BrowserTab {
             router: router,
             contentController: contentController,
             vault: vault,
-            permissionStore: permissionStore
+            permissionStore: permissionStore,
+            transactionService: transactionService
         )
 
         observeWebView()

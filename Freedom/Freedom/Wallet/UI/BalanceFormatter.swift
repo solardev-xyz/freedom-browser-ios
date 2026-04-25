@@ -9,7 +9,11 @@ enum BalanceFormatter {
     /// *higher* than reality would be dishonest; truncation is always safe.
     static func format(weiHex: String, on chain: Chain, maxFractionDigits: Int = 6) -> String {
         guard let wei = parse(weiHex: weiHex) else { return "—" }
-        return format(wei: wei, symbol: chain.nativeSymbol, maxFractionDigits: maxFractionDigits)
+        return format(wei: wei, on: chain, maxFractionDigits: maxFractionDigits)
+    }
+
+    static func format(wei: BigUInt, on chain: Chain, maxFractionDigits: Int = 6) -> String {
+        format(wei: wei, symbol: chain.nativeSymbol, maxFractionDigits: maxFractionDigits)
     }
 
     static func parse(weiHex: String) -> BigUInt? {

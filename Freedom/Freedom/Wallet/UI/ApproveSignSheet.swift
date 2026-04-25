@@ -46,7 +46,7 @@ struct ApproveSignSheet: View {
         switch approval.kind {
         case .personalSign: return "This site wants you to sign a message"
         case .typedData: return "This site wants you to sign typed data"
-        case .connect: return ""
+        default: return ""
         }
     }
 
@@ -54,7 +54,7 @@ struct ApproveSignSheet: View {
         switch approval.kind {
         case .personalSign: return "Sign message"
         case .typedData: return "Sign data"
-        case .connect: return ""
+        default: return ""
         }
     }
 
@@ -64,9 +64,10 @@ struct ApproveSignSheet: View {
             PersonalSignBody(preview: preview, approve: approve)
         case .typedData(let typed):
             TypedDataBody(typed: typed, approve: approve)
-        case .connect:
-            // Routed to ApproveConnectSheet; only here on routing bug.
-            let _ = assertionFailure(".connect should not reach ApproveSignSheet")
+        default:
+            // ContentView routes other kinds to their own sheet; reached
+            // only on a routing bug.
+            let _ = assertionFailure("non-sign kind reached ApproveSignSheet")
             EmptyView()
         }
     }

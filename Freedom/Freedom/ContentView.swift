@@ -96,6 +96,8 @@ struct ContentView: View {
                 ApproveConnectSheet(approval: approval)
             case .personalSign, .typedData:
                 ApproveSignSheet(approval: approval)
+            case .sendTransaction(let details):
+                ApproveTxSheet(approval: approval, details: details)
             }
         }
         .onChange(of: tabStore.activeTab?.displayURL) { _, new in

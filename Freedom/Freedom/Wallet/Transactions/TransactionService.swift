@@ -54,10 +54,14 @@ final class TransactionService {
 
     /// Fetch nonce + gas price + gas estimate in parallel — independent RPCs,
     /// no reason to serialise. Call once before showing the review screen.
+    /// `data` is required (not defaulted) — silent omission for a contract
+    /// call would broadcast a value-only tx, the worst class of correctness
+    /// bug. Native-send callers pass `Data()` explicitly.
     func prepare(
         from: EthereumAddress,
         to: EthereumAddress,
         valueWei: BigUInt,
+        data: Data,
         on chain: Chain
     ) async throws -> Quote {
         async let nonce = nonceTracker.next(for: from.asString(), on: chain)
@@ -66,7 +70,8 @@ final class TransactionService {
             from: from.asString(),
             to: to.asString(),
             valueHex: "0x" + String(valueWei, radix: 16),
-            dataHex: "0x",
+            // Data.web3.hexString prefixes; concatenating "0x" yields "0x0x".
+            dataHex: data.isEmpty ? "0x" : data.web3.hexString,
             on: chain
         )
         guard let gasLimit = Hex.bigUInt(try await gasLimitHex) else {
@@ -86,6 +91,7 @@ final class TransactionService {
     func send(
         to: EthereumAddress,
         valueWei: BigUInt,
+        data: Data,
         quote: Quote,
         on chain: Chain
     ) async throws -> String {
@@ -95,7 +101,7 @@ final class TransactionService {
             from: quote.from,
             to: to,
             value: valueWei,
-            data: Data(),
+            data: data,
             nonce: quote.nonce,
             gasPrice: quote.gasPrice,
             gasLimit: quote.gasLimit,

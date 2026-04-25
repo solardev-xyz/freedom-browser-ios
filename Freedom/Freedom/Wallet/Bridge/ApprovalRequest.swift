@@ -1,3 +1,4 @@
+import BigInt
 import Foundation
 import web3
 
@@ -26,6 +27,7 @@ struct ApprovalRequest: Identifiable {
         case connect
         case personalSign(PersonalSignCoder.Preview)
         case typedData(TypedData)
+        case sendTransaction(SendTransactionDetails)
     }
 
     enum Decision {
@@ -41,4 +43,14 @@ struct ApprovalRequest: Identifiable {
     func decide(_ decision: Decision) {
         resolver.resolve(decision)
     }
+}
+
+/// Pre-decoded payload for `eth_sendTransaction` approval. `from` lives
+/// on the Quote.
+struct SendTransactionDetails {
+    let to: EthereumAddress
+    let valueWei: BigUInt
+    let data: Data
+    let quote: TransactionService.Quote
+    let chain: Chain
 }

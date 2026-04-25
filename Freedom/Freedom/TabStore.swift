@@ -19,6 +19,7 @@ final class TabStore {
     @ObservationIgnored private let chainRegistry: ChainRegistry
     @ObservationIgnored private let vault: Vault
     @ObservationIgnored private let permissionStore: PermissionStore
+    @ObservationIgnored private let transactionService: TransactionService
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
     init(
@@ -29,7 +30,8 @@ final class TabStore {
         settings: SettingsStore,
         chainRegistry: ChainRegistry,
         vault: Vault,
-        permissionStore: PermissionStore
+        permissionStore: PermissionStore,
+        transactionService: TransactionService
     ) {
         self.context = context
         self.historyStore = historyStore
@@ -39,6 +41,7 @@ final class TabStore {
         self.chainRegistry = chainRegistry
         self.vault = vault
         self.permissionStore = permissionStore
+        self.transactionService = transactionService
         reloadRecords()
     }
 
@@ -136,7 +139,8 @@ final class TabStore {
             settings: settings,
             chainRegistry: chainRegistry,
             vault: vault,
-            permissionStore: permissionStore
+            permissionStore: permissionStore,
+            transactionService: transactionService
         )
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }

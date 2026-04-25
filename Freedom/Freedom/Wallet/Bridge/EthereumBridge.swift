@@ -20,6 +20,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
     private let router: RPCRouter
     private let vault: Vault
     private let permissionStore: PermissionStore
+    private let transactionService: TransactionService
     // `WKUserContentController.add(_:name:)` strongly retains us, so this
     // side of the edge must be weak — otherwise BrowserTab's deinit would
     // never fire and tab-close would leak the bridge + webView + config.
@@ -31,12 +32,14 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         router: RPCRouter,
         contentController: WKUserContentController,
         vault: Vault,
-        permissionStore: PermissionStore
+        permissionStore: PermissionStore,
+        transactionService: TransactionService
     ) {
         self.tab = tab
         self.router = router
         self.vault = vault
         self.permissionStore = permissionStore
+        self.transactionService = transactionService
         self.contentController = contentController
         super.init()
         contentController.add(self, name: Self.messageHandlerName)
@@ -134,6 +137,9 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         case "eth_signTypedData_v4":
             await handleTypedDataSign(id: id, origin: origin, params: params)
             return
+        case "eth_sendTransaction":
+            await handleSendTransaction(id: id, origin: origin, params: params)
+            return
         default:
             break
         }
@@ -203,7 +209,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
                 let address = try vault.signingKey(at: .mainUser).ethereumAddress
                 permissionStore.grant(origin: origin.key, account: address)
                 emit(event: "accountsChanged", data: [address])
-                emit(event: "connect", data: ["chainId": router.currentChainHex()])
+                emit(event: "connect", data: ["chainId": router.currentChain().hexChainID])
                 reply(id: id, result: [address])
             } catch {
                 reply(id: id, error: .init(code: -32603, message: "Couldn't derive address: \(error.localizedDescription)"))
@@ -280,6 +286,93 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         guard trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X") else { return false }
         guard let granted = permissionStore.accounts(for: origin.key).first else { return false }
         return granted.caseInsensitiveCompare(trimmed) == .orderedSame
+    }
+
+    // MARK: - Send flow
+
+    private func handleSendTransaction(id: Int, origin: OriginIdentity, params: [Any]) async {
+        guard assertEligibleAndFree(id: id, origin: origin),
+              requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        let decoded: TransactionParamsCoder.Decoded
+        do {
+            decoded = try TransactionParamsCoder.decode(params: params)
+        } catch {
+            return reply(id: id, error: .init(code: -32602, message: "Invalid eth_sendTransaction params: \(error.localizedDescription)"))
+        }
+
+        guard matchesGrantedAccount(decoded.from.asString(), origin: origin) else {
+            return reply(id: id, error: .init(code: -32602, message: "Account in params doesn't match the connected account."))
+        }
+
+        let chain = router.currentChain()
+        if let dappChain = decoded.chainID, dappChain != chain.id {
+            return reply(id: id, error: .init(code: -32602,
+                message: "Wrong chain — wallet is on \(chain.displayName) (id \(chain.id)), tx requested chain \(dappChain). Switch first."))
+        }
+
+        let quote: TransactionService.Quote
+        do {
+            quote = try await composeQuote(decoded: decoded, on: chain)
+        } catch {
+            return reply(id: id, error: .init(code: -32603, message: "Couldn't estimate gas: \(error.localizedDescription)"))
+        }
+
+        let details = SendTransactionDetails(
+            to: decoded.to,
+            valueWei: decoded.valueWei,
+            data: decoded.data,
+            quote: quote,
+            chain: chain
+        )
+
+        switch await parkAndAwait(origin: origin, kind: .sendTransaction(details)) {
+        case .approved:
+            do {
+                let hash = try await transactionService.send(
+                    to: decoded.to,
+                    valueWei: decoded.valueWei,
+                    data: decoded.data,
+                    quote: quote,
+                    on: chain
+                )
+                permissionStore.touchLastUsed(origin: origin.key)
+                reply(id: id, result: hash)
+            } catch {
+                reply(id: id, error: .init(code: -32603, message: "Broadcast failed: \(error.localizedDescription)"))
+            }
+        case .denied:
+            reply(id: id, error: .init(code: 4001, message: "User rejected the request."))
+        }
+    }
+
+    /// Skip the 3-RPC `prepare` call when the dapp supplied every override
+    /// (common for established dapps that compute their own gas). Partial
+    /// overrides still go through prepare and patch the missing slots.
+    private func composeQuote(
+        decoded: TransactionParamsCoder.Decoded,
+        on chain: Chain
+    ) async throws -> TransactionService.Quote {
+        if let nonce = decoded.nonce,
+           let gasPrice = decoded.gasPriceWei,
+           let gasLimit = decoded.gasLimit {
+            return TransactionService.Quote(
+                from: decoded.from, nonce: nonce, gasPrice: gasPrice, gasLimit: gasLimit
+            )
+        }
+        let estimated = try await transactionService.prepare(
+            from: decoded.from,
+            to: decoded.to,
+            valueWei: decoded.valueWei,
+            data: decoded.data,
+            on: chain
+        )
+        return TransactionService.Quote(
+            from: decoded.from,
+            nonce: decoded.nonce ?? estimated.nonce,
+            gasPrice: decoded.gasPriceWei ?? estimated.gasPrice,
+            gasLimit: decoded.gasLimit ?? estimated.gasLimit
+        )
     }
 
     /// Dapps pass `typedData` either as a JSON string or as a JSON object —

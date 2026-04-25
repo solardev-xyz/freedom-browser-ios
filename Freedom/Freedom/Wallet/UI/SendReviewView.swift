@@ -163,6 +163,7 @@ struct SendReviewView: View {
             let hash = try await txService.send(
                 to: recipient,
                 valueWei: amount,
+                data: Data(),
                 quote: quote,
                 on: chain
             )
