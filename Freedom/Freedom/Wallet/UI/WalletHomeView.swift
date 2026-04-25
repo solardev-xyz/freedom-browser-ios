@@ -8,14 +8,29 @@ struct WalletHomeView: View {
     @Environment(ChainRegistry.self) private var chains
     @Environment(PermissionStore.self) private var permissions
     @Environment(ENSResolver.self) private var ensResolver
+    @Environment(TabStore.self) private var tabStore
 
     @AppStorage(WalletDefaults.activeChainID) private var activeChainID: Int = Chain.defaultChain.id
 
-    // Live dapp grants — SwiftData refreshes on every `context.save()` that
-    // grant/revoke perform, so the row list stays in sync without manual
-    // invalidation.
+    // SwiftData refreshes on `context.save()`, so the card auto-hides if
+    // the dapp revokes from its own UI while the wallet sheet is open.
     @Query(sort: \DappPermission.lastUsedAt, order: .reverse)
     private var grants: [DappPermission]
+
+    private var activeOrigin: OriginIdentity? {
+        guard let url = tabStore.activeTab?.displayURL,
+              let identity = OriginIdentity.from(displayURL: url),
+              identity.isEligibleForWallet else { return nil }
+        return identity
+    }
+
+    /// Filtering the in-memory `grants` array (bounded by a handful of
+    /// dapps) instead of running a scoped fetch — `@Query` predicates can't
+    /// reference runtime state, and this keeps SwiftData reactivity intact.
+    private var activeTabGrant: DappPermission? {
+        guard let key = activeOrigin?.key else { return nil }
+        return grants.first { $0.origin == key }
+    }
 
     @State private var address: String?
     @State private var primaryName: String?
@@ -60,7 +75,7 @@ struct WalletHomeView: View {
                 Button("Lock wallet") { vault.lock() }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
-                connectedSitesSection
+                activeTabSiteCard
                 advancedSection
             }
             .padding(20)
@@ -123,43 +138,41 @@ struct WalletHomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    @ViewBuilder private var connectedSitesSection: some View {
-        if !grants.isEmpty {
+    @ViewBuilder private var activeTabSiteCard: some View {
+        if let origin = activeOrigin, let grant = activeTabGrant {
+            let host = tabStore.activeTab?.displayURL?.host
             VStack(alignment: .leading, spacing: 8) {
-                Text("Connected sites").font(.caption).foregroundStyle(.secondary)
-                VStack(spacing: 0) {
-                    ForEach(Array(grants.enumerated()), id: \.element.id) { index, grant in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(grant.origin)
-                                    .font(.callout)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Text(grant.account)
-                                    .font(.caption2)
-                                    .monospaced()
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            Spacer()
-                            Button("Revoke", role: .destructive) {
-                                permissions.revoke(origin: grant.origin)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 12)
-                        if index < grants.count - 1 {
-                            Divider().padding(.leading, 12)
-                        }
-                    }
+                Text("This site").font(.caption).foregroundStyle(.secondary)
+                NavigationLink {
+                    ConnectedSiteDetailView(origin: origin, host: host, grant: grant)
+                } label: {
+                    siteCardRow(origin: origin, host: host)
                 }
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .buttonStyle(.plain)
             }
         }
+    }
+
+    private func siteCardRow(origin: OriginIdentity, host: String?) -> some View {
+        HStack(spacing: 12) {
+            FaviconView(host: host, size: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(origin.displayString)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("Connected").font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding()
+        .frame(maxWidth: .infinity)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var advancedSection: some View {
