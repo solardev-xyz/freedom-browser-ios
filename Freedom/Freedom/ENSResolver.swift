@@ -39,6 +39,7 @@ final class ENSResolver {
     private let anchor: AnchorCorroboration
     private let legRunner: QuorumWave.LegRunner
     private let reverseTransport: ReverseTransport
+    private let reverseCCIPHTTP: CCIPResolver.HTTPClient
     private let clock: () -> Date
 
     typealias ReverseTransport = @Sendable (URL, Data, TimeInterval) async throws -> Data
@@ -58,6 +59,7 @@ final class ENSResolver {
         anchor: AnchorCorroboration? = nil,
         legRunner: @escaping QuorumWave.LegRunner = QuorumWave.defaultLegRunner,
         reverseTransport: @escaping ReverseTransport = ENSResolver.defaultReverseTransport,
+        reverseCCIPHTTP: @escaping CCIPResolver.HTTPClient = CCIPResolver.defaultHTTP,
         clock: @escaping () -> Date = Date.init
     ) {
         self.pool = pool
@@ -65,6 +67,7 @@ final class ENSResolver {
         self.anchor = anchor ?? AnchorCorroboration(pool: pool, settings: settings)
         self.legRunner = legRunner
         self.reverseTransport = reverseTransport
+        self.reverseCCIPHTTP = reverseCCIPHTTP
         self.clock = clock
     }
 
@@ -656,12 +659,13 @@ final class ENSResolver {
         let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
 
         // Iterate providers on transport / parse / RPC-error failure so a
-        // single flaky RPC doesn't poison the result. The Universal
-        // Resolver doesn't revert for well-formed addresses (it catches
-        // inner reverts and returns empty); any `error` envelope we see
-        // is the provider misbehaving (Cloudflare's -32603, Ankr's
-        // -32000 unauthorized, etc.), not a definitive "no name" signal.
-        // Empty `result` after a successful call IS the no-name answer.
+        // single flaky RPC doesn't poison the result. The UR doesn't revert
+        // for well-formed addresses for ON-chain primary names — it catches
+        // inner reverts and returns empty. Off-chain primary names (EIP-3668
+        // OffchainLookup, e.g. avsa.eth via Namestone) DO bubble up as a
+        // revert; we detect that selector and run CCIP retry. Any other
+        // `error` envelope is provider misbehavior (Cloudflare's -32603,
+        // Ankr's -32000 unauthorized, etc.) → continue iteration.
         for url in providers {
             let response: Data
             do {
@@ -672,7 +676,12 @@ final class ENSResolver {
             guard let envelope = (try? JSONSerialization.jsonObject(with: response)) as? [String: Any] else {
                 continue
             }
-            if envelope["error"] != nil { continue }
+            if let error = envelope["error"] as? [String: Any] {
+                if let primary = try await ccipRetry(error: error, providerURL: url, timeout: timeout) {
+                    return primary.isEmpty ? nil : primary
+                }
+                continue
+            }
             guard let resultHex = envelope["result"] as? String,
                   let primary = decodeReverseResult(resultHex) else {
                 continue
@@ -682,6 +691,43 @@ final class ENSResolver {
         // Every provider failed — transient, not cacheable. Caller's `try?`
         // turns this into a silent nil.
         throw ReverseError.allProvidersFailed
+    }
+
+    /// nil for any shape other than a CCIP-Read-eligible OffchainLookup
+    /// whose gateway hop succeeded; caller falls through.
+    private func ccipRetry(
+        error: [String: Any],
+        providerURL: URL,
+        timeout: TimeInterval
+    ) async throws -> String? {
+        guard settings.enableCcipRead,
+              let revertHex = error["data"] as? String,
+              CCIPResolver.selectorOf(revertHex) == CCIPResolver.offchainLookupSelector,
+              let revertBytes = revertHex.web3.hexData else {
+            return nil
+        }
+        let resultHex: String
+        do {
+            resultHex = try await RPCSession.withTimeout(seconds: timeout * 2) {
+                try await CCIPResolver.resolve(
+                    revertData: revertBytes,
+                    ethCall: { [transport = self.reverseTransport] target, callHex in
+                        try await Self.reverseEthCall(
+                            transport: transport,
+                            providerURL: providerURL,
+                            to: target,
+                            dataHex: callHex,
+                            timeout: timeout
+                        )
+                    },
+                    http: self.reverseCCIPHTTP,
+                    timeout: timeout
+                )
+            }
+        } catch {
+            return nil
+        }
+        return decodeReverseResult(resultHex)
     }
 
     enum ReverseError: Error {
@@ -696,6 +742,42 @@ final class ENSResolver {
         try encoder.encode(addressBytes)
         try encoder.encode(Self.ethereumCoinType)
         return try encoder.encoded()
+    }
+
+    /// CCIP callback eth_call against the same provider URL we got the
+    /// OffchainLookup revert from. Surfaces revert-with-data as
+    /// `RPCError.executionRevert` — the boundary contract that
+    /// `CCIPResolver.resolve` expects so it can recurse on nested
+    /// OffchainLookup reverts.
+    private static func reverseEthCall(
+        transport: @Sendable (URL, Data, TimeInterval) async throws -> Data,
+        providerURL: URL,
+        to: String,
+        dataHex: String,
+        timeout: TimeInterval
+    ) async throws -> String {
+        let body: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_call",
+            "params": [["to": to, "data": dataHex], "latest"],
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let response = try await transport(providerURL, bodyData, timeout)
+        guard let envelope = (try? JSONSerialization.jsonObject(with: response)) as? [String: Any] else {
+            throw ReverseError.allProvidersFailed
+        }
+        // CCIPResolver.resolve catches inner OffchainLookup reverts via
+        // `RPCError.executionRevert`, so we surface revert-with-data in
+        // that shape; non-revert errors throw transparently.
+        if let error = envelope["error"] as? [String: Any] {
+            let revert = error["data"] as? String
+            throw RPCError.executionRevert(data: revert)
+        }
+        guard let result = envelope["result"] as? String, !result.isEmpty else {
+            throw ReverseError.allProvidersFailed
+        }
+        return result
     }
 
     private func decodeReverseResult(_ hex: String) -> String? {

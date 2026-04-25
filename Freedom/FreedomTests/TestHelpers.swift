@@ -32,6 +32,28 @@ func abiEncodeBytes(_ payload: Data) -> Data {
     return Data(full.dropFirst(4))  // strip 4-byte method id
 }
 
+/// Encode an `OffchainLookup` revert payload (selector + ABI-encoded args)
+/// the way an RPC `error.data` field carries it. Used by both the forward
+/// CCIP tests and the reverse CCIP tests.
+func encodeOffchainLookupRevert(
+    address: EthereumAddress,
+    urls: [String],
+    callData: Data = Data([0xaa, 0xbb, 0xcc, 0xdd]),
+    callbackFunction: Data = Data([0xde, 0xad, 0xbe, 0xef]),
+    extraData: Data = Data()
+) -> Data {
+    let lookup = OffchainLookup(
+        address: address,
+        urls: urls,
+        callData: callData,
+        callbackFunction: callbackFunction,
+        extraData: extraData
+    )
+    let encoder = ABIFunctionEncoder(OffchainLookup.name)
+    try! lookup.encode(to: encoder)
+    return try! encoder.encoded()
+}
+
 /// Stubs for `VaultCrypto`'s biometric gate. Real `LAContext` would hang
 /// waiting for simulator-user interaction; these drive deterministic
 /// success / "can't gate" paths.

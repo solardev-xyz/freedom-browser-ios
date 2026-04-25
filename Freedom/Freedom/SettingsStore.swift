@@ -70,7 +70,7 @@ final class SettingsStore {
             Keys.ensBlockAnchorTtlMs: 30_000,
             Keys.ensPublicRpcProviders: Self.defaultPublicRpcProviders,
             Keys.blockUnverifiedEns: true,
-            Keys.enableCcipRead: false,
+            Keys.enableCcipRead: true,
         ])
         self.enableEnsCustomRpc = defaults.bool(forKey: Keys.enableEnsCustomRpc)
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""

@@ -2,6 +2,11 @@ import XCTest
 import web3
 @testable import Freedom
 
+private func gatewayResponse(payloadHex: String = "0x01020304") -> CCIPResolver.GatewayResponse {
+    let body = try! JSONSerialization.data(withJSONObject: ["data": payloadHex])
+    return CCIPResolver.GatewayResponse(status: 200, body: body)
+}
+
 @MainActor
 final class ENSReverseResolveTests: XCTestCase {
     private var settings: SettingsStore!
@@ -21,10 +26,14 @@ final class ENSReverseResolveTests: XCTestCase {
         pool = EthereumRPCPool(settings: settings, clock: { [unowned self] in self.clock.now })
     }
 
-    private func makeResolver(transport: @escaping ENSResolver.ReverseTransport) -> ENSResolver {
+    private func makeResolver(
+        transport: @escaping ENSResolver.ReverseTransport,
+        ccipHTTP: @escaping CCIPResolver.HTTPClient = CCIPResolver.defaultHTTP
+    ) -> ENSResolver {
         ENSResolver(
             pool: pool, settings: settings, anchor: nil,
             reverseTransport: transport,
+            reverseCCIPHTTP: ccipHTTP,
             clock: { [unowned self] in self.clock.now }
         )
     }
@@ -42,6 +51,19 @@ final class ENSReverseResolveTests: XCTestCase {
             "jsonrpc": "2.0", "id": 1,
             "error": ["code": -32000, "message": message],
         ])
+    }
+
+    /// EIP-474/1474 revert envelope: `error.data` carries the revert hex.
+    /// CCIP detection gates on this field.
+    private func revertEnvelope(dataHex: String) -> Data {
+        try! JSONSerialization.data(withJSONObject: [
+            "jsonrpc": "2.0", "id": 1,
+            "error": ["code": 3, "message": "execution reverted", "data": dataHex],
+        ])
+    }
+
+    private func encodedOffchainLookupHex(gateway: String) -> String {
+        encodeOffchainLookupRevert(address: resolverAddress, urls: [gateway]).web3.hexString
     }
 
     /// Encode a `(string primary, address resolver, address reverseResolver)`
@@ -152,6 +174,68 @@ final class ENSReverseResolveTests: XCTestCase {
         // Second call succeeds — proves we didn't cache the failure.
         let name = try await resolver.reverseResolve(address: vitalik)
         XCTAssertEqual(name, "vitalik.eth")
+    }
+
+    /// Provider's `eth_call` reverts with `OffchainLookup` (off-chain
+    /// primary name like `avsa.eth`); CCIP retry hits the gateway, the
+    /// callback returns the encoded `(string,address,address)` tuple,
+    /// resolver decodes the primary name.
+    func testReverseCCIPRetrySuccess() async throws {
+        settings.enableCcipRead = true
+        let lookupHex = encodedOffchainLookupHex(gateway: "https://gateway.example/{sender}/{data}.json")
+        let revert = revertEnvelope(dataHex: lookupHex)
+        let success = envelope(resultHex: encodedTuple(name: "avsa.eth"))
+        var transportCalls = 0
+        let transport: ENSResolver.ReverseTransport = { _, _, _ in
+            transportCalls += 1
+            // First hit is the reverse() call → OffchainLookup revert.
+            // Second is the CCIP callback eth_call → the real tuple.
+            return transportCalls == 1 ? revert : success
+        }
+        let http: CCIPResolver.HTTPClient = { _, _ in gatewayResponse() }
+        let resolver = makeResolver(transport: transport, ccipHTTP: http)
+        let name = try await resolver.reverseResolve(address: vitalik)
+        XCTAssertEqual(name, "avsa.eth")
+        XCTAssertEqual(transportCalls, 2, "one for the reverse(), one for the CCIP callback")
+    }
+
+    /// `enableCcipRead = false`: OffchainLookup revert is treated as
+    /// any other provider error → fall through to the next provider.
+    /// Single-provider test setup ⇒ exhausts the list ⇒ throws.
+    func testReverseCCIPDisabledFallsThrough() async {
+        settings.enableCcipRead = false
+        let lookupHex = encodedOffchainLookupHex(gateway: "https://gateway.example/{data}")
+        let revert = revertEnvelope(dataHex: lookupHex)
+        let resolver = makeResolver(transport: { _, _, _ in revert })
+        do {
+            _ = try await resolver.reverseResolve(address: vitalik)
+            XCTFail("expected ReverseError.allProvidersFailed when CCIP is off")
+        } catch ENSResolver.ReverseError.allProvidersFailed {
+            // expected
+        } catch {
+            XCTFail("wrong error: \(error)")
+        }
+    }
+
+    /// Gateway hop fails (HTTP throws); CCIP retry returns nil; provider
+    /// iteration falls through. Same single-provider setup as above ⇒
+    /// `allProvidersFailed`.
+    func testReverseCCIPGatewayFailureFallsThrough() async {
+        settings.enableCcipRead = true
+        let lookupHex = encodedOffchainLookupHex(gateway: "https://broken.example/{data}")
+        let revert = revertEnvelope(dataHex: lookupHex)
+        let resolver = makeResolver(
+            transport: { _, _, _ in revert },
+            ccipHTTP: { _, _ in throw URLError(.cannotConnectToHost) }
+        )
+        do {
+            _ = try await resolver.reverseResolve(address: vitalik)
+            XCTFail("expected ReverseError.allProvidersFailed when gateway is unreachable")
+        } catch ENSResolver.ReverseError.allProvidersFailed {
+            // expected
+        } catch {
+            XCTFail("wrong error: \(error)")
+        }
     }
 
     func testReverseCacheHitSkipsTransport() async throws {
