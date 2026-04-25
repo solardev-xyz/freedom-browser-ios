@@ -17,6 +17,13 @@ struct WalletHomeView: View {
     @Query(sort: \DappPermission.lastUsedAt, order: .reverse)
     private var grants: [DappPermission]
 
+    @Query private var autoApproveRules: [AutoApproveRule]
+
+    /// O(rules) once per body eval beats O(rules) per visible site row.
+    private var originsWithAutoApproveRules: Set<String> {
+        Set(autoApproveRules.map(\.origin))
+    }
+
     private var activeOrigin: OriginIdentity? {
         guard let url = tabStore.activeTab?.displayURL,
               let identity = OriginIdentity.from(displayURL: url),
@@ -165,6 +172,15 @@ struct WalletHomeView: View {
                 Text("Connected").font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
+            if originsWithAutoApproveRules.contains(origin.key) {
+                Text("auto")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.15))
+                    .foregroundStyle(Color.accentColor)
+                    .clipShape(Capsule())
+            }
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)

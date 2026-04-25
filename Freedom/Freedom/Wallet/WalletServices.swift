@@ -10,6 +10,7 @@ struct WalletServices {
     let vault: Vault
     let chainRegistry: ChainRegistry
     let permissionStore: PermissionStore
+    let autoApproveStore: AutoApproveStore
     let transactionService: TransactionService
     let ensResolver: ENSResolver
 }

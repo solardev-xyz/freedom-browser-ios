@@ -9,10 +9,13 @@ import web3
 @MainActor
 struct ApproveTxSheet: View {
     @Environment(Vault.self) private var vault
+    @Environment(AutoApproveStore.self) private var autoApproveStore
     @Environment(\.dismiss) private var dismiss
 
     let approval: ApprovalRequest
     let details: SendTransactionDetails
+
+    @State private var grantAutoApproveRule = false
 
     var body: some View {
         NavigationStack {
@@ -52,11 +55,32 @@ struct ApproveTxSheet: View {
                 dataCard
             }
             feeCard
+            if let offer = details.autoApproveOffer {
+                autoApproveToggle(offer: offer)
+            }
             Text("Transactions are irreversible once broadcast. Only approve if you recognise the site.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             PrimaryActionButton(title: "Approve", systemImage: "checkmark", action: approve)
         }
+    }
+
+    private func autoApproveToggle(offer: AutoApproveOffer) -> some View {
+        let title = offer.selectorLabel.map { "Always approve \($0) on this contract" }
+            ?? "Always approve this function on this contract"
+        return VStack(alignment: .leading, spacing: 6) {
+            Toggle(title, isOn: $grantAutoApproveRule)
+                .tint(.accentColor)
+            Text("Selector \(offer.selector) → \(offer.contract.toChecksumAddress().shortenedHex()) · this site only")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var recipientCard: some View {
@@ -157,6 +181,9 @@ struct ApproveTxSheet: View {
     }
 
     private func approve() {
+        if grantAutoApproveRule, let offer = details.autoApproveOffer {
+            autoApproveStore.grant(offer)
+        }
         approval.decide(.approved)
         dismiss()
     }

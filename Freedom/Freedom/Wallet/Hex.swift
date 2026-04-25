@@ -48,3 +48,13 @@ enum Hex {
         s.hasPrefix("0x") || s.hasPrefix("0X") ? String(s.dropFirst(2)) : s
     }
 }
+
+extension String {
+    /// `0x809FA673…F68e` — keeps the `0x` prefix plus enough chars on each
+    /// side for human cross-check. Returns the input unchanged if it's
+    /// shorter than `prefix + suffix`.
+    func shortenedHex(prefix: Int = 6, suffix: Int = 4) -> String {
+        guard count > prefix + suffix else { return self }
+        return "\(self.prefix(prefix))…\(self.suffix(suffix))"
+    }
+}

@@ -46,10 +46,6 @@ struct ApprovalRequest: Identifiable {
     }
 }
 
-/// Pre-decoded payload for `eth_sendTransaction` approval. `from` lives
-/// on the Quote. `recipientName` is best-effort reverse-lookup from ENS;
-/// nil when none set (or the reverse RPC failed) — UI silently degrades
-/// to the hex-only display.
 struct SendTransactionDetails {
     let to: EthereumAddress
     let valueWei: BigUInt
@@ -57,6 +53,45 @@ struct SendTransactionDetails {
     let quote: TransactionService.Quote
     let chain: Chain
     var recipientName: String? = nil
+    var autoApproveOffer: AutoApproveOffer? = nil
+}
+
+/// Eligibility envelope for the `ApproveTxSheet` auto-approve toggle.
+/// On approve+toggle-on the sheet hands this back to `AutoApproveStore`,
+/// which keys the rule on the same fields.
+struct AutoApproveOffer: Equatable {
+    let origin: String
+    let contract: EthereumAddress
+    let selector: String
+    let selectorLabel: String?
+    let chainID: Int
+
+    /// Eligibility: ≥4 data bytes, non-zero selector, `valueWei == 0`. A
+    /// payable variant of an otherwise-trusted selector re-prompts —
+    /// the user's prior consent didn't extend to "send funds along too".
+    static func make(
+        origin: String,
+        to: EthereumAddress,
+        valueWei: BigUInt,
+        data: Data,
+        chainID: Int
+    ) -> AutoApproveOffer? {
+        guard valueWei == 0, let selector = selectorHex(from: data) else { return nil }
+        return AutoApproveOffer(
+            origin: origin,
+            contract: to,
+            selector: selector,
+            selectorLabel: ERC20Selectors.label(for: selector),
+            chainID: chainID
+        )
+    }
+
+    static func selectorHex(from data: Data) -> String? {
+        guard data.count >= 4 else { return nil }
+        let head = Data(data.prefix(4))
+        guard !head.allSatisfy({ $0 == 0 }) else { return nil }
+        return head.web3.hexString
+    }
 }
 
 /// Payload for `wallet_switchEthereumChain`. Both chains resolved against

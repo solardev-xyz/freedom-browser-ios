@@ -16,13 +16,14 @@ struct FreedomApp: App {
     @State private var chainRegistry: ChainRegistry
     @State private var transactionService: TransactionService
     @State private var permissionStore: PermissionStore
+    @State private var autoApproveStore: AutoApproveStore
     private let modelContainer: ModelContainer
 
     init() {
         do {
             let container = try ModelContainer(
                 for: TabRecord.self, HistoryEntry.self, Bookmark.self, Favicon.self,
-                DappPermission.self
+                DappPermission.self, AutoApproveRule.self
             )
             self.modelContainer = container
             let history = HistoryStore(context: container.mainContext)
@@ -39,17 +40,20 @@ struct FreedomApp: App {
             let vault = Vault()
             let registry = ChainRegistry(mainnetPool: pool)
             let permissions = PermissionStore(context: container.mainContext)
+            let autoApprove = AutoApproveStore(context: container.mainContext)
             let txService = TransactionService(vault: vault, registry: registry)
             let wallet = WalletServices(
                 vault: vault,
                 chainRegistry: registry,
                 permissionStore: permissions,
+                autoApproveStore: autoApprove,
                 transactionService: txService,
                 ensResolver: resolver
             )
             self._vault = State(wrappedValue: vault)
             self._chainRegistry = State(wrappedValue: registry)
             self._permissionStore = State(wrappedValue: permissions)
+            self._autoApproveStore = State(wrappedValue: autoApprove)
             self._transactionService = State(wrappedValue: txService)
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
@@ -83,6 +87,7 @@ struct FreedomApp: App {
                 .environment(chainRegistry)
                 .environment(transactionService)
                 .environment(permissionStore)
+                .environment(autoApproveStore)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
         }

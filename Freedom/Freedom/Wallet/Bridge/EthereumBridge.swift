@@ -27,6 +27,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
 
     private var vault: Vault { services.vault }
     private var permissionStore: PermissionStore { services.permissionStore }
+    private var autoApproveStore: AutoApproveStore { services.autoApproveStore }
     private var transactionService: TransactionService { services.transactionService }
 
     init(
@@ -311,6 +312,19 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
                 message: "Wrong chain — wallet is on \(chain.displayName) (id \(chain.id)), tx requested chain \(dappChain). Switch first."))
         }
 
+        let offer = AutoApproveOffer.make(
+            origin: origin.key,
+            to: decoded.to,
+            valueWei: decoded.valueWei,
+            data: decoded.data,
+            chainID: chain.id
+        )
+        if let offer, autoApproveStore.matches(offer) {
+            return await broadcastAutoApproved(
+                id: id, origin: origin, decoded: decoded, chain: chain
+            )
+        }
+
         // Run gas estimation + reverse lookup in parallel — they don't
         // depend on each other, and the sheet only shows once both land.
         // Swallows reverse errors: recipientName is decorative, the hex
@@ -332,26 +346,54 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
             data: decoded.data,
             quote: quote,
             chain: chain,
-            recipientName: recipientName
+            recipientName: recipientName,
+            autoApproveOffer: offer
         )
 
         switch await parkAndAwait(origin: origin, kind: .sendTransaction(details)) {
         case .approved:
-            do {
-                let hash = try await transactionService.send(
-                    to: decoded.to,
-                    valueWei: decoded.valueWei,
-                    data: decoded.data,
-                    quote: quote,
-                    on: chain
-                )
-                permissionStore.touchLastUsed(origin: origin.key)
-                reply(id: id, result: hash)
-            } catch {
-                reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.internalError, message: "Broadcast failed: \(error.localizedDescription)"))
-            }
+            await broadcast(id: id, origin: origin, decoded: decoded, quote: quote, chain: chain)
         case .denied:
             reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.userRejected, message: "User rejected the request."))
+        }
+    }
+
+    /// Skips the sheet and reverse-lookup but still needs gas estimation
+    /// for the quote.
+    private func broadcastAutoApproved(
+        id: Int,
+        origin: OriginIdentity,
+        decoded: TransactionParamsCoder.Decoded,
+        chain: Chain
+    ) async {
+        let quote: TransactionService.Quote
+        do {
+            quote = try await composeQuote(decoded: decoded, on: chain)
+        } catch {
+            return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.internalError, message: "Couldn't estimate gas: \(error.localizedDescription)"))
+        }
+        await broadcast(id: id, origin: origin, decoded: decoded, quote: quote, chain: chain)
+    }
+
+    private func broadcast(
+        id: Int,
+        origin: OriginIdentity,
+        decoded: TransactionParamsCoder.Decoded,
+        quote: TransactionService.Quote,
+        chain: Chain
+    ) async {
+        do {
+            let hash = try await transactionService.send(
+                to: decoded.to,
+                valueWei: decoded.valueWei,
+                data: decoded.data,
+                quote: quote,
+                on: chain
+            )
+            permissionStore.touchLastUsed(origin: origin.key)
+            reply(id: id, result: hash)
+        } catch {
+            reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.internalError, message: "Broadcast failed: \(error.localizedDescription)"))
         }
     }
 
