@@ -1,30 +1,37 @@
 import BigInt
 import Foundation
 
-/// Converts a hex-encoded wei balance into a human-readable string like
-/// `"1.2345 xDAI"`. Uses BigUInt because native-token balances can exceed
-/// UInt64 (1.8e19 ≈ 18.4 ETH) for any meaningfully-funded wallet.
+/// Converts a hex-encoded balance into a human-readable string like
+/// `"1.2345 xDAI"` or `"100.5 USDC"`. Token-aware via the `decimals`
+/// parameter — USDC is 6, BZZ is 16, native chains are 18.
 enum BalanceFormatter {
-    /// `maxFractionDigits` truncates rather than rounds — showing a balance
-    /// *higher* than reality would be dishonest; truncation is always safe.
     static func format(weiHex: String, on chain: Chain, maxFractionDigits: Int = 6) -> String {
         guard let wei = parse(weiHex: weiHex) else { return "—" }
-        return format(wei: wei, on: chain, maxFractionDigits: maxFractionDigits)
+        return format(wei: wei, decimals: nativeDecimals, symbol: chain.nativeSymbol, maxFractionDigits: maxFractionDigits)
     }
 
     static func format(wei: BigUInt, on chain: Chain, maxFractionDigits: Int = 6) -> String {
-        format(wei: wei, symbol: chain.nativeSymbol, maxFractionDigits: maxFractionDigits)
+        format(wei: wei, decimals: nativeDecimals, symbol: chain.nativeSymbol, maxFractionDigits: maxFractionDigits)
+    }
+
+    static func format(wei: BigUInt, token: Token, maxFractionDigits: Int = 6) -> String {
+        format(wei: wei, decimals: token.decimals, symbol: token.symbol, maxFractionDigits: maxFractionDigits)
+    }
+
+    /// Native-decimals shorthand. Used by send-flow call sites that don't
+    /// (yet) thread a `Token` through.
+    static func format(wei: BigUInt, symbol: String, maxFractionDigits: Int = 6) -> String {
+        format(wei: wei, decimals: nativeDecimals, symbol: symbol, maxFractionDigits: maxFractionDigits)
     }
 
     static func parse(weiHex: String) -> BigUInt? {
         Hex.bigUInt(weiHex)
     }
 
-    /// Inverse of `format` — user-typed "0.1" → 10¹⁷ wei. Returns `nil` for
-    /// malformed input or values with more fractional digits than the token
-    /// has decimals (18). The intentional round-trip guarantees we never
-    /// silently truncate what the user typed.
-    static func parseAmount(_ input: String) -> BigUInt? {
+    /// Inverse of `format` — user-typed "0.1" → 10¹⁷ wei (for an 18-decimal
+    /// asset). Returns `nil` for malformed input or values with more
+    /// fractional digits than the asset has decimals.
+    static func parseAmount(_ input: String, decimals: Int = nativeDecimals) -> BigUInt? {
         let trimmed = input.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
         let parts = trimmed.split(separator: ".", omittingEmptySubsequences: false)
@@ -37,31 +44,34 @@ enum BalanceFormatter {
         return BigUInt((whole.isEmpty ? "0" : whole) + padded)
     }
 
-    static func format(wei: BigUInt, symbol: String, maxFractionDigits: Int = 6) -> String {
-        let whole = wei / divisor18
-        let remainder = wei % divisor18
+    static func format(wei: BigUInt, decimals: Int, symbol: String, maxFractionDigits: Int = 6) -> String {
+        "\(formatAmount(wei: wei, decimals: decimals, maxFractionDigits: maxFractionDigits)) \(symbol)"
+    }
+
+    /// Number-only variant for places that already display the symbol
+    /// elsewhere in the layout (e.g. asset rows where the symbol is in
+    /// the row's leading label).
+    static func formatAmount(wei: BigUInt, decimals: Int, maxFractionDigits: Int = 6) -> String {
+        let divisor = BigUInt(10).power(decimals)
+        let whole = wei / divisor
+        let remainder = wei % divisor
 
         if remainder == 0 {
-            return "\(whole) \(symbol)"
+            return "\(whole)"
         }
 
-        // Pad remainder to full precision, then truncate + trim trailing zeros.
         let raw = String(remainder)
-        let padded = String(repeating: "0", count: Self.decimals - raw.count) + raw
+        let padded = String(repeating: "0", count: decimals - raw.count) + raw
         let truncated = String(padded.prefix(maxFractionDigits))
         let trimmed = String(truncated.reversed().drop(while: { $0 == "0" }).reversed())
 
         if trimmed.isEmpty {
-            // Balance is non-zero but smaller than our precision — surface
-            // that explicitly rather than rounding to zero.
-            return "<0.\(String(repeating: "0", count: maxFractionDigits - 1))1 \(symbol)"
+            // Non-zero but smaller than our precision — surface that
+            // explicitly rather than rounding away to zero.
+            return "<0.\(String(repeating: "0", count: maxFractionDigits - 1))1"
         }
-        return "\(whole).\(trimmed) \(symbol)"
+        return "\(whole).\(trimmed)"
     }
 
-    /// All v1 chains use 18-decimal native tokens (ETH on Mainnet, xDAI on
-    /// Gnosis). If we ever add a non-18-decimal chain, split this into
-    /// per-chain decimals and drop the assumption.
-    private static let decimals = 18
-    private static let divisor18 = BigUInt(10).power(18)
+    static let nativeDecimals = 18
 }

@@ -1,3 +1,4 @@
+import BigInt
 import SwiftData
 import SwiftUI
 import web3
@@ -41,14 +42,19 @@ struct WalletHomeView: View {
 
     @State private var address: String?
     @State private var primaryName: String?
-    @State private var balance: BalanceState = .loading
+    @State private var assetsState: AssetsState = .loading
     @State private var balanceRefreshGeneration: Int = 0
     @State private var revealedPhrase: [String]?
     @State private var revealError: String?
 
-    private enum BalanceState: Equatable {
+    private struct AssetEntry: Equatable {
+        let token: Token
+        let balance: BigUInt
+    }
+
+    private enum AssetsState: Equatable {
         case loading
-        case loaded(String)
+        case loaded([AssetEntry])
         case failed
     }
 
@@ -73,7 +79,7 @@ struct WalletHomeView: View {
                     }
                 }
                 chainPicker
-                balanceCard
+                assetsCard
                 NavigationLink {
                     SendFlowView()
                 } label: {
@@ -95,7 +101,7 @@ struct WalletHomeView: View {
         // gesture-arbiter conflict with drag-to-dismiss that cancels the
         // refresh task. Refresh is button-driven instead (see balanceCard).
         .task(id: activeChainID) {
-            await refreshBalance()
+            await refreshAssets()
         }
         // Re-runs whenever the address changes (vault create / wipe / import) —
         // can't dedup by `primaryName != nil` because that's stale across rotations.
@@ -126,38 +132,54 @@ struct WalletHomeView: View {
         .pickerStyle(.segmented)
     }
 
-    private var balanceCard: some View {
+    private var assetsCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Balance").font(.caption).foregroundStyle(.secondary)
+                Text("Assets").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    Task { await refreshBalance() }
+                    Task { await refreshAssets() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.caption.weight(.semibold))
                 }
                 .buttonStyle(.borderless)
-                .disabled(balance == .loading)
-                .accessibilityLabel("Refresh balance")
+                .disabled(assetsState == .loading)
+                .accessibilityLabel("Refresh balances")
             }
-            switch balance {
-            case .loading:
-                ProgressView().frame(maxWidth: .infinity, alignment: .leading)
-            case .loaded(let display):
-                Text(display)
-                    .font(.title2.weight(.semibold))
-                    .textSelection(.enabled)
-            case .failed:
-                Label("Couldn't load balance.", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
+            assetsCardBody
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder private var assetsCardBody: some View {
+        switch assetsState {
+        case .loading:
+            ProgressView().frame(maxWidth: .infinity, alignment: .leading)
+        case .failed:
+            Label("Couldn't load balances.", systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case .loaded(let entries):
+            if entries.isEmpty {
+                Text("No assets on \(activeChain.displayName).")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(entries.enumerated()), id: \.element.token.id) { index, entry in
+                        AssetRow(token: entry.token, balance: entry.balance)
+                        if index < entries.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder private var activeTabSiteCard: some View {
@@ -222,31 +244,40 @@ struct WalletHomeView: View {
         }
     }
 
-    private func refreshBalance() async {
-        let address: String
+    private func refreshAssets() async {
+        let addressString: String
         do {
-            address = try vault.signingKey(at: .mainUser).ethereumAddress
+            addressString = try vault.signingKey(at: .mainUser).ethereumAddress
         } catch {
             // Derivation only throws if the seed is gone (lock mid-view).
-            balance = .failed
+            assetsState = .failed
             return
         }
-        // Snapshot chain to keep formatter consistent across mid-flight
-        // switches; generation token discards stale terminal writes.
+        // Snapshot chain so a mid-flight switch doesn't mis-format the
+        // result against the new chain's tokens; generation token
+        // discards stale terminal writes.
         balanceRefreshGeneration += 1
         let generation = balanceRefreshGeneration
         let chain = activeChain
 
-        self.address = address
-        balance = .loading
-        do {
-            let hex = try await chains.walletRPC.balance(of: address, on: chain)
-            guard generation == balanceRefreshGeneration else { return }
-            balance = .loaded(BalanceFormatter.format(weiHex: hex, on: chain))
-        } catch {
-            guard generation == balanceRefreshGeneration else { return }
-            balance = .failed
+        self.address = addressString
+        assetsState = .loading
+        let fetcher = TokenBalanceFetcher(walletRPC: chains.walletRPC)
+        let tokens = TokenRegistry.tokens(for: chain)
+        let result = await fetcher.fetch(
+            holder: EthereumAddress(addressString),
+            chain: chain,
+            tokens: tokens
+        )
+        guard generation == balanceRefreshGeneration else { return }
+        // Preserve the registry's declared order (native first); skip
+        // missing entries (call failed) and zero balances per the
+        // "empty wallet stays empty" UI rule.
+        let entries: [AssetEntry] = tokens.compactMap { token in
+            guard let balance = result[token], balance > 0 else { return nil }
+            return AssetEntry(token: token, balance: balance)
         }
+        assetsState = .loaded(entries)
     }
 
     private func revealPhrase() async {
