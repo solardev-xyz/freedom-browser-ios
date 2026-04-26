@@ -44,8 +44,6 @@ struct WalletHomeView: View {
     @State private var primaryName: String?
     @State private var assetsState: AssetsState = .loading
     @State private var balanceRefreshGeneration: Int = 0
-    @State private var revealedPhrase: [String]?
-    @State private var revealError: String?
 
     private struct AssetEntry: Equatable {
         let token: Token
@@ -65,9 +63,6 @@ struct WalletHomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                if let level = vault.securityLevel {
-                    SecurityLevelBadge(level: level)
-                }
                 if let address {
                     VStack(alignment: .leading, spacing: 4) {
                         if let primaryName {
@@ -86,11 +81,7 @@ struct WalletHomeView: View {
                     Label("Send", systemImage: "arrow.up.right")
                 }
                 .buttonStyle(PrimaryActionStyle())
-                Button("Lock wallet") { vault.lock() }
-                    .buttonStyle(.bordered)
-                    .frame(maxWidth: .infinity)
                 activeTabSiteCard
-                advancedSection
             }
             .padding(20)
         }
@@ -110,9 +101,6 @@ struct WalletHomeView: View {
             primaryName = try? await ensResolver.reverseResolve(
                 address: EthereumAddress(address)
             )
-        }
-        .navigationDestination(item: $revealedPhrase) { words in
-            RecoveryPhraseView(words: words)
         }
     }
 
@@ -228,22 +216,6 @@ struct WalletHomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private var advancedSection: some View {
-        WalletAdvancedSection {
-            Button {
-                Task { await revealPhrase() }
-            } label: {
-                Label("Show recovery phrase", systemImage: "key.fill")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.bordered)
-            if let revealError {
-                Text(revealError).font(.caption).foregroundStyle(.red)
-            }
-            WipeWalletButton()
-        }
-    }
-
     private func refreshAssets() async {
         let addressString: String
         do {
@@ -280,13 +252,4 @@ struct WalletHomeView: View {
         assetsState = .loaded(entries)
     }
 
-    private func revealPhrase() async {
-        revealError = nil
-        do {
-            let mnemonic = try await vault.revealMnemonic()
-            revealedPhrase = mnemonic.words
-        } catch {
-            revealError = error.localizedDescription
-        }
-    }
 }

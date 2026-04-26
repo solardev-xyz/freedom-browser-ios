@@ -17,12 +17,6 @@ struct WalletLockedView: View {
                 if let unlockError {
                     Text(unlockError).font(.caption).foregroundStyle(.red)
                 }
-                // Wipe stays reachable from locked state — users who've lost
-                // access (biometric revoked, passcode changed) still need a
-                // way to start fresh without uninstalling the app.
-                WalletAdvancedSection {
-                    WipeWalletButton()
-                }
             }
             .padding(20)
         }

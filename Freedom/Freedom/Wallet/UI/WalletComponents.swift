@@ -144,20 +144,6 @@ struct WipeWalletButton: View {
     }
 }
 
-struct WalletAdvancedSection<Content: View>: View {
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        DisclosureGroup("Advanced") {
-            VStack(spacing: 12) {
-                content()
-            }
-            .padding(.top, 8)
-        }
-        .tint(.secondary)
-    }
-}
-
 struct SecurityLevelBadge: View {
     let level: VaultSecurityLevel
 
