@@ -75,12 +75,7 @@ struct WalletHomeView: View {
                 }
                 chainPicker
                 assetsCard
-                NavigationLink {
-                    SendFlowView()
-                } label: {
-                    Label("Send", systemImage: "arrow.up.right")
-                }
-                .buttonStyle(PrimaryActionStyle())
+                sendReceiveButtons
                 activeTabSiteCard
             }
             .padding(20)
@@ -101,6 +96,23 @@ struct WalletHomeView: View {
             primaryName = try? await ensResolver.reverseResolve(
                 address: EthereumAddress(address)
             )
+        }
+    }
+
+    private var sendReceiveButtons: some View {
+        HStack(spacing: 12) {
+            NavigationLink {
+                SendFlowView()
+            } label: {
+                Label("Send", systemImage: "arrow.up.right")
+            }
+            .buttonStyle(PrimaryActionStyle())
+            NavigationLink {
+                ReceiveView()
+            } label: {
+                Label("Receive", systemImage: "arrow.down.left")
+            }
+            .buttonStyle(PrimaryActionStyle())
         }
     }
 
