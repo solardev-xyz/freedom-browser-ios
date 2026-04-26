@@ -9,7 +9,12 @@ struct SendFlowView: View {
     @Environment(TransactionService.self) private var txService
     @Environment(ENSResolver.self) private var ensResolver
 
-    @AppStorage(WalletDefaults.activeChainID) private var activeChainID: Int = Chain.defaultChain.id
+    /// Chain + asset are local @State, defaulted from the caller. Switching
+    /// either via the picker doesn't write back to `WalletDefaults.activeChainID`
+    /// — the user can be browsing on Gnosis but send ETH without losing
+    /// their home view state.
+    @State private var chain: Chain
+    @State private var asset: Token
 
     @State private var recipientInput = ""
     @State private var amountInput = ""
@@ -17,13 +22,13 @@ struct SendFlowView: View {
     @State private var recipientTask: Task<Void, Never>?
     @State private var quoteState: QuoteState = .idle
     @State private var quoteTask: Task<Void, Never>?
+    @State private var balance: BigUInt?
 
-    /// Recipient input → resolved address state machine. Hex addresses
-    /// resolve synchronously; ENS names go through the consensus pipeline,
-    /// which is the slow path we surface explicitly so the user knows
-    /// what's happening. `reverseInFlight` is the analogous flag for the
-    /// reverse-lookup latency so users typing hex see the same "looking
-    /// up" affordance as users typing names.
+    init(chain: Chain, asset: Token? = nil) {
+        self._chain = State(initialValue: chain)
+        self._asset = State(initialValue: asset ?? TokenRegistry.native(for: chain))
+    }
+
     private enum RecipientState: Equatable {
         case idle
         case invalid(message: String)
@@ -42,18 +47,15 @@ struct SendFlowView: View {
             switch (lhs, rhs) {
             case (.idle, .idle), (.loading, .loading): return true
             case (.failed(let a), .failed(let b)): return a == b
-            case (.ready, .ready): return true  // Quote isn't Equatable; identity is enough for view diffing
+            case (.ready, .ready): return true
             default: return false
             }
         }
     }
 
-    private var activeChain: Chain {
-        Chain.find(id: activeChainID) ?? .defaultChain
-    }
-
     private var validatedAmount: BigUInt? {
-        guard let parsed = BalanceFormatter.parseAmount(amountInput), parsed > 0 else { return nil }
+        guard let parsed = BalanceFormatter.parseAmount(amountInput, decimals: asset.decimals),
+              parsed > 0 else { return nil }
         return parsed
     }
 
@@ -86,20 +88,55 @@ struct SendFlowView: View {
 
     var body: some View {
         Form {
+            fromSection
             recipientSection
             amountSection
             feeSection
             reviewSection
         }
-        .navigationTitle("Send \(activeChain.nativeSymbol)")
+        .navigationTitle("Send")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: recipientInput) { _, _ in scheduleResolution() }
         .onChange(of: amountInput) { _, _ in scheduleQuote() }
+        .onChange(of: asset) { _, _ in onAssetChanged() }
+        .task(id: asset) { await refreshBalance() }
         .onDisappear {
             recipientTask?.cancel()
             quoteTask?.cancel()
         }
     }
+
+    // MARK: - From row
+
+    private var fromSection: some View {
+        Section {
+            NavigationLink {
+                AssetPickerView(selectedChain: $chain, selectedAsset: $asset)
+            } label: {
+                HStack(spacing: 12) {
+                    TokenLogo(token: asset)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(asset.symbol)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text(chain.displayName)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if let balance {
+                        Text(BalanceFormatter.formatAmount(wei: balance, decimals: asset.decimals))
+                            .font(.callout.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } header: {
+            Text("From")
+        }
+    }
+
+    // MARK: - Recipient
 
     private var recipientSection: some View {
         Section {
@@ -109,7 +146,7 @@ struct SendFlowView: View {
                 .autocorrectionDisabled()
             recipientFooter
         } header: {
-            Text("Recipient")
+            Text("To")
         }
     }
 
@@ -125,9 +162,6 @@ struct SendFlowView: View {
                 Text("Resolving \(name)…").font(.caption).foregroundStyle(.secondary)
             }
         case .resolved(let address, let ensName, let reverseInFlight):
-            // User typed a name → show resolved hex underneath.
-            // User typed hex → spinner during reverse, then name on hit
-            // (silent if no primary name set — most random addresses).
             let inputIsHex = Hex.isAddressShape(recipientInput.trimmingCharacters(in: .whitespaces))
             if inputIsHex {
                 if reverseInFlight {
@@ -147,21 +181,45 @@ struct SendFlowView: View {
         }
     }
 
+    // MARK: - Amount
+
     private var amountSection: some View {
-        Section("Amount") {
+        Section {
             HStack {
                 TextField("0.0", text: $amountInput)
                     .keyboardType(.decimalPad)
-                Text(activeChain.nativeSymbol)
-                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Max") { fillMax() }
+                    .buttonStyle(.borderless)
+                    .font(.caption.weight(.semibold))
+                    .disabled(balance == nil || balance == 0)
             }
             if !amountInput.trimmingCharacters(in: .whitespaces).isEmpty,
                validatedAmount == nil {
-                Text("Enter a positive amount with up to 18 decimal places.")
+                Text("Enter a positive amount with up to \(asset.decimals) decimal places.")
                     .font(.caption).foregroundStyle(.red)
             }
+        } header: {
+            Text("Amount")
         }
     }
+
+    /// For native: leave room for the gas fee (estimate not always
+    /// available, so fall back to balance and let prepare/insufficient-
+    /// funds catch it). For ERC-20: gas is paid in native, so the full
+    /// token balance is sendable.
+    private func fillMax() {
+        guard let balance else { return }
+        let maxValue: BigUInt
+        if asset.isNative, case .ready(let quote) = quoteState {
+            maxValue = balance > quote.maxFeeWei ? balance - quote.maxFeeWei : 0
+        } else {
+            maxValue = balance
+        }
+        amountInput = BalanceFormatter.formatAmount(wei: maxValue, decimals: asset.decimals, maxFractionDigits: asset.decimals)
+    }
+
+    // MARK: - Fee
 
     @ViewBuilder private var feeSection: some View {
         switch quoteState {
@@ -176,7 +234,7 @@ struct SendFlowView: View {
             }
         case .ready(let quote):
             Section("Estimated fee") {
-                Text(BalanceFormatter.format(wei: quote.maxFeeWei, symbol: activeChain.nativeSymbol))
+                Text(BalanceFormatter.format(wei: quote.maxFeeWei, symbol: chain.nativeSymbol))
                     .font(.system(.body, design: .monospaced))
             }
         case .failed(let message):
@@ -187,6 +245,8 @@ struct SendFlowView: View {
         }
     }
 
+    // MARK: - Review
+
     @ViewBuilder private var reviewSection: some View {
         Section {
             if let inputs = reviewInputs {
@@ -196,7 +256,8 @@ struct SendFlowView: View {
                         recipientName: inputs.recipientName,
                         amount: inputs.amount,
                         quote: inputs.quote,
-                        chain: activeChain
+                        chain: chain,
+                        token: asset
                     )
                 }
             } else {
@@ -221,14 +282,12 @@ struct SendFlowView: View {
             let address = EthereumAddress(trimmed)
             recipientState = .resolved(address, ensName: nil, reverseInFlight: true)
             scheduleQuote()
-            // Best-effort reverse lookup for the recipient subtitle —
-            // silent on failure, hex stays the canonical recipient.
             recipientTask = Task { await reverseLookupRecipient(address: address, hexInput: trimmed) }
             return
         }
         if isENSShape(trimmed) {
             recipientState = .resolving(name: trimmed)
-            scheduleQuote()  // clears any prior fee
+            scheduleQuote()
             recipientTask = Task { await resolveENS(name: trimmed) }
             return
         }
@@ -239,8 +298,6 @@ struct SendFlowView: View {
     private func reverseLookupRecipient(address: EthereumAddress, hexInput: String) async {
         let name = try? await ensResolver.reverseResolve(address: address)
         if Task.isCancelled { return }
-        // Guard against the user having moved on to a different recipient
-        // before the lookup returned.
         guard recipientInput.trimmingCharacters(in: .whitespaces) == hexInput else { return }
         if case .resolved = recipientState {
             recipientState = .resolved(address, ensName: name ?? nil, reverseInFlight: false)
@@ -248,17 +305,12 @@ struct SendFlowView: View {
     }
 
     private func resolveENS(name: String) async {
-        // Same 400ms debounce as the quote path — ENS consensus costs 1-2s
-        // RPC time so we shouldn't fire it on every keystroke.
         try? await Task.sleep(for: .milliseconds(400))
         if Task.isCancelled { return }
         do {
             let address = try await ensResolver.resolveAddress(name)
             if Task.isCancelled { return }
             recipientState = .resolved(address, ensName: name, reverseInFlight: false)
-            // The user's intent is already settled by the time we get here
-            // (consensus + cache hit took 0–2s); skip the quote debounce
-            // that would otherwise stack another 400ms on top.
             await refreshQuoteIfReady()
         } catch {
             if Task.isCancelled { return }
@@ -300,22 +352,53 @@ struct SendFlowView: View {
             quoteState = .failed("Wallet locked — reopen to retry.")
             return
         }
+        let txParams: (to: EthereumAddress, value: BigUInt, data: Data)
+        do {
+            txParams = try TransactionService.buildSend(token: asset, recipient: recipient, amount: amount)
+        } catch {
+            quoteState = .failed("Couldn't encode token transfer.")
+            return
+        }
         do {
             let newQuote = try await txService.prepare(
                 from: EthereumAddress(fromHex),
-                to: recipient,
-                valueWei: amount,
-                data: Data(),
-                on: activeChain
+                to: txParams.to,
+                valueWei: txParams.value,
+                data: txParams.data,
+                on: chain
             )
             if Task.isCancelled { return }
             quoteState = .ready(newQuote)
         } catch TransactionService.Error.insufficientBalance {
             if Task.isCancelled { return }
-            quoteState = .failed("Not enough \(activeChain.nativeSymbol) to cover the amount plus the network fee.")
+            quoteState = .failed("Not enough \(chain.nativeSymbol) to cover the amount plus the network fee.")
         } catch {
             if Task.isCancelled { return }
             quoteState = .failed("Couldn't estimate fee. Check connection.")
         }
+    }
+
+    /// Decimals may differ between the old and new asset, so a "10.5"
+    /// string typed against USDC (6 decimals) would be invalid against
+    /// an 18-decimal asset. Clear and let the user re-type. The picker
+    /// is the only `chain`/`asset` mutator and always writes both
+    /// atomically, so a separate chain handler isn't needed.
+    private func onAssetChanged() {
+        amountInput = ""
+        quoteState = .idle
+    }
+
+    // MARK: - Balance fetch (for Max button + From row)
+
+    private func refreshBalance() async {
+        guard let derived = try? vault.signingKey(at: .mainUser).ethereumAddress else {
+            balance = nil
+            return
+        }
+        let fetcher = TokenBalanceFetcher(walletRPC: chains.walletRPC)
+        let result = await fetcher.fetch(
+            holder: EthereumAddress(derived), chain: chain, tokens: [asset]
+        )
+        balance = result[asset]
     }
 }

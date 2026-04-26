@@ -35,7 +35,7 @@ final class TokenRegistryTests: XCTestCase {
     }
 
     func testNativeLookup() {
-        XCTAssertEqual(TokenRegistry.native(for: .gnosis)?.symbol, "xDAI")
-        XCTAssertEqual(TokenRegistry.native(for: .mainnet)?.symbol, "ETH")
+        XCTAssertEqual(TokenRegistry.native(for: .gnosis).symbol, "xDAI")
+        XCTAssertEqual(TokenRegistry.native(for: .mainnet).symbol, "ETH")
     }
 }

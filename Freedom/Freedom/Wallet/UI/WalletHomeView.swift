@@ -102,7 +102,7 @@ struct WalletHomeView: View {
     private var sendReceiveButtons: some View {
         HStack(spacing: 12) {
             NavigationLink {
-                SendFlowView()
+                SendFlowView(chain: activeChain)
             } label: {
                 Label("Send", systemImage: "arrow.up.right")
             }
@@ -172,7 +172,12 @@ struct WalletHomeView: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(entries.enumerated()), id: \.element.token.id) { index, entry in
-                        AssetRow(token: entry.token, balance: entry.balance)
+                        NavigationLink {
+                            SendFlowView(chain: activeChain, asset: entry.token)
+                        } label: {
+                            AssetRow(token: entry.token, balance: entry.balance)
+                        }
+                        .buttonStyle(.plain)
                         if index < entries.count - 1 {
                             Divider()
                         }

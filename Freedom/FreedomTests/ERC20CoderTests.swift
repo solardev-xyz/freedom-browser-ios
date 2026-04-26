@@ -33,4 +33,17 @@ final class ERC20CoderTests: XCTestCase {
     func testDecodeMalformedHexReturnsNil() {
         XCTAssertNil(ERC20Coder.decodeBalance(hex: "0xnothex"))
     }
+
+    /// `transfer(0xd8da..., 100_000_000)` selector + ABI-encoded args.
+    /// Selector: `0xa9059cbb` (`bytes4(keccak256("transfer(address,uint256)"))`).
+    func testEncodeTransfer() throws {
+        let recipient: EthereumAddress = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+        let encoded = try ERC20Coder.encodeTransfer(to: recipient, amount: BigUInt(100_000_000))
+        let hex = encoded.web3.hexString
+        XCTAssertTrue(hex.hasPrefix("0xa9059cbb"))
+        // Selector + 32-byte address word + 32-byte amount word = 68 bytes.
+        XCTAssertEqual(hex.count, 2 + 4 * 2 + 32 * 2 * 2)
+        // Last 8 bytes of the amount word: 0x05f5e100 = 100_000_000.
+        XCTAssertTrue(hex.lowercased().hasSuffix("05f5e100"))
+    }
 }

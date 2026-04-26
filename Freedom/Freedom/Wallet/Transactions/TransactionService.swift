@@ -43,6 +43,24 @@ final class TransactionService {
         self.gasOracle = GasOracle(rpc: registry.walletRPC)
     }
 
+    /// Translates a logical "send N of token T to recipient" into the
+    /// `(to, value, data)` shape the EVM actually broadcasts. Native
+    /// passes through; ERC-20 routes through the token contract with
+    /// `transfer(recipient, amount)` calldata. Used by both quote
+    /// preparation (so estimateGas sees the right params) and the
+    /// broadcast itself (so the same params get signed).
+    static func buildSend(
+        token: Token,
+        recipient: EthereumAddress,
+        amount: BigUInt
+    ) throws -> (to: EthereumAddress, value: BigUInt, data: Data) {
+        if let contract = token.address {
+            let calldata = try ERC20Coder.encodeTransfer(to: recipient, amount: amount)
+            return (contract, 0, calldata)
+        }
+        return (recipient, amount, Data())
+    }
+
     struct Quote {
         let from: EthereumAddress
         let nonce: Int

@@ -16,7 +16,7 @@ struct AssetRow: View {
         // Reserved for an "All chains" rollup view where the chain name
         // would belong here.
         HStack(spacing: 12) {
-            logo
+            TokenLogo(token: token)
             Text(token.symbol)
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.primary)
@@ -28,31 +28,5 @@ struct AssetRow: View {
                 .truncationMode(.tail)
         }
         .padding(.vertical, 6)
-    }
-
-    @ViewBuilder private var logo: some View {
-        if let image = bundledLogo {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 28, height: 28)
-                .clipShape(Circle())
-        } else {
-            // Fallback for tokens without a bundled logo (custom tokens,
-            // future): tinted circle with the symbol's first letter.
-            Circle()
-                .fill(Color.accentColor.opacity(0.15))
-                .frame(width: 28, height: 28)
-                .overlay {
-                    Text(String(token.symbol.prefix(1)))
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(Color.accentColor)
-                }
-        }
-    }
-
-    private var bundledLogo: UIImage? {
-        guard let asset = token.logoAsset else { return nil }
-        return UIImage(named: asset)
     }
 }

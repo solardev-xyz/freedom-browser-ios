@@ -12,6 +12,7 @@ struct SendReviewView: View {
     let amount: BigUInt
     let quote: TransactionService.Quote
     let chain: Chain
+    let token: Token
 
     @Environment(TransactionService.self) private var txService
     @Environment(\.closeWalletSheet) private var closeWalletSheet
@@ -77,13 +78,20 @@ struct SendReviewView: View {
         VStack(alignment: .leading, spacing: 0) {
             row("Network", chain.displayName)
             divider
+            row("Asset", token.symbol)
+            divider
             recipientRow
             divider
-            row("Amount", BalanceFormatter.format(wei: amount, symbol: chain.nativeSymbol))
+            row("Amount", BalanceFormatter.format(wei: amount, token: token))
             divider
             row("Network fee (max)", BalanceFormatter.format(wei: quote.maxFeeWei, symbol: chain.nativeSymbol))
-            divider
-            row("Total (max)", BalanceFormatter.format(wei: amount + quote.maxFeeWei, symbol: chain.nativeSymbol))
+            // "Total" only makes sense when amount and fee share a unit
+            // (native sends). For ERC-20s, amount is in token units and
+            // fee is in native — adding them would be misleading.
+            if token.isNative {
+                divider
+                row("Total (max)", BalanceFormatter.format(wei: amount + quote.maxFeeWei, symbol: chain.nativeSymbol))
+            }
         }
         .padding()
         .background(Color(.secondarySystemBackground))
@@ -188,10 +196,13 @@ struct SendReviewView: View {
     private func broadcast() async {
         stage = .form(isBroadcasting: true)
         do {
+            let txParams = try TransactionService.buildSend(
+                token: token, recipient: recipient, amount: amount
+            )
             let hash = try await txService.send(
-                to: recipient,
-                valueWei: amount,
-                data: Data(),
+                to: txParams.to,
+                valueWei: txParams.value,
+                data: txParams.data,
                 quote: quote,
                 on: chain
             )

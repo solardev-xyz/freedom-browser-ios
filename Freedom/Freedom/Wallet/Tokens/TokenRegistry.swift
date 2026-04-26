@@ -68,7 +68,14 @@ enum TokenRegistry {
         builtins.filter { $0.chainID == chain.id }
     }
 
-    static func native(for chain: Chain) -> Token? {
-        builtins.first { $0.chainID == chain.id && $0.address == nil }
+    /// Every supported chain is required to declare a native asset, so a
+    /// missing entry is a programming error and traps loudly. Adding a
+    /// new `Chain` without a matching native row in `builtins` would
+    /// otherwise silently leave callers with an unresolvable optional.
+    static func native(for chain: Chain) -> Token {
+        guard let native = builtins.first(where: { $0.chainID == chain.id && $0.address == nil }) else {
+            preconditionFailure("TokenRegistry has no native for chain \(chain.displayName)")
+        }
+        return native
     }
 }

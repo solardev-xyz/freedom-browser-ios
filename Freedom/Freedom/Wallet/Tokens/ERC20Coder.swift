@@ -2,12 +2,21 @@ import BigInt
 import Foundation
 import web3
 
-/// ABI helpers for the ERC-20 read methods we need. `transfer` lands in
-/// WP21 alongside the send flow.
+/// ABI helpers for the ERC-20 methods we need.
 enum ERC20Coder {
     static func encodeBalanceOf(holder: EthereumAddress) throws -> Data {
         let encoder = ABIFunctionEncoder("balanceOf")
         try encoder.encode(holder)
+        return try encoder.encoded()
+    }
+
+    /// Selector `0xa9059cbb` || ABI(address recipient, uint256 amount).
+    /// `to` is always the recipient — the tx itself is sent to the token
+    /// contract, with `value=0`.
+    static func encodeTransfer(to: EthereumAddress, amount: BigUInt) throws -> Data {
+        let encoder = ABIFunctionEncoder("transfer")
+        try encoder.encode(to)
+        try encoder.encode(amount)
         return try encoder.encoded()
     }
 
