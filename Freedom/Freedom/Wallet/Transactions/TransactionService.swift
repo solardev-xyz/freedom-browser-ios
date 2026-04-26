@@ -14,6 +14,7 @@ final class TransactionService {
     enum Error: Swift.Error, LocalizedError {
         case recipientInvalid
         case gasEstimateFailed
+        case insufficientBalance
         case signingFailed
         case broadcastMalformed
         case confirmationTimeout
@@ -22,6 +23,7 @@ final class TransactionService {
             switch self {
             case .recipientInvalid: return "Recipient isn't a valid Ethereum address."
             case .gasEstimateFailed: return "The network couldn't estimate gas — the transaction may be rejected. Check the recipient and amount."
+            case .insufficientBalance: return "Not enough balance to cover the amount plus the network fee."
             case .signingFailed: return "Couldn't sign the transaction. Unlock the wallet and try again."
             case .broadcastMalformed: return "Signed transaction is malformed — please report this."
             case .confirmationTimeout: return "Transaction hasn't confirmed within the expected window. It may still land — check the explorer."
@@ -74,15 +76,21 @@ final class TransactionService {
             dataHex: data.isEmpty ? "0x" : data.web3.hexString,
             on: chain
         )
-        guard let gasLimit = Hex.bigUInt(try await gasLimitHex) else {
-            throw Error.gasEstimateFailed
+        do {
+            guard let gasLimit = Hex.bigUInt(try await gasLimitHex) else {
+                throw Error.gasEstimateFailed
+            }
+            return Quote(
+                from: from,
+                nonce: try await nonce,
+                gasPrice: try await gasPriceWei,
+                gasLimit: gasLimit
+            )
+        } catch WalletRPC.Error.insufficientFunds {
+            // Don't leak WalletRPC internals into the UI — the send flow
+            // catches `TransactionService.Error` only.
+            throw Error.insufficientBalance
         }
-        return Quote(
-            from: from,
-            nonce: try await nonce,
-            gasPrice: try await gasPriceWei,
-            gasLimit: gasLimit
-        )
     }
 
     /// Build → sign → broadcast. Caller pre-committed to `quote`. Returns

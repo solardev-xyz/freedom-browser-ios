@@ -42,6 +42,7 @@ struct WalletHomeView: View {
     @State private var address: String?
     @State private var primaryName: String?
     @State private var balance: BalanceState = .loading
+    @State private var balanceRefreshGeneration: Int = 0
     @State private var revealedPhrase: [String]?
     @State private var revealError: String?
 
@@ -87,10 +88,12 @@ struct WalletHomeView: View {
             }
             .padding(20)
         }
-        .refreshable { await refreshBalance() }
         // `.task(id:)` auto-cancels the previous run on chain change and on
         // view disappearance — no manual Task handle needed, no stale
         // `balance = .loaded(...)` clobbering after the user swipes away.
+        // No `.refreshable` here: pull-to-refresh inside an iOS sheet has a
+        // gesture-arbiter conflict with drag-to-dismiss that cancels the
+        // refresh task. Refresh is button-driven instead (see balanceCard).
         .task(id: activeChainID) {
             await refreshBalance()
         }
@@ -125,7 +128,19 @@ struct WalletHomeView: View {
 
     private var balanceCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Balance").font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text("Balance").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    Task { await refreshBalance() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderless)
+                .disabled(balance == .loading)
+                .accessibilityLabel("Refresh balance")
+            }
             switch balance {
             case .loading:
                 ProgressView().frame(maxWidth: .infinity, alignment: .leading)
@@ -134,7 +149,7 @@ struct WalletHomeView: View {
                     .font(.title2.weight(.semibold))
                     .textSelection(.enabled)
             case .failed:
-                Label("Couldn't load balance. Pull to retry.", systemImage: "exclamationmark.triangle")
+                Label("Couldn't load balance.", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -216,14 +231,20 @@ struct WalletHomeView: View {
             balance = .failed
             return
         }
+        // Snapshot chain to keep formatter consistent across mid-flight
+        // switches; generation token discards stale terminal writes.
+        balanceRefreshGeneration += 1
+        let generation = balanceRefreshGeneration
+        let chain = activeChain
+
         self.address = address
         balance = .loading
         do {
-            let hex = try await chains.walletRPC.balance(of: address, on: activeChain)
-            if Task.isCancelled { return }
-            balance = .loaded(BalanceFormatter.format(weiHex: hex, on: activeChain))
+            let hex = try await chains.walletRPC.balance(of: address, on: chain)
+            guard generation == balanceRefreshGeneration else { return }
+            balance = .loaded(BalanceFormatter.format(weiHex: hex, on: chain))
         } catch {
-            if Task.isCancelled { return }
+            guard generation == balanceRefreshGeneration else { return }
             balance = .failed
         }
     }

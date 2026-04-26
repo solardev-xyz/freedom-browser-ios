@@ -30,23 +30,6 @@ final class WalletRPCTests: XCTestCase {
         ChainRegistry(mainnetPool: EthereumRPCPool(settings: SettingsStore()))
     }
 
-    /// Wraps a JSON-RPC result value in the envelope the client expects.
-    private func rpcResult(_ value: Any) throws -> Data {
-        try JSONSerialization.data(withJSONObject: [
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": value,
-        ])
-    }
-
-    private func rpcError(code: Int, message: String) throws -> Data {
-        try JSONSerialization.data(withJSONObject: [
-            "jsonrpc": "2.0",
-            "id": 1,
-            "error": ["code": code, "message": message],
-        ])
-    }
-
     private var gnosisURLs: [URL] { ChainRegistry.gnosisURLs }
 
     func testFirstProviderSuccess() async throws {
@@ -82,9 +65,9 @@ final class WalletRPCTests: XCTestCase {
         XCTAssertEqual(block, "0x10f2c")
     }
 
-    func testRPCErrorDoesNotFallThrough() async throws {
-        // An explicit JSON-RPC error envelope is deterministic across
-        // providers — bubble up, don't pound the next URL.
+    /// `-32602 invalid params` short-circuits — every well-behaved server
+    /// would reject the same way.
+    func testInvalidParamsShortCircuits() async throws {
         let stub = StubTransport()
         stub.responses[gnosisURLs[0]] = .success(try rpcError(code: -32602, message: "invalid params"))
         stub.responses[gnosisURLs[1]] = .success(try rpcResult("0x10f2c"))
@@ -97,6 +80,129 @@ final class WalletRPCTests: XCTestCase {
             XCTAssertEqual(code, -32602)
             XCTAssertEqual(message, "invalid params")
             XCTAssertEqual(stub.callLog, [gnosisURLs[0]])
+        }
+    }
+
+    /// EIP-474 execution revert (`error.data` populated) short-circuits —
+    /// protocol-deterministic answer.
+    func testExecutionRevertShortCircuits() async throws {
+        let stub = StubTransport()
+        stub.responses[gnosisURLs[0]] = .success(
+            try rpcError(code: 3, message: "execution reverted", dataHex: "0x08c379a0...")
+        )
+        stub.responses[gnosisURLs[1]] = .success(try rpcResult("0xdeadbeef"))
+        let rpc = WalletRPC(registry: makeRegistry(), transport: stub.transport)
+
+        do {
+            let _: String = try await rpc.call("eth_call", params: [String](), on: .gnosis)
+            XCTFail("expected .rpc error")
+        } catch WalletRPC.Error.rpc(let code, _) {
+            XCTAssertEqual(code, 3)
+            XCTAssertEqual(stub.callLog, [gnosisURLs[0]])
+        }
+    }
+
+    /// Provider-quirk error envelopes without `data` iterate — they may
+    /// be Cloudflare's `-32603` or Ankr's `-32000` which the next provider
+    /// won't replicate.
+    func testNonDeterministicRPCErrorIterates() async throws {
+        let stub = StubTransport()
+        stub.responses[gnosisURLs[0]] = .success(try rpcError(code: -32603, message: "internal error"))
+        stub.responses[gnosisURLs[1]] = .success(try rpcResult("0x10f2c"))
+        let rpc = WalletRPC(registry: makeRegistry(), transport: stub.transport)
+
+        let block = try await rpc.blockNumber(on: .gnosis)
+        XCTAssertEqual(block, "0x10f2c")
+        XCTAssertEqual(stub.callLog, [gnosisURLs[0], gnosisURLs[1]])
+    }
+
+    func testUnauthorizedRPCErrorIterates() async throws {
+        let stub = StubTransport()
+        stub.responses[gnosisURLs[0]] = .success(try rpcError(code: -32000, message: "API key required"))
+        stub.responses[gnosisURLs[1]] = .success(try rpcResult("0x10f2c"))
+        let rpc = WalletRPC(registry: makeRegistry(), transport: stub.transport)
+
+        let block = try await rpc.blockNumber(on: .gnosis)
+        XCTAssertEqual(block, "0x10f2c")
+    }
+
+    /// Insufficient-funds messages from `eth_estimateGas` short-circuit
+    /// with a typed domain error so the send-flow surfaces a real
+    /// message instead of a generic "Check connection".
+    func testInsufficientFundsShortCircuitsWithTypedError() async throws {
+        let stub = StubTransport()
+        stub.responses[gnosisURLs[0]] = .success(
+            try rpcError(code: -32000, message: "err: insufficient funds for gas * price + value: address ...")
+        )
+        stub.responses[gnosisURLs[1]] = .success(try rpcResult("0x5208"))
+        let rpc = WalletRPC(registry: makeRegistry(), transport: stub.transport)
+
+        do {
+            let _: String = try await rpc.estimateGas(
+                from: "0xabc", to: "0xdef", valueHex: "0x1", dataHex: "0x", on: .gnosis
+            )
+            XCTFail("expected .insufficientFunds")
+        } catch WalletRPC.Error.insufficientFunds(let message) {
+            XCTAssertTrue(message.lowercased().contains("insufficient funds"))
+            XCTAssertEqual(stub.callLog, [gnosisURLs[0]])
+        }
+    }
+
+    /// A JSON-RPC error envelope means the provider responded correctly
+    /// per spec — that's transport health, not a quarantine signal.
+    func testRPCErrorDoesNotPoisonQuarantine() async throws {
+        let pool = EthereumRPCPool(settings: SettingsStore())
+        let registry = ChainRegistry(mainnetPool: pool)
+        let mainnetURLs = pool.availableProviders()
+        XCTAssertGreaterThanOrEqual(mainnetURLs.count, 2)
+
+        let stub = StubTransport()
+        stub.responses[mainnetURLs[0]] = .success(try rpcError(code: -32603, message: "internal error"))
+        stub.responses[mainnetURLs[1]] = .success(try rpcResult("0x10f2c"))
+        let rpc = WalletRPC(registry: registry, transport: stub.transport)
+
+        let _ = try await rpc.blockNumber(on: .mainnet)
+
+        XCTAssertEqual(
+            Set(pool.availableProviders()), Set(mainnetURLs),
+            "RPC errors must not feed quarantine — a provider returning JSON-RPC error is transport-healthy"
+        )
+    }
+
+    /// Transport errors (network / DNS / TLS / 5xx) DO mark provider
+    /// failure — that's exactly the signal quarantine wants.
+    func testTransportErrorPoisonsQuarantine() async throws {
+        let pool = EthereumRPCPool(settings: SettingsStore())
+        let registry = ChainRegistry(mainnetPool: pool)
+        let mainnetURLs = pool.availableProviders()
+        XCTAssertGreaterThanOrEqual(mainnetURLs.count, 2)
+
+        let stub = StubTransport()
+        stub.responses[mainnetURLs[0]] = .failure(URLError(.cannotConnectToHost))
+        stub.responses[mainnetURLs[1]] = .success(try rpcResult("0x10f2c"))
+        let rpc = WalletRPC(registry: registry, transport: stub.transport)
+
+        let _ = try await rpc.blockNumber(on: .mainnet)
+
+        XCTAssertFalse(
+            pool.availableProviders().contains(mainnetURLs[0]),
+            "transport-failed provider should be quarantined"
+        )
+    }
+
+    func testAllRPCErrorsThrowAllProvidersFailed() async throws {
+        let stub = StubTransport()
+        for url in gnosisURLs {
+            stub.responses[url] = .success(try rpcError(code: -32603, message: "internal error"))
+        }
+        let rpc = WalletRPC(registry: makeRegistry(), transport: stub.transport)
+
+        do {
+            let _ = try await rpc.blockNumber(on: .gnosis)
+            XCTFail("expected .allProvidersFailed")
+        } catch WalletRPC.Error.allProvidersFailed(let errors) {
+            XCTAssertEqual(errors.count, gnosisURLs.count)
+            XCTAssertEqual(stub.callLog, gnosisURLs)
         }
     }
 
@@ -114,6 +220,30 @@ final class WalletRPCTests: XCTestCase {
             XCTAssertEqual(errors.count, gnosisURLs.count)
             XCTAssertEqual(stub.callLog, gnosisURLs)
         }
+    }
+
+    /// A cancelled task bails out at the top of the next iteration
+    /// instead of walking every provider.
+    func testCooperativeCancellationBailsAfterFirstAttempt() async throws {
+        let log = URLLog()
+        let blocking: WalletRPC.Transport = { url, _ in
+            log.append(url)
+            try await Task.sleep(for: .seconds(60))
+            return Data()
+        }
+        let rpc = WalletRPC(registry: makeRegistry(), transport: blocking)
+
+        let task = Task { try await rpc.blockNumber(on: .gnosis) }
+        // Poll instead of fixed sleep — slow CI may not have entered the
+        // first transport await yet at 50ms, which would let cancel arrive
+        // before any provider is logged.
+        for _ in 0..<100 where log.urls.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        task.cancel()
+        _ = await task.result
+
+        XCTAssertEqual(log.urls.count, 1)
     }
 
     func testBalanceTypedCallEncodesCorrectParams() async throws {
@@ -140,4 +270,9 @@ final class WalletRPCTests: XCTestCase {
 private final class CapturedRequest: @unchecked Sendable {
     var url: URL?
     var body: Data?
+}
+
+private final class URLLog: @unchecked Sendable {
+    var urls: [URL] = []
+    func append(_ url: URL) { urls.append(url) }
 }

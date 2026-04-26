@@ -310,6 +310,9 @@ struct SendFlowView: View {
             )
             if Task.isCancelled { return }
             quoteState = .ready(newQuote)
+        } catch TransactionService.Error.insufficientBalance {
+            if Task.isCancelled { return }
+            quoteState = .failed("Not enough \(activeChain.nativeSymbol) to cover the amount plus the network fee.")
         } catch {
             if Task.isCancelled { return }
             quoteState = .failed("Couldn't estimate fee. Check connection.")

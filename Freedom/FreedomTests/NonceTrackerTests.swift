@@ -23,12 +23,6 @@ final class NonceTrackerTests: XCTestCase {
         func snapshot() -> Int { i }
     }
 
-    private func rpcResult(_ value: String) throws -> Data {
-        try JSONSerialization.data(withJSONObject: [
-            "jsonrpc": "2.0", "id": 1, "result": value,
-        ])
-    }
-
     func testFirstCallFetchesFromChain() async throws {
         let (rpc, _) = makeStubRPC(responses: [try rpcResult("0x5")])
         let tracker = NonceTracker(rpc: rpc)

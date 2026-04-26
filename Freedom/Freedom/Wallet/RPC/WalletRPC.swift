@@ -7,9 +7,12 @@ import Foundation
 @MainActor
 struct WalletRPC {
     enum Error: Swift.Error, LocalizedError {
-        /// JSON-RPC error envelope returned by the provider. Deterministic
-        /// across providers — retrying won't change the answer.
+        /// Protocol-deterministic answer from a provider — execution
+        /// revert (`error.data` populated) or `-32602 invalid params`.
         case rpc(code: Int, message: String)
+        /// Sender can't cover `value + gas`. Deterministic — every
+        /// provider rejects the same way.
+        case insufficientFunds(message: String)
         /// Every URL in the chain's list failed at the transport layer.
         case allProvidersFailed([Swift.Error])
         /// Response had neither `result` nor `error`.
@@ -21,6 +24,8 @@ struct WalletRPC {
             switch self {
             case .rpc(let code, let message):
                 return "RPC \(code): \(message)"
+            case .insufficientFunds(let message):
+                return message
             case .allProvidersFailed(let errors):
                 let first = errors.first?.localizedDescription ?? "unknown cause"
                 return "All \(errors.count) providers failed. \(first)"
@@ -34,9 +39,12 @@ struct WalletRPC {
 
     /// Single-URL transport. Takes pre-encoded JSON, returns the raw
     /// response body. Default delegates to `RPCSession.postBytes` with an
-    /// 8s per-URL timeout (3 providers × 8s worst case fits inside a
-    /// reasonable user-visible budget); tests inject a stub.
+    /// 8s per-URL timeout; tests inject a stub.
     typealias Transport = @Sendable (URL, Data) async throws -> Data
+
+    /// `-32602 Invalid params` (EIP-1474). Every well-behaved server would
+    /// reject the same way, so iteration won't help — short-circuit.
+    private static let invalidParamsCode = -32602
 
     let registry: ChainRegistry
     let transport: Transport
@@ -93,7 +101,7 @@ struct WalletRPC {
             do {
                 let envelope = try RPCSession.decoder.decode(RPCSession.Response<R>.self, from: data)
                 if let err = envelope.error {
-                    return .rpcError(code: err.code, message: err.message)
+                    return .rpcError(code: err.code, message: err.message, hasRevertData: err.data != nil)
                 }
                 if let result = envelope.result {
                     return .success(result)
@@ -107,14 +115,16 @@ struct WalletRPC {
 
     private enum ParseResult<T> {
         case success(T)
-        case rpcError(code: Int, message: String)
+        /// `hasRevertData` flags an EIP-474 execution revert (`error.data`
+        /// populated). Deterministic protocol answer → short-circuit.
+        case rpcError(code: Int, message: String, hasRevertData: Bool)
         case malformed(Swift.Error)
     }
 
-    /// Provider fan-out at the raw-bytes level: iterates the chain's URLs,
-    /// buckets transport + malformed errors, throws on RPC-level errors
-    /// without retrying (those are deterministic). Typed and untyped
-    /// callers supply their own envelope parser.
+    /// Iterates URLs; tries next on transport / malformed failure. Short-
+    /// circuits on protocol-deterministic RPC errors (execution revert,
+    /// `-32602`, `insufficient funds`). Other RPC errors iterate but
+    /// don't quarantine — a JSON-RPC envelope means transport-healthy.
     private func fanOutBody<T>(
         _ body: Data,
         on chain: Chain,
@@ -124,23 +134,47 @@ struct WalletRPC {
         guard !urls.isEmpty else { throw Error.noProviders }
         var errors: [Swift.Error] = []
         for url in urls {
+            try Task.checkCancellation()
+
             let data: Data
             do {
                 data = try await transport(url, body)
             } catch {
+                // Cancellation isn't a provider fault — rethrow without
+                // touching quarantine.
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    throw error
+                }
+                registry.markFailure(url: url, on: chain)
                 errors.append(error)
                 continue
             }
             switch parse(data) {
             case .success(let value):
+                registry.markSuccess(url: url, on: chain)
                 return value
-            case .rpcError(let code, let message):
-                throw Error.rpc(code: code, message: message)
+            case .rpcError(let code, let message, let hasRevertData):
+                if Self.isInsufficientFunds(message: message) {
+                    throw Error.insufficientFunds(message: message)
+                }
+                if hasRevertData || code == Self.invalidParamsCode {
+                    throw Error.rpc(code: code, message: message)
+                }
+                // Don't mark — provider responded correctly per JSON-RPC spec.
+                errors.append(Error.rpc(code: code, message: message))
             case .malformed(let err):
+                registry.markFailure(url: url, on: chain)
                 errors.append(err)
             }
         }
         throw Error.allProvidersFailed(errors)
+    }
+
+    /// Substring match is fragile across exotic clients but covers the
+    /// common public-RPC universe (geth/erigon/anvil all carry
+    /// "insufficient funds" in the message).
+    private static func isInsufficientFunds(message: String) -> Bool {
+        message.lowercased().contains("insufficient funds")
     }
 
     // MARK: - Typed methods
@@ -200,7 +234,8 @@ struct WalletRPC {
             if let errObj = envelope["error"] as? [String: Any] {
                 let code = errObj["code"] as? Int ?? 0
                 let message = errObj["message"] as? String ?? "unknown error"
-                return .rpcError(code: code, message: message)
+                let hasRevertData = errObj["data"] is String
+                return .rpcError(code: code, message: message, hasRevertData: hasRevertData)
             }
             if let result = envelope["result"] {
                 return .success(result)

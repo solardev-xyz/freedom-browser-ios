@@ -35,10 +35,6 @@ final class RPCRouterTests: XCTestCase {
         }
     }
 
-    private func rpcResult(_ value: Any) throws -> Data {
-        try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "result": value])
-    }
-
     private func makeRouter(stub: StubRPC, chain: Chain = .gnosis) -> RPCRouter {
         let registry = ChainRegistry(mainnetPool: EthereumRPCPool(settings: SettingsStore()))
         registry.walletRPC = WalletRPC(registry: registry, transport: stub.transport)
@@ -186,12 +182,18 @@ final class RPCRouterTests: XCTestCase {
 
     // MARK: - RPC error passthrough
 
-    func testProviderRPCErrorSurfacesCodeAndMessage() async throws {
+    /// EIP-474 execution reverts short-circuit and pass through to the
+    /// dapp so it can surface the revert reason.
+    func testProviderRevertSurfacesCodeAndMessage() async throws {
         let stub = StubRPC()
         let errorEnvelope = try JSONSerialization.data(withJSONObject: [
             "jsonrpc": "2.0",
             "id": 1,
-            "error": ["code": -32000, "message": "execution reverted"],
+            "error": [
+                "code": -32000,
+                "message": "execution reverted",
+                "data": "0x08c379a000000000000000000000000000000000000000000000000000000000",
+            ],
         ])
         stub.responses = ["eth_call": [errorEnvelope]]
         let router = makeRouter(stub: stub)

@@ -30,6 +30,16 @@ final class ChainRegistry {
         }
     }
 
+    /// Feeds Mainnet pool quarantine; no-op on Gnosis (hardcoded URL
+    /// list, no pool).
+    func markSuccess(url: URL, on chain: Chain) {
+        if chain == .mainnet { mainnetPool.markSuccess(url) }
+    }
+
+    func markFailure(url: URL, on chain: Chain) {
+        if chain == .mainnet { mainnetPool.markFailure(url) }
+    }
+
     /// Exposed for tests (see WalletRPCTests) — single source of truth for
     /// what URLs Gnosis queries go to.
     static let gnosisURLs: [URL] = [

@@ -54,6 +54,25 @@ func encodeOffchainLookupRevert(
     return try! encoder.encoded()
 }
 
+/// JSON-RPC `result` envelope wrapper used across the wallet/router/tx
+/// test suites. Force-tries — encoding failures should fail the test, not
+/// be silently swallowed.
+func rpcResult(_ value: Any) throws -> Data {
+    try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "result": value])
+}
+
+/// JSON-RPC `error` envelope wrapper. `dataHex` non-nil → EIP-474
+/// execution-revert shape (the `error.data` field is what the wallet
+/// uses to discriminate deterministic protocol answers from provider
+/// quirks).
+func rpcError(code: Int, message: String, dataHex: String? = nil) throws -> Data {
+    var error: [String: Any] = ["code": code, "message": message]
+    if let dataHex { error["data"] = dataHex }
+    return try JSONSerialization.data(withJSONObject: [
+        "jsonrpc": "2.0", "id": 1, "error": error,
+    ])
+}
+
 /// Stubs for `VaultCrypto`'s biometric gate. Real `LAContext` would hang
 /// waiting for simulator-user interaction; these drive deterministic
 /// success / "can't gate" paths.

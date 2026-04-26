@@ -56,10 +56,6 @@ final class TransactionServiceTests: XCTestCase {
         }
     }
 
-    private func rpcResult(_ value: Any) throws -> Data {
-        try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "result": value])
-    }
-
     private func makeService(vault: Vault, stub: StubRPC) -> TransactionService {
         let registry = ChainRegistry(mainnetPool: EthereumRPCPool(settings: SettingsStore()))
         registry.walletRPC = WalletRPC(registry: registry, transport: stub.transport)
@@ -101,6 +97,37 @@ final class TransactionServiceTests: XCTestCase {
     /// (chainId=100) that's 235 or 236. If this test fails with v=208/209,
     /// Argent's legacy-tx signing is mis-encoding v for non-mainnet chains.
     /// We decode from raw RLP bytes since SignedTransaction.v is internal.
+    /// `eth_estimateGas` precheck failure rewraps `WalletRPC.Error.insufficientFunds`
+    /// as `TransactionService.Error.insufficientBalance` so the UI doesn't
+    /// import `WalletRPC.Error`.
+    func testPrepareMapsInsufficientFundsToDomainError() async throws {
+        let vault = try await makeUnlockedVault()
+        let stub = StubRPC()
+        stub.responses = [
+            "eth_getTransactionCount": [try rpcResult("0xa")],
+            "eth_gasPrice": [try rpcResult("0x77359400")],
+            "eth_estimateGas": [
+                try rpcError(code: -32000, message: "err: insufficient funds for gas * price + value"),
+            ],
+        ]
+        let service = makeService(vault: vault, stub: stub)
+
+        do {
+            _ = try await service.prepare(
+                from: EthereumAddress("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"),
+                to: EthereumAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+                valueWei: BigUInt("de0b6b3a7640000", radix: 16)!,
+                data: Data(),
+                on: .gnosis
+            )
+            XCTFail("expected .insufficientBalance")
+        } catch TransactionService.Error.insufficientBalance {
+            // expected
+        } catch {
+            XCTFail("wrong error: \(error)")
+        }
+    }
+
     func testSignedVIsEIP155ValidForGnosis() async throws {
         let vault = try await makeUnlockedVault()
         let hdKey = try vault.signingKey(at: .mainUser)
