@@ -7,6 +7,17 @@ import SwarmKit
 @MainActor
 final class BeeIdentityCoordinatorTests: XCTestCase {
     private let dummySwarm = SwarmNode()
+    private var settings: SettingsStore!
+
+    override func setUp() async throws {
+        try await super.setUp()
+        // Per-test UUID suite so `revertInBackground` and `switchMode`
+        // can't reach the user's real `beeNodeMode` /
+        // `hasCompletedPublishSetup` (production was getting clobbered
+        // back to ultralight by every test run).
+        let defaults = UserDefaults(suiteName: "BeeIdentityCoordinatorTests-\(UUID().uuidString)")!
+        settings = SettingsStore(defaults: defaults)
+    }
 
     private func makeVault() -> Vault { Vault() }
 
@@ -16,7 +27,7 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
         restartForMode: @escaping BeeIdentityCoordinator.ModeChangeWork = { _, _ in }
     ) -> BeeIdentityCoordinator {
         BeeIdentityCoordinator(
-            settings: SettingsStore(defaults: .standard),
+            settings: settings,
             inject: inject,
             revert: revert,
             restartForMode: restartForMode
@@ -117,12 +128,8 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
     /// `restartForMode` closure. No-ops when target mode equals current.
     func testSwitchModeFlipsSettingsAndRoutesToCoordinator() async throws {
         let calls = ActorCallTracker()
-        let settings = SettingsStore(defaults: .standard)
         settings.beeNodeMode = .ultraLight
-        let coord = BeeIdentityCoordinator(
-            settings: settings,
-            inject: { _, _, _ in },
-            revert: { _ in },
+        let coord = makeCoord(
             restartForMode: { _, _ in await calls.increment() }
         )
         coord.switchMode(to: .light, swarm: dummySwarm)
@@ -134,12 +141,8 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
 
     func testSwitchModeNoOpsWhenAlreadyInTargetMode() async throws {
         let calls = ActorCallTracker()
-        let settings = SettingsStore(defaults: .standard)
         settings.beeNodeMode = .light
-        let coord = BeeIdentityCoordinator(
-            settings: settings,
-            inject: { _, _, _ in },
-            revert: { _ in },
+        let coord = makeCoord(
             restartForMode: { _, _ in await calls.increment() }
         )
         coord.switchMode(to: .light, swarm: dummySwarm)

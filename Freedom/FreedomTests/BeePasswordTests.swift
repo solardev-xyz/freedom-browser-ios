@@ -31,7 +31,12 @@ final class BeePasswordTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        try BeePassword.wipe()
+        // No wipe during M6 — tearDown runs even when setUp's `XCTSkipIf`
+        // fires, so a wipe here clobbers the production BeePassword
+        // Keychain entry on every test run, which then triggers
+        // `FreedomApp.startNodeIfNeeded`'s legacy-install branch on next
+        // launch (data dir wiped, mode reset to ultralight). Restore
+        // alongside the setUp wipe when re-enabling these tests.
         try await super.tearDown()
     }
 
