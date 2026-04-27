@@ -95,12 +95,22 @@ struct FreedomApp: App {
 
     private func startNodeIfNeeded() async {
         guard swarm.status == .idle else { return }
-        let fresh = await BootnodeResolver.resolveMainnet()
-        let bootnodes = fresh.isEmpty ? SwarmConfig.defaultBootnodes : fresh
-        swarm.start(.init(
-            dataDir: SwarmNode.defaultDataDir(),
-            password: "freedom-default",  // TODO: Keychain in M4
-            bootnodes: bootnodes.joined(separator: "|")
-        ))
+        do {
+            // Legacy installs encrypted the keystore with the old hardcoded
+            // password and can't be decrypted with the new random one.
+            // Detected by Keychain absence; runs once per install.
+            let isLegacyInstall = try BeePassword.readExisting() == nil
+            let password = try BeePassword.loadOrCreate()
+            // Bootnode resolution is a network call independent of the wipe;
+            // run them concurrently so the wipe doesn't block startup.
+            async let config = BeeBootConfig.build(password: password)
+            if isLegacyInstall {
+                try BeeStateDirs.wipeAll(at: SwarmNode.defaultDataDir())
+            }
+            swarm.start(await config)
+        } catch {
+            // SwarmNode stays `.idle`; a future scenePhase resume retries.
+            print("startNodeIfNeeded failed: \(error)")
+        }
     }
 }

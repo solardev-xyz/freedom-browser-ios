@@ -1,12 +1,17 @@
 import SwiftUI
+import SwarmKit
 
 /// Frictionless "quick option" create flow — one tap generates a 24-word
 /// mnemonic, encrypts it via `VaultCrypto`, and lands on a success screen.
 /// The recovery phrase is never shown here; it's available later via
 /// Settings → "Show recovery phrase" behind a biometric gate.
+///
+/// Also swaps the Bee node identity to one derived from the new mnemonic;
+/// adds 2-4s to the `.working` stage.
 @MainActor
 struct VaultCreateView: View {
     @Environment(Vault.self) private var vault
+    @Environment(SwarmNode.self) private var swarm
     @State private var stage: SetupStage = .idle
 
     var body: some View {
@@ -71,6 +76,7 @@ struct VaultCreateView: View {
         do {
             try await vault.create(mnemonic: mnemonic)
             let address = try vault.signingKey(at: .mainUser).ethereumAddress
+            try await BeeIdentityInjector.inject(vault: vault, swarm: swarm)
             stage = .done(address: address)
         } catch {
             stage = .failed(message: error.localizedDescription)

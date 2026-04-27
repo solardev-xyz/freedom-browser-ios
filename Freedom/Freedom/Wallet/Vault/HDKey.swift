@@ -112,8 +112,10 @@ extension HDKey {
 
         /// Main user wallet (also account 0).
         static let mainUser = try! Path(rawPath: "m/44'/60'/0'/0/0")
-        /// Bee-node wallet. Derivation slot reserved to stay compatible with
-        /// desktop even while the iOS UI doesn't surface it.
+        /// Bee-node wallet. The Bee node's identity (overlay address, on-chain
+        /// xDAI/xBZZ wallet) is derived from this slot; matches desktop's
+        /// `derivation.js` `BEE_WALLET` so the same mnemonic produces the same
+        /// Swarm overlay address on iOS and desktop.
         static let beeWallet = try! Path(rawPath: "m/44'/60'/0'/0/1")
         /// Additional user wallets. `userAccount(0)` is an alias for `mainUser`.
         static func userAccount(_ i: Int) -> Path {
@@ -125,6 +127,18 @@ extension HDKey {
                 "account index \(i) out of range [0, 2³¹)"
             )
             return try! Path(rawPath: "m/44'/60'/\(i)'/0/0")
+        }
+        /// Per-origin Swarm publisher key for feed signing. Dedicated coin-type
+        /// 73406 (matches desktop `derivation.js` `SWARM_PUBLISHER`) keeps these
+        /// keys cryptographically isolated from the user wallet and the Bee
+        /// node wallet — a publisher-key compromise can't drain user funds, and
+        /// vice versa.
+        static func publisherKey(originIndex i: Int) -> Path {
+            precondition(
+                i >= 0 && i < 0x8000_0000,
+                "origin index \(i) out of range [0, 2³¹)"
+            )
+            return try! Path(rawPath: "m/44'/73406'/\(i)'/0/0")
         }
     }
 }

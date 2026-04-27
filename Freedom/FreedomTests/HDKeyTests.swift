@@ -105,6 +105,42 @@ final class HDKeyTests: XCTestCase {
         XCTAssertEqual(Path.userAccount(0), Path.mainUser)
     }
 
+    func testPublisherKeyPathShape() {
+        XCTAssertEqual(Path.publisherKey(originIndex: 0).rawPath, "m/44'/73406'/0'/0/0")
+        XCTAssertEqual(Path.publisherKey(originIndex: 5).rawPath, "m/44'/73406'/5'/0/0")
+    }
+
+    /// Publisher namespace must not collide with user-wallet or Bee-wallet
+    /// slots. A collision would mean an origin's publisher key shares its
+    /// secret with the funded user wallet — silent fund-drain risk.
+    func testPublisherKeyDistinctFromWalletNamespace() throws {
+        let pub = Path.publisherKey(originIndex: 0)
+        XCTAssertNotEqual(pub, Path.mainUser)
+        XCTAssertNotEqual(pub, Path.beeWallet)
+        XCTAssertNotEqual(pub, Path.userAccount(0))
+        XCTAssertNotEqual(pub, Path.userAccount(1))
+    }
+
+    /// Different origin indices must produce distinct keys — the whole point
+    /// of per-origin publishers is cryptographic isolation across origins.
+    func testPublisherKeysAtDifferentIndicesAreDistinct() throws {
+        let mn = try Mnemonic(phrase: hardhatMnemonic).hdKey()
+        let p0 = try mn.derive(Path.publisherKey(originIndex: 0))
+        let p1 = try mn.derive(Path.publisherKey(originIndex: 1))
+        XCTAssertNotEqual(p0.privateKey, p1.privateKey)
+        XCTAssertNotEqual(try p0.ethereumAddress, try p1.ethereumAddress)
+    }
+
+    /// Bee wallet derives to a different address than the main user wallet
+    /// for the same mnemonic — the change-index bump (`/0/0` → `/0/1`) is
+    /// the only thing separating the two slots.
+    func testBeeWalletDistinctFromMainUser() throws {
+        let mn = try Mnemonic(phrase: hardhatMnemonic).hdKey()
+        let main = try mn.derive(Path.mainUser)
+        let bee = try mn.derive(Path.beeWallet)
+        XCTAssertNotEqual(try main.ethereumAddress, try bee.ethereumAddress)
+    }
+
     func testInvalidPathMissingMPrefix() {
         XCTAssertThrowsError(try Path(rawPath: "44'/60'/0'/0/0"))
     }

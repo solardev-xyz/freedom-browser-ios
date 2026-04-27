@@ -44,7 +44,10 @@ enum Hex {
         return parsed
     }
 
-    private static func stripped(_ s: String) -> String {
+    /// Strip a `0x` or `0X` prefix; returns the input unchanged if absent.
+    /// Centralises the prefix-strip dance so consumers (RPC params, address
+    /// comparisons, hex-decoding entry points) all behave the same.
+    static func stripped(_ s: String) -> String {
         s.hasPrefix("0x") || s.hasPrefix("0X") ? String(s.dropFirst(2)) : s
     }
 }

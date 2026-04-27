@@ -1,4 +1,5 @@
 import SwiftUI
+import SwarmKit
 
 /// Shared lifecycle for the create and import flows. `.idle` covers both
 /// "waiting for input" in import and "waiting for the Create button" in create.
@@ -121,6 +122,7 @@ struct PrimaryActionButton: View {
 
 struct WipeWalletButton: View {
     @Environment(Vault.self) private var vault
+    @Environment(SwarmNode.self) private var swarm
     @State private var isShowingConfirm = false
 
     var body: some View {
@@ -135,7 +137,12 @@ struct WipeWalletButton: View {
             titleVisibility: .visible
         ) {
             Button("Wipe wallet", role: .destructive) {
-                Task { try? await vault.wipe() }
+                Task {
+                    try? await vault.wipe()
+                    // Without the revert, the node keeps signing as a key
+                    // derived from the mnemonic the user just chose to forget.
+                    try? await BeeIdentityInjector.revertToAnonymous(swarm: swarm)
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {

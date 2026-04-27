@@ -132,11 +132,11 @@ Nothing here imports anything outside `Wallet/` except `EthereumRPCPool` (for `e
   | Purpose | Path | v1 status |
   |---|---|---|
   | Main user wallet | `m/44'/60'/0'/0/0` | **surfaced in UI** |
-  | Bee wallet (node) | `m/44'/60'/0'/0/1` | reserved — derived but not surfaced |
+  | Bee wallet (node) | `m/44'/60'/0'/0/1` | **drives the embedded Bee node identity** (M6/WP1 — see [`swarm-publishing.md`](./swarm-publishing.md) §5) |
   | Additional user wallets | `m/44'/60'/{i}'/0/0`, `i ≥ 1` | reserved for multi-account (§11) |
-  | Publisher identities | (desktop-only namespace, TBD) | not in v1 |
+  | Per-origin Swarm publisher keys | `m/44'/73406'/{originIndex}'/0/0` | factory shipped in M6/WP1, allocated at first feed grant (M6/WP6) |
 
-  Keeping this layout identical to desktop means **the same mnemonic produces the same addresses on iOS and desktop** — the whole reason to align schemes. `HDKey.swift` exposes all four reservations as named constants so nothing ever writes `m/44'/60'/0'/0/1` as a "user account 2" by accident.
+  Keeping this layout identical to desktop means **the same mnemonic produces the same addresses on iOS and desktop** — the whole reason to align schemes. `HDKey.swift` exposes all four namespaces as named constants (`mainUser`, `beeWallet`, `userAccount(_:)`, `publisherKey(originIndex:)`) so nothing ever writes `m/44'/60'/0'/0/1` as a "user account 2" by accident.
 
 - **Locked by default at app launch**. First unlock every app session requires biometric (Face ID / Touch ID) with passcode fallback. Subsequent unlocks within the session are free until the idle timer fires.
 - **Idle auto-lock**: configurable (1 min / 5 min / 15 min / never), default 5. Timer resets on any **wallet UI interaction** *and* on any **successful privileged dapp operation** (`personal_sign`, `eth_signTypedData_v4`, `eth_sendTransaction`) — an active dapp session shouldn't relock mid-flow. Matches desktop `wallet-ipc.js:289`. Plain RPC reads (`eth_call`, `eth_getBalance`, etc.) do **not** reset the timer — otherwise a polling dapp keeps the wallet unlocked indefinitely.
