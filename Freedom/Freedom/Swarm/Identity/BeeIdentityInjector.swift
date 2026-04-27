@@ -128,27 +128,9 @@ enum BeeIdentityInjector {
     /// bee finishes — bee continues starting regardless.
     static func restartForMode(swarm: SwarmNode, mode: BeeNodeMode) async throws {
         let password = try BeePassword.loadOrCreate()
-        let config = await BeeBootConfig.build(password: password, mode: mode)
+        async let config = BeeBootConfig.build(password: password, mode: mode)
         try await ensureStopped(swarm)
-        // bee-lite's `shutdown()` returns synchronously, but the
-        // gomobile-bound bee object isn't released by Go's GC until
-        // later — non-deterministic timing. Until that happens the
-        // prior bee's leveldb LOCK fcntl is still held, and starting
-        // a new bee on the same data dir fails fast with
-        // `init state store: resource temporarily unavailable`. Inject
-        // paths sidestep this by wiping the dir; mode-change keeps it,
-        // so we retry until GC catches up (typically <5s).
-        let deadline = Date().addingTimeInterval(30)
-        while Date() < deadline {
-            try await Task.sleep(nanoseconds: 1_000_000_000)
-            swarm.start(config)
-            // bee fails fast on LOCK contention (~100ms); 1.5s is
-            // plenty to distinguish lock race from a healthy startup
-            // that's transitioning into `.starting`.
-            try await Task.sleep(nanoseconds: 1_500_000_000)
-            if swarm.status != .failed { return }
-        }
-        throw Error.waitTimeout(target: .running)
+        swarm.start(await config)
     }
 
     /// Lowercase byte-equality on hex addresses. Both inputs may carry an
