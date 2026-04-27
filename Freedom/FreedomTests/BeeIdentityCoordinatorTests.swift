@@ -10,43 +10,44 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
 
     private func makeVault() -> Vault { Vault() }
 
+    private func makeCoord(
+        inject: @escaping BeeIdentityCoordinator.InjectionWork = { _, _, _ in },
+        revert: @escaping BeeIdentityCoordinator.RevertWork = { _ in },
+        restartForMode: @escaping BeeIdentityCoordinator.ModeChangeWork = { _, _ in }
+    ) -> BeeIdentityCoordinator {
+        BeeIdentityCoordinator(
+            settings: SettingsStore(defaults: .standard),
+            inject: inject,
+            revert: revert,
+            restartForMode: restartForMode
+        )
+    }
+
     // MARK: - Status transitions
 
     func testInjectTransitionsThroughSwappingToIdleOnSuccess() async throws {
-        let coord = BeeIdentityCoordinator(
-            inject: { _, _ in },
-            revert: { _ in }
-        )
+        let coord = makeCoord()
         coord.injectInBackground(vault: makeVault(), swarm: dummySwarm)
         XCTAssertEqual(coord.status, .swapping)
         try await waitForStatus(coord, .idle)
     }
 
     func testInjectTransitionsToFailedOnError() async throws {
-        let coord = BeeIdentityCoordinator(
-            inject: { _, _ in throw FakeError.boom },
-            revert: { _ in }
-        )
+        let coord = makeCoord(inject: { _, _, _ in throw FakeError.boom })
         coord.injectInBackground(vault: makeVault(), swarm: dummySwarm)
         try await waitForFailed(coord)
         XCTAssertEqual(coord.failedMessage, FakeError.boom.localizedDescription)
     }
 
     func testRevertTransitionsThroughSwappingToIdleOnSuccess() async throws {
-        let coord = BeeIdentityCoordinator(
-            inject: { _, _ in },
-            revert: { _ in }
-        )
+        let coord = makeCoord()
         coord.revertInBackground(swarm: dummySwarm)
         XCTAssertEqual(coord.status, .swapping)
         try await waitForStatus(coord, .idle)
     }
 
     func testRevertTransitionsToFailedOnError() async throws {
-        let coord = BeeIdentityCoordinator(
-            inject: { _, _ in },
-            revert: { _ in throw FakeError.boom }
-        )
+        let coord = makeCoord(revert: { _ in throw FakeError.boom })
         coord.revertInBackground(swarm: dummySwarm)
         try await waitForFailed(coord)
     }
@@ -54,10 +55,7 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
     // MARK: - Dismiss
 
     func testDismissErrorClearsFailed() async throws {
-        let coord = BeeIdentityCoordinator(
-            inject: { _, _ in throw FakeError.boom },
-            revert: { _ in }
-        )
+        let coord = makeCoord(inject: { _, _, _ in throw FakeError.boom })
         XCTAssertNil(coord.failedMessage)
         coord.injectInBackground(vault: makeVault(), swarm: dummySwarm)
         try await waitForFailed(coord)
@@ -72,8 +70,8 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
     func testRetryReRunsLastInject() async throws {
         let injectCalls = ActorCallTracker()
         var attempt = 0
-        let coord = BeeIdentityCoordinator(
-            inject: { _, _ in
+        let coord = makeCoord(
+            inject: { _, _, _ in
                 await injectCalls.increment()
                 attempt += 1
                 if attempt == 1 { throw FakeError.boom }
@@ -94,8 +92,8 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
     func testRetryReRunsLastRevert() async throws {
         let revertCalls = ActorCallTracker()
         var attempt = 0
-        let coord = BeeIdentityCoordinator(
-            inject: { _, _ in XCTFail("should not be called") },
+        let coord = makeCoord(
+            inject: { _, _, _ in XCTFail("should not be called") },
             revert: { _ in
                 await revertCalls.increment()
                 attempt += 1
@@ -113,6 +111,44 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
         XCTAssertEqual(retryCount, 2)
     }
 
+    // MARK: - Mode change
+
+    /// `switchMode` flips the persisted mode and routes through the
+    /// `restartForMode` closure. No-ops when target mode equals current.
+    func testSwitchModeFlipsSettingsAndRoutesToCoordinator() async throws {
+        let calls = ActorCallTracker()
+        let settings = SettingsStore(defaults: .standard)
+        settings.beeNodeMode = .ultraLight
+        let coord = BeeIdentityCoordinator(
+            settings: settings,
+            inject: { _, _, _ in },
+            revert: { _ in },
+            restartForMode: { _, _ in await calls.increment() }
+        )
+        coord.switchMode(to: .light, swarm: dummySwarm)
+        try await waitForStatus(coord, .idle)
+        let count = await calls.value
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(settings.beeNodeMode, .light)
+    }
+
+    func testSwitchModeNoOpsWhenAlreadyInTargetMode() async throws {
+        let calls = ActorCallTracker()
+        let settings = SettingsStore(defaults: .standard)
+        settings.beeNodeMode = .light
+        let coord = BeeIdentityCoordinator(
+            settings: settings,
+            inject: { _, _, _ in },
+            revert: { _ in },
+            restartForMode: { _, _ in await calls.increment() }
+        )
+        coord.switchMode(to: .light, swarm: dummySwarm)
+        // Give the runloop a tick — should NOT trigger a restart.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let count = await calls.value
+        XCTAssertEqual(count, 0)
+    }
+
     // MARK: - Cancellation
 
     /// A new injectInBackground while one is already in flight cancels
@@ -127,8 +163,8 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
         let release = AsyncStream<Void>.makeStream()
         let invocations = ActorCallTracker()
 
-        let coord = BeeIdentityCoordinator(
-            inject: { _, _ in
+        let coord = makeCoord(
+            inject: { _, _, _ in
                 let count = await invocations.value
                 await invocations.increment()
                 if count == 0 {
@@ -138,8 +174,7 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
                     // cancellation would propagate this to `.failed`.
                     throw FakeError.boom
                 }
-            },
-            revert: { _ in }
+            }
         )
 
         coord.injectInBackground(vault: makeVault(), swarm: dummySwarm)

@@ -18,8 +18,9 @@ final class BeeIdentityCoordinator {
         case failed(message: String)
     }
 
-    typealias InjectionWork = @MainActor (Vault, SwarmNode) async throws -> Void
+    typealias InjectionWork = @MainActor (Vault, SwarmNode, BeeNodeMode) async throws -> Void
     typealias RevertWork = @MainActor (SwarmNode) async throws -> Void
+    typealias ModeChangeWork = @MainActor (SwarmNode, BeeNodeMode) async throws -> Void
 
     private(set) var status: Status = .idle
 
@@ -41,27 +42,55 @@ final class BeeIdentityCoordinator {
     @ObservationIgnored private var retryAction: (() -> Void)?
     @ObservationIgnored private let injectFn: InjectionWork
     @ObservationIgnored private let revertFn: RevertWork
+    @ObservationIgnored private let restartForModeFn: ModeChangeWork
+    @ObservationIgnored private let settings: SettingsStore
 
     init(
-        inject: @escaping InjectionWork = { try await BeeIdentityInjector.inject(vault: $0, swarm: $1) },
-        revert: @escaping RevertWork = { try await BeeIdentityInjector.revertToAnonymous(swarm: $0) }
+        settings: SettingsStore,
+        inject: @escaping InjectionWork = { try await BeeIdentityInjector.inject(vault: $0, swarm: $1, mode: $2) },
+        revert: @escaping RevertWork = { try await BeeIdentityInjector.revertToAnonymous(swarm: $0) },
+        restartForMode: @escaping ModeChangeWork = { try await BeeIdentityInjector.restartForMode(swarm: $0, mode: $1) }
     ) {
+        self.settings = settings
         self.injectFn = inject
         self.revertFn = revert
+        self.restartForModeFn = restartForMode
     }
 
     func injectInBackground(vault: Vault, swarm: SwarmNode) {
         retryAction = { [weak self] in
             self?.injectInBackground(vault: vault, swarm: swarm)
         }
-        run { [injectFn] in try await injectFn(vault, swarm) }
+        let mode = settings.beeNodeMode
+        run { [injectFn] in try await injectFn(vault, swarm, mode) }
     }
 
     func revertInBackground(swarm: SwarmNode) {
         retryAction = { [weak self] in
             self?.revertInBackground(swarm: swarm)
         }
+        // Wipe takes us back to ultralight by definition — the user just
+        // chose to forget the seed that funded light mode. Also clear
+        // the publish-setup flag: `wipeAll` is about to remove the
+        // chequebook reference from statestore, so the inline mode
+        // toggle would orphan the on-chain chequebook if surfaced.
+        settings.beeNodeMode = .ultraLight
+        settings.hasCompletedPublishSetup = false
         run { [revertFn] in try await revertFn(swarm) }
+    }
+
+    /// Flip `settings.beeNodeMode` and restart bee in the background.
+    /// One call site for the inline mode toggle in `NodeHomeView` and
+    /// the post-funder upgrade in `PublishSetupView` — keeps the
+    /// settings-write paired with the restart so callers can't forget
+    /// either half.
+    func switchMode(to newMode: BeeNodeMode, swarm: SwarmNode) {
+        guard settings.beeNodeMode != newMode else { return }
+        settings.beeNodeMode = newMode
+        retryAction = { [weak self] in
+            self?.switchMode(to: newMode, swarm: swarm)
+        }
+        run { [restartForModeFn] in try await restartForModeFn(swarm, newMode) }
     }
 
     /// No-op if there's no failure to recover from (e.g. user cancelled the

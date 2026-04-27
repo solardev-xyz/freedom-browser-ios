@@ -10,8 +10,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "Mobile",
-            url: "https://github.com/solardev-xyz/bee-lite-java/releases/download/ios-v0.1.0/Mobile.xcframework.zip",
-            checksum: "865ea29cb69a63db50bbb395613f6b4dd75c5a42175167a7b63db8b6c21e7751"
+            url: "https://github.com/solardev-xyz/bee-lite-java/releases/download/ios-v0.1.2/Mobile.xcframework.zip",
+            checksum: "1781deb5d0e1f61e51423313ee06bcc11e6bc9a435c00a923c27954979b6c3be"
         ),
         .target(
             name: "SwarmKit",

@@ -8,6 +8,7 @@ struct ContentView: View {
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(Vault.self) private var vault
     @Environment(BeeIdentityCoordinator.self) private var beeIdentity
+    @Environment(BeeReadiness.self) private var beeReadiness
     @Environment(\.scenePhase) private var scenePhase
 
     // Drives the bookmark toolbar button's fill state — toggling a bookmark
@@ -166,6 +167,9 @@ struct ContentView: View {
             Text(swarm.status.rawValue).font(.caption).monospaced()
             if beeIdentity.status == .swapping {
                 Text("· updating identity")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let suffix = readinessSuffix {
+                Text("· \(suffix)")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -421,6 +425,23 @@ struct ContentView: View {
                 .frame(width: 44, height: 44)
         }
         .disabled(!enabled)
+    }
+
+    /// Status-bar suffix for light-mode readiness — shows what bee is
+    /// busy with (chequebook deploy, syncing) so the user always knows
+    /// without having to open the node sheet. Nil means "nothing
+    /// noteworthy" → status bar stays compact.
+    private var readinessSuffix: String? {
+        // When bee crashed, the prefix already says "failed". Don't
+        // contradict it with "· starting" derived from BeeReadiness'
+        // not-running guard.
+        if swarm.status == .failed { return nil }
+        switch beeReadiness.state {
+        case .browsingOnly, .ready: return nil
+        case .initializing: return "starting"
+        case .deployingChequebook: return "deploying chequebook"
+        case .syncingPostage(let percent, _, _): return "syncing \(percent)%"
+        }
     }
 
     private func navigate() {

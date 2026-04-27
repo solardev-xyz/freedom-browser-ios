@@ -54,6 +54,18 @@ final class SettingsStore {
     var enableCcipRead: Bool {
         didSet { defaults.set(enableCcipRead, forKey: Keys.enableCcipRead) }
     }
+    var beeNodeMode: BeeNodeMode {
+        didSet { defaults.set(beeNodeMode.rawValue, forKey: Keys.beeNodeMode) }
+    }
+    /// True once the user has successfully reached light-mode `.ready` at
+    /// least once. Drives the inline mode toggle in `NodeHomeView`: a true
+    /// flag means bee's statestore still has the `swap_chequebook` entry
+    /// (we never wipe across mode toggles), so flipping back to light is
+    /// safe — bee picks up the existing chequebook, no redeploy.
+    /// Cleared whenever we wipe statestore (vault wipe, legacy migration).
+    var hasCompletedPublishSetup: Bool {
+        didSet { defaults.set(hasCompletedPublishSetup, forKey: Keys.hasCompletedPublishSetup) }
+    }
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -71,6 +83,8 @@ final class SettingsStore {
             Keys.ensPublicRpcProviders: Self.defaultPublicRpcProviders,
             Keys.blockUnverifiedEns: true,
             Keys.enableCcipRead: true,
+            Keys.beeNodeMode: BeeNodeMode.ultraLight.rawValue,
+            Keys.hasCompletedPublishSetup: false,
         ])
         self.enableEnsCustomRpc = defaults.bool(forKey: Keys.enableEnsCustomRpc)
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
@@ -85,6 +99,9 @@ final class SettingsStore {
             ?? Self.defaultPublicRpcProviders
         self.blockUnverifiedEns = defaults.bool(forKey: Keys.blockUnverifiedEns)
         self.enableCcipRead = defaults.bool(forKey: Keys.enableCcipRead)
+        self.beeNodeMode = defaults.string(forKey: Keys.beeNodeMode)
+            .flatMap(BeeNodeMode.init(rawValue:)) ?? .ultraLight
+        self.hasCompletedPublishSetup = defaults.bool(forKey: Keys.hasCompletedPublishSetup)
     }
 
     private enum Keys {
@@ -99,5 +116,7 @@ final class SettingsStore {
         static let ensPublicRpcProviders = "ensPublicRpcProviders"
         static let blockUnverifiedEns = "blockUnverifiedEns"
         static let enableCcipRead = "enableCcipRead"
+        static let beeNodeMode = "beeNodeMode"
+        static let hasCompletedPublishSetup = "hasCompletedPublishSetup"
     }
 }

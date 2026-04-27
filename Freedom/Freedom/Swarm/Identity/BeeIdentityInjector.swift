@@ -23,9 +23,18 @@ import SwarmKit
 /// Recovery is "wipe wallet → recreate", a tested UX path.
 @MainActor
 enum BeeIdentityInjector {
-    enum Error: Swift.Error, Equatable {
+    enum Error: Swift.Error, Equatable, LocalizedError {
         case waitTimeout(target: SwarmStatus)
         case keystoreWriteFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .waitTimeout(let target):
+                "Timed out waiting for the Swarm node to reach \(target.rawValue)."
+            case .keystoreWriteFailed(let detail):
+                "Couldn't write the Swarm node keystore: \(detail)"
+            }
+        }
     }
 
     /// Polling cadence for status transitions. Fast enough that the user
@@ -52,7 +61,7 @@ enum BeeIdentityInjector {
     /// Idempotent for same-mnemonic re-imports — compares the derived
     /// address to what the running node already reports and returns early
     /// when they match.
-    static func inject(vault: Vault, swarm: SwarmNode) async throws {
+    static func inject(vault: Vault, swarm: SwarmNode, mode: BeeNodeMode) async throws {
         let hdKey = try vault.signingKey(at: .beeWallet)
         let derivedAddress = try hdKey.ethereumAddress
 
@@ -65,7 +74,7 @@ enum BeeIdentityInjector {
         // Resolve bootnodes in parallel with scrypt + stop + wipe + write —
         // the network call is independent of every other step and finishes
         // in time to be ready when we hand the config to swarm.start.
-        async let config = BeeBootConfig.build(password: password)
+        async let config = BeeBootConfig.build(password: password, mode: mode)
 
         // scrypt N=32768 is intentionally 3-5s of CPU; running it on the
         // main actor would freeze gesture / scroll responsiveness for the
@@ -91,16 +100,55 @@ enum BeeIdentityInjector {
 
     /// Drop the user-derived identity and let Bee regenerate a fresh
     /// internal random key. Called on vault wipe so the node doesn't
-    /// keep signing as a seed the user just chose to forget.
+    /// keep signing as a seed the user just chose to forget. Always
+    /// restarts in ultralight — caller is responsible for resetting
+    /// `settings.beeNodeMode` to `.ultraLight` so the next launch agrees.
     static func revertToAnonymous(swarm: SwarmNode) async throws {
         let password = try BeePassword.loadOrCreate()
-        async let config = BeeBootConfig.build(password: password)
+        async let config = BeeBootConfig.build(password: password, mode: .ultraLight)
         try await restart(
             swarm: swarm,
             wipe: .all,
             keystoreJSON: nil,
             config: await config
         )
+    }
+
+    /// Restart bee-lite with a different `BeeNodeMode` while keeping the
+    /// existing identity. Used by the ultralight→light upgrade after the
+    /// funder tx confirms; bee re-boots into light mode and starts the
+    /// chequebook deploy + postage sync.
+    ///
+    /// Deliberately does NOT wait for `.running`: bee's first boot in
+    /// light mode includes a chequebook deploy + batch snapshot load +
+    /// postage sync prep + warmup, totalling ~5 minutes on a fresh
+    /// install. The wallet's status bar + publish-setup checklist drive
+    /// progress UI from `BeeReadiness`; a synchronous "wait for running"
+    /// gate here only produces fake errors when the wait expires before
+    /// bee finishes — bee continues starting regardless.
+    static func restartForMode(swarm: SwarmNode, mode: BeeNodeMode) async throws {
+        let password = try BeePassword.loadOrCreate()
+        let config = await BeeBootConfig.build(password: password, mode: mode)
+        try await ensureStopped(swarm)
+        // bee-lite's `shutdown()` returns synchronously, but the
+        // gomobile-bound bee object isn't released by Go's GC until
+        // later — non-deterministic timing. Until that happens the
+        // prior bee's leveldb LOCK fcntl is still held, and starting
+        // a new bee on the same data dir fails fast with
+        // `init state store: resource temporarily unavailable`. Inject
+        // paths sidestep this by wiping the dir; mode-change keeps it,
+        // so we retry until GC catches up (typically <5s).
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            swarm.start(config)
+            // bee fails fast on LOCK contention (~100ms); 1.5s is
+            // plenty to distinguish lock race from a healthy startup
+            // that's transitioning into `.starting`.
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+            if swarm.status != .failed { return }
+        }
+        throw Error.waitTimeout(target: .running)
     }
 
     /// Lowercase byte-equality on hex addresses. Both inputs may carry an

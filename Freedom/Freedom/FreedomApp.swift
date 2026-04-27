@@ -5,7 +5,7 @@ import ENSNormalize
 
 @main
 struct FreedomApp: App {
-    @State private var swarm = SwarmNode()
+    @State private var swarm: SwarmNode
     @State private var settings: SettingsStore
     @State private var historyStore: HistoryStore
     @State private var bookmarkStore: BookmarkStore
@@ -17,7 +17,8 @@ struct FreedomApp: App {
     @State private var transactionService: TransactionService
     @State private var permissionStore: PermissionStore
     @State private var autoApproveStore: AutoApproveStore
-    @State private var beeIdentity = BeeIdentityCoordinator()
+    @State private var beeIdentity: BeeIdentityCoordinator
+    @State private var beeReadiness: BeeReadiness
     private let modelContainer: ModelContainer
 
     init() {
@@ -56,6 +57,14 @@ struct FreedomApp: App {
             self._permissionStore = State(wrappedValue: permissions)
             self._autoApproveStore = State(wrappedValue: autoApprove)
             self._transactionService = State(wrappedValue: txService)
+            self._beeIdentity = State(wrappedValue: BeeIdentityCoordinator(settings: settings))
+            let swarmInstance = SwarmNode()
+            self._swarm = State(wrappedValue: swarmInstance)
+            self._beeReadiness = State(wrappedValue: BeeReadiness(
+                swarm: swarmInstance,
+                settings: settings,
+                walletRPC: registry.walletRPC
+            ))
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
                 historyStore: history,
@@ -90,8 +99,10 @@ struct FreedomApp: App {
                 .environment(permissionStore)
                 .environment(autoApproveStore)
                 .environment(beeIdentity)
+                .environment(beeReadiness)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
+                .task { beeReadiness.start(intervalSeconds: 30) }
         }
     }
 
@@ -102,14 +113,20 @@ struct FreedomApp: App {
             // password and can't be decrypted with the new random one.
             // Detected by Keychain absence; runs once per install.
             let isLegacyInstall = try BeePassword.readExisting() == nil
-            let password = try BeePassword.loadOrCreate()
-            // Bootnode resolution is a network call independent of the wipe;
-            // run them concurrently so the wipe doesn't block startup.
-            async let config = BeeBootConfig.build(password: password)
             if isLegacyInstall {
                 try BeeStateDirs.wipeAll(at: SwarmNode.defaultDataDir())
+                // Statestore is gone with the dir — bee would deploy a
+                // fresh chequebook on the next light boot, orphaning the
+                // user's previous on-chain one. Force back to ultralight
+                // so they go through publish-setup intentionally.
+                // (Reset BEFORE building config — the boot config reads
+                // `settings.beeNodeMode` to decide swap-enable.)
+                settings.beeNodeMode = .ultraLight
+                settings.hasCompletedPublishSetup = false
             }
-            swarm.start(await config)
+            let password = try BeePassword.loadOrCreate()
+            let config = await BeeBootConfig.build(password: password, mode: settings.beeNodeMode)
+            swarm.start(config)
         } catch {
             // SwarmNode stays `.idle`; a future scenePhase resume retries.
             print("startNodeIfNeeded failed: \(error)")
