@@ -6,12 +6,15 @@ import SwarmKit
 /// The recovery phrase is never shown here; it's available later via
 /// Settings → "Show recovery phrase" behind a biometric gate.
 ///
-/// Also swaps the Bee node identity to one derived from the new mnemonic;
-/// adds 2-4s to the `.working` stage.
+/// The Bee node identity swap (~10-15s) is fire-and-forget through
+/// `BeeIdentityCoordinator`. UX-wise wallet creation is decoupled from
+/// node restart — the user lands on the success screen as soon as the
+/// vault is encrypted, and the node finishes catching up in the background.
 @MainActor
 struct VaultCreateView: View {
     @Environment(Vault.self) private var vault
     @Environment(SwarmNode.self) private var swarm
+    @Environment(BeeIdentityCoordinator.self) private var beeIdentity
     @State private var stage: SetupStage = .idle
 
     var body: some View {
@@ -76,7 +79,7 @@ struct VaultCreateView: View {
         do {
             try await vault.create(mnemonic: mnemonic)
             let address = try vault.signingKey(at: .mainUser).ethereumAddress
-            try await BeeIdentityInjector.inject(vault: vault, swarm: swarm)
+            beeIdentity.injectInBackground(vault: vault, swarm: swarm)
             stage = .done(address: address)
         } catch {
             stage = .failed(message: error.localizedDescription)

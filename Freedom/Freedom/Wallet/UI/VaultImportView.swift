@@ -5,14 +5,14 @@ import SwarmKit
 /// (12 / 15 / 18 / 21 / 24) — we don't refuse shorter phrases from
 /// wallets the user wants to move across, even though we only generate 24.
 ///
-/// On success, the Bee node's identity is swapped to one derived from the
-/// imported mnemonic. Same-mnemonic re-import (a user recovering from a
-/// wipe with the seed they just had) is detected by `BeeIdentityInjector`
-/// and short-circuits — no node restart, no state wipe.
+/// Bee identity swap is fire-and-forget through `BeeIdentityCoordinator`.
+/// Same-mnemonic re-import (recovering from a wipe with the seed you
+/// just had) short-circuits inside the injector — no node restart.
 @MainActor
 struct VaultImportView: View {
     @Environment(Vault.self) private var vault
     @Environment(SwarmNode.self) private var swarm
+    @Environment(BeeIdentityCoordinator.self) private var beeIdentity
     @State private var phrase: String = ""
     @State private var stage: SetupStage = .idle
     @FocusState private var phraseFocused: Bool
@@ -121,7 +121,7 @@ struct VaultImportView: View {
         do {
             try await vault.create(mnemonic: mnemonic)
             let address = try vault.signingKey(at: .mainUser).ethereumAddress
-            try await BeeIdentityInjector.inject(vault: vault, swarm: swarm)
+            beeIdentity.injectInBackground(vault: vault, swarm: swarm)
             phrase = ""
             stage = .done(address: address)
         } catch {

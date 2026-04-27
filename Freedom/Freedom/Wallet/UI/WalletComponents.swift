@@ -123,6 +123,7 @@ struct PrimaryActionButton: View {
 struct WipeWalletButton: View {
     @Environment(Vault.self) private var vault
     @Environment(SwarmNode.self) private var swarm
+    @Environment(BeeIdentityCoordinator.self) private var beeIdentity
     @State private var isShowingConfirm = false
 
     var body: some View {
@@ -141,7 +142,7 @@ struct WipeWalletButton: View {
                     try? await vault.wipe()
                     // Without the revert, the node keeps signing as a key
                     // derived from the mnemonic the user just chose to forget.
-                    try? await BeeIdentityInjector.revertToAnonymous(swarm: swarm)
+                    beeIdentity.revertInBackground(swarm: swarm)
                 }
             }
             Button("Cancel", role: .cancel) {}

@@ -17,6 +17,7 @@ struct FreedomApp: App {
     @State private var transactionService: TransactionService
     @State private var permissionStore: PermissionStore
     @State private var autoApproveStore: AutoApproveStore
+    @State private var beeIdentity = BeeIdentityCoordinator()
     private let modelContainer: ModelContainer
 
     init() {
@@ -88,6 +89,7 @@ struct FreedomApp: App {
                 .environment(transactionService)
                 .environment(permissionStore)
                 .environment(autoApproveStore)
+                .environment(beeIdentity)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
         }

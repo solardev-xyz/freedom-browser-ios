@@ -7,6 +7,7 @@ struct ContentView: View {
     @Environment(TabStore.self) private var tabStore
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(Vault.self) private var vault
+    @Environment(BeeIdentityCoordinator.self) private var beeIdentity
     @Environment(\.scenePhase) private var scenePhase
 
     // Drives the bookmark toolbar button's fill state — toggling a bookmark
@@ -130,12 +131,39 @@ struct ContentView: View {
                 vault.lock()
             }
         }
+        // Self-heal hooks: if a previous identity swap was interrupted
+        // (app crash, force-quit) the bee node could be running with a
+        // stale identity. The coordinator's `checkAndHeal` is idempotent
+        // and gates internally — safe to call on every transition.
+        .onChange(of: vault.state) { _, _ in
+            beeIdentity.checkAndHeal(vault: vault, swarm: swarm)
+        }
+        .onChange(of: swarm.status) { _, _ in
+            beeIdentity.checkAndHeal(vault: vault, swarm: swarm)
+        }
+        .alert(
+            "Swarm node update failed",
+            isPresented: Binding(
+                get: { beeIdentity.isFailed },
+                set: { if !$0 { beeIdentity.dismissError() } }
+            ),
+            presenting: beeIdentity.failedMessage
+        ) { _ in
+            Button("Retry") { beeIdentity.retry() }
+            Button("Cancel", role: .cancel) { beeIdentity.dismissError() }
+        } message: { message in
+            Text(message)
+        }
     }
 
     private var nodeStatusBar: some View {
         HStack(spacing: 8) {
             Circle().frame(width: 8, height: 8).foregroundStyle(nodeStatusColor)
             Text(swarm.status.rawValue).font(.caption).monospaced()
+            if beeIdentity.status == .swapping {
+                Text("· updating identity")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Spacer()
             Text("\(swarm.peerCount) peers")
                 .font(.caption).monospacedDigit().foregroundStyle(.secondary)

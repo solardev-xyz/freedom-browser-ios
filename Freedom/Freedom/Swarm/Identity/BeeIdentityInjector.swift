@@ -67,11 +67,19 @@ enum BeeIdentityInjector {
         // in time to be ready when we hand the config to swarm.start.
         async let config = BeeBootConfig.build(password: password)
 
-        let keystoreJSON = try BeeKeystore.encrypt(
-            privateKey: hdKey.privateKey,
-            password: password,
-            address: Hex.stripped(derivedAddress)
-        )
+        // scrypt N=32768 is intentionally 3-5s of CPU; running it on the
+        // main actor would freeze gesture / scroll responsiveness for the
+        // duration. Detach so the actor stays free. Priority matches the
+        // vault's other crypto offloads (`Vault.swift:47, 58, 92, 98`).
+        let privateKey = hdKey.privateKey
+        let strippedAddress = Hex.stripped(derivedAddress)
+        let keystoreJSON = try await Task.detached(priority: .userInitiated) {
+            try BeeKeystore.encrypt(
+                privateKey: privateKey,
+                password: password,
+                address: strippedAddress
+            )
+        }.value
 
         try await restart(
             swarm: swarm,
