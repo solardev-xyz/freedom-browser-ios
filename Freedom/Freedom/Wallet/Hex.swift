@@ -50,6 +50,13 @@ enum Hex {
     static func stripped(_ s: String) -> String {
         s.hasPrefix("0x") || s.hasPrefix("0X") ? String(s.dropFirst(2)) : s
     }
+
+    /// Canonical user-facing form: `0x` + the unprefixed hex. Idempotent
+    /// on already-prefixed input. Empty input passes through (callers
+    /// often guard on emptiness for "not yet known" semantics).
+    static func prefixed(_ s: String) -> String {
+        s.isEmpty ? s : "0x" + stripped(s)
+    }
 }
 
 extension String {

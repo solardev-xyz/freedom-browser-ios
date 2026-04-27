@@ -33,6 +33,7 @@ struct ContentView: View {
     @State private var isShowingBookmarks = false
     @State private var isShowingSettings = false
     @State private var isShowingWallet = false
+    @State private var isShowingNode = false
     @FocusState private var addressFocused: Bool
 
     private var activeURL: URL? { tabStore.activeTab?.displayURL }
@@ -90,6 +91,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingWallet) {
             WalletSheet(isPresented: $isShowingWallet)
+        }
+        .sheet(isPresented: $isShowingNode) {
+            NodeSheet(isPresented: $isShowingNode)
         }
         .sheet(item: approvalBinding) { approval in
             switch approval.kind {
@@ -158,7 +162,7 @@ struct ContentView: View {
 
     private var nodeStatusBar: some View {
         HStack(spacing: 8) {
-            Circle().frame(width: 8, height: 8).foregroundStyle(nodeStatusColor)
+            Circle().frame(width: 8, height: 8).foregroundStyle(swarm.status.color)
             Text(swarm.status.rawValue).font(.caption).monospaced()
             if beeIdentity.status == .swapping {
                 Text("· updating identity")
@@ -279,6 +283,8 @@ struct ContentView: View {
             }
             Spacer()
             toolbarButton("creditcard.fill", enabled: true) { isShowingWallet = true }
+            Spacer()
+            toolbarButton("circle.hexagongrid.fill", enabled: true) { isShowingNode = true }
             Spacer()
             menuButton
         }
@@ -415,15 +421,6 @@ struct ContentView: View {
                 .frame(width: 44, height: 44)
         }
         .disabled(!enabled)
-    }
-
-    private var nodeStatusColor: Color {
-        switch swarm.status {
-        case .running: .green
-        case .starting, .stopping: .orange
-        case .failed: .red
-        case .idle, .stopped: .gray
-        }
     }
 
     private func navigate() {
