@@ -10,21 +10,28 @@ struct NodeHomeView: View {
     @Environment(BeeIdentityCoordinator.self) private var beeIdentity
     @Environment(BeeReadiness.self) private var beeReadiness
     @Environment(SettingsStore.self) private var settings
+    @Environment(StampService.self) private var stampService
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // CTA whenever setup isn't yet complete — covers fresh
-                // ultralight users AND users mid-flow (e.g. tx confirmed,
-                // bee restarting, or bee failed) who navigated away from
-                // the publish-setup screen and need a path back to it.
-                // Returning users (flag=true) use the inline mode toggle
-                // in the status card instead.
-                if !settings.hasCompletedPublishSetup {
+                // CTA whenever the user doesn't have a usable stamp —
+                // covers fresh ultralight users, mid-sync, and the
+                // light+ready+no-stamps gap. The setup is only "done"
+                // once the user has a usable stamp (step 4 of the
+                // checklist).
+                if !stampService.hasUsableStamps {
                     publishSetupCTA
                 }
                 statusCard
                 walletCard
+                // Stamps row appears once the user has crossed `.ready`
+                // at least once — same gate as the inline mode toggle.
+                // Pre-setup users use the publish-setup CTA above and
+                // never see a half-disabled "stamps" row.
+                if settings.hasCompletedPublishSetup {
+                    stampsRow
+                }
                 logCard
             }
             .padding(20)
@@ -103,6 +110,40 @@ struct NodeHomeView: View {
                 AddressPill(address: displayAddress)
             }
         }
+    }
+
+    /// Pushes onto the existing NodeSheet NavigationStack, same shape
+    /// as `publishSetupCTA`. `StampsView` itself decides whether to
+    /// show the empty state or the batch list.
+    private var stampsRow: some View {
+        NavigationLink {
+            StampsView()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "shippingbox.fill").font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Storage stamps").font(.callout).fontWeight(.semibold)
+                    Text(stampsRowSubtitle)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var stampsRowSubtitle: String {
+        let count = stampService.stamps.count
+        if count == 0 { return "Buy a stamp to start publishing" }
+        let usable = stampService.stamps.filter(\.usable).count
+        return "\(count) batch\(count == 1 ? "" : "es") · \(usable) usable"
     }
 
     @ViewBuilder private var logCard: some View {

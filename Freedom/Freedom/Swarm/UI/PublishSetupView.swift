@@ -4,20 +4,22 @@ import SwiftUI
 import web3
 
 /// Four-step checklist that takes a user from ultralight to a fully-synced
-/// light node ready to publish. Step 1 is the one-tx funder
+/// light node with a usable stamp. Step 1 is the one-tx funder
 /// (`SwarmNodeFunder.fundNodeAndBuyStamp`). Step 2 is passive watching of
 /// the live `/chainstate` percent during the bundled-snapshot ingest.
 /// Step 3 is the post-sync chequebook confirmation — bee's chequebook
 /// subsystem only comes online once the node is `.ready`, so this is the
 /// first moment we can verify the on-chain deploy from step 1 succeeded.
-/// Step 4 is the stamp purchase placeholder (WP3); auto-completes for
-/// returning users whose `/stamps` already shows entries.
+/// Step 4 is the stamp purchase, which pushes `StampPurchaseView` and
+/// auto-completes when `StampService.hasUsableStamps` flips true (also
+/// covers returning users with stamps from a prior session).
 @MainActor
 struct PublishSetupView: View {
     @Environment(SwarmNode.self) private var swarm
     @Environment(SettingsStore.self) private var settings
     @Environment(BeeIdentityCoordinator.self) private var beeIdentity
     @Environment(BeeReadiness.self) private var beeReadiness
+    @Environment(StampService.self) private var stampService
     @Environment(Vault.self) private var vault
     @Environment(TransactionService.self) private var txService
     @Environment(ChainRegistry.self) private var chains
@@ -108,7 +110,20 @@ struct PublishSetupView: View {
             title: "Buy your first stamp",
             summary: step4Copy,
             status: step4Status
-        ) { EmptyView() }
+        ) {
+            // Active body shows up only once bee is ready (step3 done) —
+            // before that the button can't do anything useful.
+            Group {
+                if step4Status == .active {
+                    NavigationLink {
+                        StampPurchaseView()
+                    } label: {
+                        Label("Buy your first stamp", systemImage: "cart.fill")
+                    }
+                    .buttonStyle(PrimaryActionStyle())
+                }
+            }
+        }
     }
 
     // MARK: - Step copy + status
@@ -146,9 +161,9 @@ struct PublishSetupView: View {
 
     private var step4Copy: String {
         if step4Status == .completed {
-            return "Done. Your node already has a postage stamp."
+            return "Done. Your node has a usable postage stamp."
         }
-        return "Postage stamps are how Bee pays the network for storage. Stamp purchase coming in the next update."
+        return "Postage stamps pre-pay the network for storing your data."
     }
 
     /// Where the user currently is in the funnel. Step 3 (chequebook
@@ -186,10 +201,13 @@ struct PublishSetupView: View {
         phase >= .stamp ? .completed : .pending
     }
     private var step4Status: PublishStepStatus {
-        // Stays pending without UI behind it (WP3). Auto-completes for
-        // returning users with stamps from a prior session.
-        if phase >= .stamp && beeReadiness.hasStamps { return .completed }
-        return .pending
+        // Pending until bee is ready, then `.active` (button visible) or
+        // `.completed` (user already has a usable stamp). Source of
+        // truth lives in `StampService` — it polls `/stamps` and is
+        // updated immediately after a successful purchase.
+        if phase < .stamp { return .pending }
+        if stampService.hasUsableStamps { return .completed }
+        return .active
     }
 
     // MARK: - Step 1 body (active state)

@@ -25,8 +25,7 @@ final class BeeReadiness {
         /// (most of the ~5min wait happens here).
         case syncingPostage(percent: Int, lastSynced: Int, chainHead: Int)
         /// Light + running + `/readiness` reports ready. Chequebook
-        /// subsystem is online; `chequebookAddress` and `hasStamps` are
-        /// populated.
+        /// subsystem is online; `chequebookAddress` is populated.
         case ready
     }
 
@@ -35,10 +34,6 @@ final class BeeReadiness {
     /// first transitions to `.ready`. Drives the publish-setup
     /// "Chequebook deployed" confirmation row.
     private(set) var chequebookAddress: String?
-    /// Whether the node already has at least one usable postage stamp.
-    /// Lets the publish-setup checklist auto-complete the "buy stamp"
-    /// step for users returning from a prior session.
-    private(set) var hasStamps: Bool = false
 
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private let bee: BeeAPIClient
@@ -86,11 +81,11 @@ final class BeeReadiness {
         let next = await computeState()
         if next != state { state = next }
         // First time we cross into .ready: bee's chequebook subsystem is
-        // online (so `/chequebook/address` responds) and `/stamps` is
-        // queryable. Fetch both once for the publish-setup checklist.
+        // online so `/chequebook/address` responds. Fetch once for the
+        // publish-setup checklist's "Chequebook deployed" row.
+        // (Stamps live in `StampService`, which polls independently.)
         if !wasReady && next == .ready {
             chequebookAddress = await fetchChequebookAddress()
-            hasStamps = await fetchHasStamps()
         }
         // Sticky flag: once the user has crossed into .ready we know
         // statestore has the chequebook reference (`restartForMode`
@@ -163,8 +158,8 @@ final class BeeReadiness {
         guard let dict = try? await bee.getJSON("/chainstate") else {
             return nil
         }
-        guard let block = Self.intFromAnyJSON(dict["block"]),
-              let chainTip = Self.intFromAnyJSON(dict["chainTip"]),
+        guard let block = BeeAPIClient.intFromAnyJSON(dict["block"]),
+              let chainTip = BeeAPIClient.intFromAnyJSON(dict["chainTip"]),
               chainTip > 0 else {
             return nil
         }
@@ -185,24 +180,4 @@ final class BeeReadiness {
         return Hex.prefixed(addr)
     }
 
-    /// `/stamps` returns `{stamps: [...]}` — empty for fresh users,
-    /// populated for users returning from a prior completed session.
-    private func fetchHasStamps() async -> Bool {
-        guard let dict = try? await bee.getJSON("/stamps"),
-              let array = dict["stamps"] as? [Any] else {
-            return false
-        }
-        return !array.isEmpty
-    }
-
-    /// Bee returns numeric fields as either JSON number or string
-    /// depending on version; collapse both into `Int?`.
-    private static func intFromAnyJSON(_ value: Any?) -> Int? {
-        guard let value else { return nil }
-        if let int = value as? Int { return int }
-        if let int64 = value as? Int64 { return Int(int64) }
-        if let double = value as? Double { return Int(double) }
-        if let string = value as? String { return Int(string) }
-        return nil
-    }
 }

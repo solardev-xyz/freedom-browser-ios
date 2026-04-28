@@ -19,6 +19,7 @@ struct FreedomApp: App {
     @State private var autoApproveStore: AutoApproveStore
     @State private var beeIdentity: BeeIdentityCoordinator
     @State private var beeReadiness: BeeReadiness
+    @State private var stampService: StampService
     private let modelContainer: ModelContainer
 
     init() {
@@ -64,6 +65,10 @@ struct FreedomApp: App {
                 swarm: swarmInstance,
                 settings: settings
             ))
+            self._stampService = State(wrappedValue: StampService(
+                swarm: swarmInstance,
+                settings: settings
+            ))
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
                 historyStore: history,
@@ -99,9 +104,11 @@ struct FreedomApp: App {
                 .environment(autoApproveStore)
                 .environment(beeIdentity)
                 .environment(beeReadiness)
+                .environment(stampService)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
                 .task { beeReadiness.start() }
+                .task { stampService.start() }
         }
     }
 

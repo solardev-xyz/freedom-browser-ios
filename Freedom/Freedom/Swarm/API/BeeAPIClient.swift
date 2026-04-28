@@ -1,8 +1,9 @@
 import Foundation
 
 /// Thin HTTP client for the embedded Bee node's REST API on
-/// `127.0.0.1:1633`. Reads only — writes (publish, feeds) live behind the
-/// EIP-1193-style permission model in WP4-6.
+/// `127.0.0.1:1633`. Reads + a small set of writes the user explicitly
+/// triggers (stamp purchase). Dapp-driven writes (publish, feeds) live
+/// behind the EIP-1193-style permission model in WP4-6.
 struct BeeAPIClient {
     static let baseURL = URL(string: "http://127.0.0.1:1633")!
 
@@ -23,18 +24,25 @@ struct BeeAPIClient {
     /// returning `{stamps: [...]}`) are handled by the caller casting
     /// the wrapped value out of the dict.
     func getJSON(_ path: String) async throws -> [String: Any] {
-        let data = try await getData(path)
-        guard let object = try? JSONSerialization.jsonObject(with: data),
-              let dict = object as? [String: Any] else {
-            throw Error.malformedResponse
-        }
-        return dict
+        let data = try await sendData(path: path, method: "GET", timeout: 60)
+        return try Self.parseDict(data)
     }
 
-    private func getData(_ path: String) async throws -> Data {
+    /// `POST` with no body, used for path-encoded operations like
+    /// `/stamps/{amount}/{depth}`. Bee's stamp purchase blocks on the
+    /// chain tx confirming, which can take ~30s to several minutes —
+    /// caller passes a generous timeout.
+    func postJSON(_ path: String, timeout: TimeInterval = 300) async throws -> [String: Any] {
+        let data = try await sendData(path: path, method: "POST", timeout: timeout)
+        return try Self.parseDict(data)
+    }
+
+    private func sendData(path: String, method: String, timeout: TimeInterval) async throws -> Data {
         let url = Self.baseURL.appendingPathComponent(path)
+        var request = URLRequest(url: url, timeoutInterval: timeout)
+        request.httpMethod = method
         do {
-            let (data, response) = try await session.data(from: url)
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw Error.malformedResponse
             }
@@ -52,5 +60,26 @@ struct BeeAPIClient {
         } catch {
             throw Error.malformedResponse
         }
+    }
+
+    private static func parseDict(_ data: Data) throws -> [String: Any] {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let dict = object as? [String: Any] else {
+            throw Error.malformedResponse
+        }
+        return dict
+    }
+
+    /// Bee returns numeric fields as either JSON number (most cases) or
+    /// string (some legacy/big-int fields) depending on version. Both
+    /// shapes route through this helper so callers can pull `Int` out of
+    /// `[String: Any]` without per-call duck-typing.
+    static func intFromAnyJSON(_ value: Any?) -> Int? {
+        guard let value else { return nil }
+        if let int = value as? Int { return int }
+        if let int64 = value as? Int64 { return Int(int64) }
+        if let double = value as? Double { return Int(double) }
+        if let string = value as? String { return Int(string) }
+        return nil
     }
 }
