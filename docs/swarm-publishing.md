@@ -2,7 +2,7 @@
 
 A sketch of the Swarm publishing surface for the iOS Freedom Browser: identity injection from the user's BIP-39 seed into the embedded Bee node, ultralight↔light upgrade, postage-stamp purchase + management, and the `window.swarm` provider for dapps. Parallel in spirit to the desktop browser's publishing surface (`/Users/florian/Git/freedom-dev/freedom-browser/src/main/swarm/` + `src/main/identity/`) but native throughout — no bee-js port, no Electron IPC, no JS-side key handling. This document is a starting point to iterate on, not a committed plan.
 
-> **Status (2026-04-28)**: WP1 (identity injection), WP2 (light-mode upgrade + one-tx funding), WP3 (stamp management), and WP4 (`window.swarm` read-only surface — `getCapabilities` / `requestAccess` / `readFeedEntry` / `listFeeds`) shipped on `feature/swarm-publishing-{window.swarm}`. WP5 (publish path) and WP6 (feed-write path) not started. Several deviations from the original plan along the way — module layout (§4), readiness state model (§6.5), the buy state machine (§7.3), and the bridge-vs-router split (§8.3) all simplified during implementation. See §9 for the actual commit trail.
+> **Status (2026-04-28)**: WP1–5 shipped on `feature/swarm-publishing-{window.swarm}` — bee identity injection, light-mode upgrade + one-tx funding, stamp management, `window.swarm` read-only surface (`getCapabilities` / `requestAccess` / `readFeedEntry` / `listFeeds`), and the full publish surface (`publishData` / `publishFiles` / `getUploadStatus`). WP6 (feed-write: `createFeed` / `updateFeed` / `writeFeedEntry`) is the only remaining work-package. Several deviations from the original plan along the way — module layout (§4), readiness state model (§6.5), the buy state machine (§7.3), the bridge-vs-router split (§8.3), and the USTAR-100-byte path limit vs the SWIP's 256-char proposal (§9 WP5.3) all settled during implementation. See §9 for the actual commit trail.
 
 > **Reading order**: read after [`wallet-architecture.md`](./wallet-architecture.md) — this assumes the BIP-39 vault, HD-derivation, and approval-sheet patterns from M5 are already in your head, and reuses them throughout. Cross-reference [`architecture.md`](./architecture.md) §3-5 for the SwarmKit / bee-lite-java pipeline (the embedded Bee node is the substrate every section here builds on). The desktop browser is the reference implementation — the SWIP draft `/Users/florian/Git/freedom-dev/SWIPs/SWIPs/swip-draft_provider_api.md` is the wire-format spec.
 
@@ -161,9 +161,20 @@ Freedom/
     │   │                                    to the SWIP listFeeds wire shape
     │   └── SwarmFeedStore.swift         ✅ read-only API (lookup, all(forOrigin:));
     │                                       writers in WP6
-    ├── Publish/                         (WP5)
-    │   ├── SwarmPublishService.swift    bee.uploadFile / uploadFiles
-    │   └── TagOwnership.swift           session-scoped [tagUid: origin]
+    ├── Publish/                         ✅ (WP5)
+    │   ├── SwarmPublishService.swift    ✅ closure-injected upload + typed errors,
+    │   │                                    publishData / publishFiles share a
+    │   │                                    private postUpload that always sets
+    │   │                                    Swarm-Pin: true (SWIP-required) and
+    │   │                                    Swarm-Deferred-Upload: true (so bee
+    │   │                                    returns immediately + a tag UID)
+    │   ├── TarBuilder.swift             ✅ hand-rolled USTAR encoder, port of
+    │   │                                    bee-js's utils/tar.js — 100-byte path
+    │   │                                    limit (USTAR, no PAX); the SWIP draft's
+    │   │                                    256-char limit is a tracked divergence
+    │   └── TagOwnership.swift           ✅ session-scoped [tagUid: origin] for the
+    │                                       SWIP cross-origin defense in
+    │                                       swarm_getUploadStatus
     ├── Feeds/                           (WP6)
     │   ├── SwarmFeedService.swift       create/update/write/read with per-topic actor
     │   ├── FeedTopic.swift              keccak256(origin + "/" + name)
@@ -185,7 +196,12 @@ Freedom/
         ├── StampExtendView.swift        🚧 deferred — extend duration / size
         ├── SwarmConnectSheet.swift      ✅ (WP4) approval for swarm_requestAccess.
         │                                    Plain sheet — no account derivation, no chain.
-        ├── SwarmPublishSheet.swift      (WP5)
+        ├── SwarmPublishSheet.swift      ✅ (WP5) approval for publishData / publishFiles
+        │                                    with the auto-approve toggle. Branches on
+        │                                    SwarmPublishDetails.Mode (.data / .files);
+        │                                    files mode shows count / size / index /
+        │                                    paths preview, data mode shows
+        │                                    size / content-type / optional name.
         └── SwarmFeedAccessSheet.swift   (WP6)
 ```
 
@@ -670,10 +686,19 @@ Originally six WPs, one PR each. WP1–3 shipped on `feature/swarm-publishing`. 
 - **WP4.4 ✅ — `swarm_readFeedEntry`** (`39eb51a`).
   `BeeAPIClient.getFeedPayload(owner:topic:index:)` (bee 2.x `GET /feeds/{owner}/{topic}` returns SOC payload bytes + `swarm-feed-index{,-next}` headers), `sendData` refactored to return `(Data, headers)`. `SwarmRouter.readFeedEntry` handler with the SWIP param matrix (topic vs name, owner-required-with-topic, hex/length/charset checks, index validation) + 404 → `feed_empty` / `entry_not_found` mapping + bee-unreachable → `node-stopped`. No separate `/node` reachability probe — the actual `/feeds` call surfaces the unreachable case directly via `BeeAPIClient.Error.notRunning`, halving the request count and dodging the probe-then-call race. 17 tests cover the param matrix and error mapping.
 
-### Not started
+- **WP5.1 ✅ — Bee binary upload + stamp auto-selection** (`1f73c75`).
+  `BeeAPIClient.postBytes` is the new `POST /bzz` helper for binary bodies. Body path routes through `URLSession.upload(for:from:)` so the SWIP-cap 50 MB payload streams to bee instead of buffering inside `URLRequest.httpBody`. `StampService.selectBestBatch(forBytes:in:)` mirrors desktop's `selectBestBatch` — first-fit usable batch with `bytes × 1.5` remaining capacity, longest-TTL tiebreaker. The 1.5 lives as `StampService.sizeSafetyMargin` so the constant has a name and the doc explains why (chunk-encoding overhead bee adds at upload). 6 unit tests on the pure-function selector.
 
-- **WP5 — Publish path**.
-  Methods 4-6: `publishData`, `publishFiles`, `getUploadStatus`. New: `SwarmPublishService`, `TagOwnership`, `SwarmPublishSheet`. Extend `ApprovalRequest.Kind` with `.swarmPublish`. Per-origin `autoApprovePublish` toggle. Stamp auto-selection (best fit). Tests: publish round-trips against a local Bee, tag scoping rejects cross-origin reads. ~500-700 LoC.
+- **WP5.2 ✅ — `swarm_publishData`** (`f5654bf`).
+  `SwarmPublishService` is closure-injected so unit tests stub the bee call without `URLProtocol` mocking — same pattern `SwarmRouter` uses for its dependencies. `SwarmPublishSheet` shows size / content-type / optional name plus an auto-approve toggle that writes back to `SwarmPermission.autoApprovePublish`; subsequent publishes from the same origin skip the sheet. Bridge param-validation rejects non-string `data` (`Uint8Array` bridging through WKWebView is version-dependent; binary `publishData` deferred — `publishFiles` solves it via JS-side base64 normalization at WP5.3). 9 unit tests on the publish service.
+
+- **WP5.3 ✅ — `swarm_publishFiles` + bring publishData up to spec** (`5bf35db`).
+  `TarBuilder` is the hand-rolled USTAR encoder, port of bee-js's `utils/tar.js` (`TarStream`). Strict 100-byte path field — multi-byte UTF-8 paths rejected by byte count rather than character count to dodge a silent header truncation. The bridge's `validateVirtualPath` enforces the same SWIP path rules desktop's `swarm-provider-ipc.js` does. Both publish methods now route through a shared private `postUpload` helper that adds `Swarm-Pin: true` (SWIP-required — without it bee may garbage-collect the chunks) and `Swarm-Deferred-Upload: true` (without it bee blocks until sync and may not return a tag UID); both fixes lift to `publishData` so `tagUid` is now reliably set on every successful publish. `SwarmBridge.js __toBase64` chunked at 32 KB slices via `String.fromCharCode.apply` to stay well under the per-call apply ceiling at the 50 MB upload cap. `SwarmPublishDetails` grew a `Mode` enum (`.data` / `.files`) so a single `.swarmPublish` approval kind covers both upload modes. 10 `TarBuilderTests` cover header layout / checksum / end-of-archive / length validation (incl. the multi-byte UTF-8 byte-count edge) / determinism.
+
+- **WP5.4 ✅ — `swarm_getUploadStatus` + tag ownership** (`91b0b51`).
+  `TagOwnership` is the in-memory `tagUid → origin` map the SWIP requires for cross-origin defense. The bridge records on every successful publish, looks up before forwarding any status query to bee, and forgets on `done == true` (or bee 404 — saves a future round-trip). Session-scoped: bee may evict its own tags too per SWIP §"Persistence", so dropping ours on app restart matches what the dapp would see anyway. `BeeAPIClient.getTag(uid:)` returns a typed `TagResponse` with `progressPercent` and `isDone` as computed properties — the percent clamps at 100 (bee can briefly report `sent > split` if it counts retries, observed at 12/6 in smoke). The bridge handler conflates "tag never ours" / "we forgot the tag" / "bee evicted the tag" into a single 4100 unauthorized to match desktop's behavior. 7 `TagOwnershipTests` on the data structure.
+
+### Not started
 
 - **WP6 — Feed path**.
   Methods 7-10: `createFeed`, `updateFeed`, `writeFeedEntry`. (`readFeedEntry` shipped at WP4.) New: `SwarmFeedRecord` + `SwarmFeedStore`, `SwarmFeedService`, `FeedTopic`, `PublisherKeyAllocator`, `SwarmFeedAccessSheet`. Extend `ApprovalRequest.Kind` with `.swarmFeedAccess`. Per-origin `autoApproveFeeds` toggle. Add `HDKey.Path.publisherKey(originIndex:)`. Tests: topic byte-identity vs desktop, per-topic write actor serialization, allocator monotonicity, identity mode immutability. ~700-900 LoC.
@@ -693,16 +718,19 @@ Originally six WPs, one PR each. WP1–3 shipped on `feature/swarm-publishing`. 
 
 ## 11. Open items
 
-Resolved during WP1–4:
+Resolved during WP1–5:
 
 - ~~**The exact `fundNodeAndBuyStamp` ABI**~~ — confirmed at WP2 against the deployed contract; selector pinned at `0x834aeb80` in `FundNodeBuilder` with a regression test.
 - ~~**`xbzzMinOut` slippage policy**~~ — defaulted to 5% (`SwarmFunderConstants.defaultSlippageBps = 500`). Hardcoded for now; will surface as an advanced setting if real users hit slippage failures.
 - ~~**`/health` vs. `/readiness` polling cadence**~~ — replaced with a single `/chainstate`-driven loop at adaptive 3 s / 30 s (see §6.5).
 - ~~**bee 2.x `/feeds/{owner}/{topic}` wire format**~~ — confirmed at WP4.4 by reading bee-js's `feed.js` module and curl-probing the running node: response body is the SOC payload as raw bytes, with `swarm-feed-index` (current) and `swarm-feed-index-next` (next writable, latest-read only) as 16-char hex headers.
+- ~~**Manifest format for `swarm_publishFiles`**~~ — confirmed at WP5.3 by reading bee-js's `utils/tar.js`: bee's `POST /bzz` with `Content-Type: application/x-tar` + `Swarm-Collection: true` accepts a USTAR archive. Hand-rolled the encoder line-for-line off bee-js. No PAX extensions — 100-byte path field, multi-byte UTF-8 paths rejected on byte count.
+- ~~**`Swarm-Pin` + `Swarm-Deferred-Upload` headers on publish**~~ — discovered at WP5.3 by reading desktop's `bee.uploadFile(... { pin: true, deferred: true })`. Both lift to all publish paths in iOS. Without `pin` bee may GC chunks; without `deferred` bee blocks until sync and the response may not carry a `swarm-tag`.
 
 Still open:
 
-- **`BridgeReplyChannel` refactor**. `SwarmBridge` and `EthereumBridge` both carry near-duplicate `reply / evaluateResponse / emit / jsonLiteral`. Flagged during WP4.3's `/simplify` and deferred to a focused refactor commit before WP5 to avoid muddying the WP4 diffs.
+- **`BridgeReplyChannel` refactor**. `SwarmBridge` and `EthereumBridge` both carry near-duplicate `reply / evaluateResponse / emit / jsonLiteral`. Flagged during WP4.3's `/simplify` and re-flagged during WP5 — would benefit from being a focused refactor commit before WP6 adds a third reply path.
+- **USTAR-vs-SWIP path-length divergence**. SWIP draft proposes 256-char `path`; iOS / desktop both enforce USTAR's 100-byte limit. Worth raising on the SWIP draft so the spec aligns with reality, or carrying PAX-extension support so paths up to 256 actually work.
 - **Stamp price USD estimate**. UI shows xBZZ only. Add a USD/EUR conversion when there's user-facing pricing demand.
 - **Feed-write retry on transient errors**. WP6 — explicit retry vs. surface failure to dapp? Lean toward surfacing; dapps can retry with their own backoff.
 - **Wallet-doc updates**. After WP1 shipped, `wallet-architecture.md` §5.1 should mark `m/44'/60'/0'/0/1` as "surfaced" and add the publisher-key row when WP6 lands. Cross-reference this doc.
