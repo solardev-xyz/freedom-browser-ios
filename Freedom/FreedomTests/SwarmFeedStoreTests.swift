@@ -54,6 +54,48 @@ final class SwarmFeedStoreTests: XCTestCase {
         XCTAssertEqual(bar.first?.name, "posts")
     }
 
+    func testAsListFeedsRowShape() throws {
+        let context = container.mainContext
+        let manifest = String(repeating: "b", count: 64)
+        let record = SwarmFeedRecord(
+            origin: "foo.eth", name: "posts",
+            topic: String(repeating: "a", count: 64),
+            owner: "0x1111111111111111111111111111111111111111",
+            manifestReference: manifest,
+            createdAt: Date(timeIntervalSince1970: 1)
+        )
+        context.insert(record)
+        try context.save()
+
+        let row = record.asListFeedsRow
+        XCTAssertEqual(row["name"] as? String, "posts")
+        XCTAssertEqual(row["topic"] as? String, String(repeating: "a", count: 64))
+        XCTAssertEqual(row["owner"] as? String, "0x1111111111111111111111111111111111111111")
+        XCTAssertEqual(row["manifestReference"] as? String, manifest)
+        XCTAssertEqual(row["bzzUrl"] as? String, "bzz://" + manifest)
+        XCTAssertEqual(row["createdAt"] as? Int, 1_000)
+        XCTAssertTrue(row["lastUpdated"] is NSNull)
+        XCTAssertTrue(row["lastReference"] is NSNull)
+    }
+
+    func testAsListFeedsRowEncodesPopulatedOptionals() throws {
+        let context = container.mainContext
+        let record = SwarmFeedRecord(
+            origin: "foo.eth", name: "posts",
+            topic: String(repeating: "a", count: 64),
+            owner: "0x1111111111111111111111111111111111111111",
+            manifestReference: String(repeating: "b", count: 64)
+        )
+        record.lastUpdatedAt = Date(timeIntervalSince1970: 2)
+        record.lastReference = String(repeating: "e", count: 64)
+        context.insert(record)
+        try context.save()
+
+        let row = record.asListFeedsRow
+        XCTAssertEqual(row["lastUpdated"] as? Int, 2_000)
+        XCTAssertEqual(row["lastReference"] as? String, String(repeating: "e", count: 64))
+    }
+
     func testListIsSortedByCreatedAt() throws {
         let context = container.mainContext
         let early = SwarmFeedRecord(

@@ -41,4 +41,20 @@ final class SwarmFeedRecord {
         self.lastUpdatedAt = nil
         self.lastReference = nil
     }
+
+    /// SWIP `swarm_listFeeds` row shape — `Int` ms since epoch matching
+    /// desktop's `Date.now()` output, `NSNull` for absent optionals so
+    /// `JSONSerialization` round-trips them as JSON `null`.
+    var asListFeedsRow: [String: Any] {
+        [
+            "name": name,
+            "topic": topic,
+            "owner": owner,
+            "manifestReference": manifestReference,
+            "bzzUrl": "bzz://\(manifestReference)",
+            "createdAt": Int(createdAt.timeIntervalSince1970 * 1000),
+            "lastUpdated": lastUpdatedAt.map { Int($0.timeIntervalSince1970 * 1000) } ?? NSNull() as Any,
+            "lastReference": lastReference ?? NSNull() as Any,
+        ]
+    }
 }
