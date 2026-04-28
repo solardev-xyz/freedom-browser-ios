@@ -21,13 +21,16 @@ struct FreedomApp: App {
     @State private var beeReadiness: BeeReadiness
     @State private var stampService: StampService
     @State private var beeWalletInfo: BeeWalletInfo
+    @State private var swarmPermissionStore: SwarmPermissionStore
+    @State private var swarmFeedStore: SwarmFeedStore
     private let modelContainer: ModelContainer
 
     init() {
         do {
             let container = try ModelContainer(
                 for: TabRecord.self, HistoryEntry.self, Bookmark.self, Favicon.self,
-                DappPermission.self, AutoApproveRule.self
+                DappPermission.self, AutoApproveRule.self,
+                SwarmPermission.self, SwarmFeedRecord.self
             )
             self.modelContainer = container
             let history = HistoryStore(context: container.mainContext)
@@ -75,6 +78,12 @@ struct FreedomApp: App {
             stamps.attach(walletInfo: walletInfo)
             self._stampService = State(wrappedValue: stamps)
             self._beeWalletInfo = State(wrappedValue: walletInfo)
+            self._swarmPermissionStore = State(wrappedValue: SwarmPermissionStore(
+                context: container.mainContext
+            ))
+            self._swarmFeedStore = State(wrappedValue: SwarmFeedStore(
+                context: container.mainContext
+            ))
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
                 historyStore: history,
@@ -112,6 +121,8 @@ struct FreedomApp: App {
                 .environment(beeReadiness)
                 .environment(stampService)
                 .environment(beeWalletInfo)
+                .environment(swarmPermissionStore)
+                .environment(swarmFeedStore)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
                 .task { beeReadiness.start() }
