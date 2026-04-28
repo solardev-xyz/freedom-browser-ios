@@ -2,7 +2,7 @@
 
 A sketch of the Swarm publishing surface for the iOS Freedom Browser: identity injection from the user's BIP-39 seed into the embedded Bee node, ultralight↔light upgrade, postage-stamp purchase + management, and the `window.swarm` provider for dapps. Parallel in spirit to the desktop browser's publishing surface (`/Users/florian/Git/freedom-dev/freedom-browser/src/main/swarm/` + `src/main/identity/`) but native throughout — no bee-js port, no Electron IPC, no JS-side key handling. This document is a starting point to iterate on, not a committed plan.
 
-> **Status (2026-04-28)**: WP1 (identity injection), WP2 (light-mode upgrade + one-tx funding), WP3 (stamp management) shipped on `feature/swarm-publishing`, plus the chequebook auto-top-up follow-on. WP4–6 (`window.swarm` bridge) not started. Several deviations from the original plan along the way — module layout (§4), readiness state model (§6.5), and the buy state machine (§7.3) all simplified during implementation. See §9 for the actual commit trail.
+> **Status (2026-04-28)**: WP1 (identity injection), WP2 (light-mode upgrade + one-tx funding), WP3 (stamp management), and WP4 (`window.swarm` read-only surface — `getCapabilities` / `requestAccess` / `readFeedEntry` / `listFeeds`) shipped on `feature/swarm-publishing-{window.swarm}`. WP5 (publish path) and WP6 (feed-write path) not started. Several deviations from the original plan along the way — module layout (§4), readiness state model (§6.5), the buy state machine (§7.3), and the bridge-vs-router split (§8.3) all simplified during implementation. See §9 for the actual commit trail.
 
 > **Reading order**: read after [`wallet-architecture.md`](./wallet-architecture.md) — this assumes the BIP-39 vault, HD-derivation, and approval-sheet patterns from M5 are already in your head, and reuses them throughout. Cross-reference [`architecture.md`](./architecture.md) §3-5 for the SwarmKit / bee-lite-java pipeline (the embedded Bee node is the substrate every section here builds on). The desktop browser is the reference implementation — the SWIP draft `/Users/florian/Git/freedom-dev/SWIPs/SWIPs/swip-draft_provider_api.md` is the wire-format spec.
 
@@ -127,16 +127,40 @@ Freedom/
     │   │                                    (bee has no /stamps/cost endpoint
     │   │                                    despite the original §7.3 plan)
     │   └── StampUSDPricing.swift        🚧 deferred (UI shows xBZZ only)
-    ├── Bridge/                          (WP4)
-    │   ├── SwarmBridge.swift            WKScriptMessageHandler, parallel to EthereumBridge
-    │   ├── SwarmBridge.js               preload script, injects window.swarm
-    │   ├── SwarmRouter.swift            10-method dispatch, parallel to RPCRouter
-    │   └── SwarmErrorPayload.swift      4001 / 4100 / 4200 / 4900 / -32602 / -32603
-    ├── Permissions/                     (WP4 / WP6)
-    │   ├── SwarmPermission.swift        @Model: origin, autoApprovePublish, autoApproveFeeds
-    │   ├── SwarmPermissionStore.swift   parallel to PermissionStore
-    │   ├── SwarmFeedRecord.swift        @Model: origin, name, topic, owner, manifestRef, ...
-    │   └── SwarmFeedStore.swift         @Query-friendly access
+    ├── SwarmServices.swift              ✅ collaborator bundle threaded
+    │                                       FreedomApp → TabStore → BrowserTab → SwarmBridge
+    ├── SwarmDefaults.swift              ✅ Notification.Name.swarmPermissionRevoked
+    │                                       (parallel to WalletDefaults)
+    ├── Bridge/                          ✅ (WP4)
+    │   ├── SwarmBridge.swift            ✅ WKScriptMessageHandler, parallel to EthereumBridge.
+    │   │                                    Handles the one interactive method
+    │   │                                    (swarm_requestAccess); everything else routes
+    │   │                                    through SwarmRouter.
+    │   ├── SwarmBridge.js               ✅ preload script, injects window.swarm
+    │   │                                    with isFreedomBrowser:true for parity
+    │   │                                    with desktop's webview-preload.js.
+    │   ├── SwarmRouter.swift            ✅ getCapabilities / listFeeds / readFeedEntry
+    │   │                                    dispatch + nested ErrorPayload
+    │   │                                    (4001/4100/4200/4900/-32002/-32602/-32603 +
+    │   │                                    SWIP Reason vocabulary). 10-method surface
+    │   │                                    is split across this and SwarmBridge per the
+    │   │                                    interactive-vs-non-interactive boundary.
+    │   ├── SwarmCapabilities.swift      ✅ struct + Limits.defaults + asJSONDict
+    │   ├── FeedTopic.swift              ✅ keccak256(origin + "/" + name) — lives in
+    │   │                                    Bridge/ alongside the router that uses it
+    │   │                                    rather than the original plan's Feeds/.
+    │   └── (no SwarmErrorPayload.swift) ErrorPayload nested inside SwarmRouter rather
+    │                                    than its own file — mirrors RPCRouter precedent.
+    ├── Permissions/                     ✅ (WP4)
+    │   ├── SwarmPermission.swift        ✅ @Model: origin, autoApprovePublish,
+    │   │                                    autoApproveFeeds, identityMode (the WP5/WP6
+    │   │                                    fields ship now to dodge a SwiftData migration)
+    │   ├── SwarmPermissionStore.swift   ✅ parallel to PermissionStore — Set<String>
+    │   │                                    hot-path cache + .swarmPermissionRevoked post
+    │   ├── SwarmFeedRecord.swift        ✅ @Model + asListFeedsRow extension serializing
+    │   │                                    to the SWIP listFeeds wire shape
+    │   └── SwarmFeedStore.swift         ✅ read-only API (lookup, all(forOrigin:));
+    │                                       writers in WP6
     ├── Publish/                         (WP5)
     │   ├── SwarmPublishService.swift    bee.uploadFile / uploadFiles
     │   └── TagOwnership.swift           session-scoped [tagUid: origin]
@@ -159,7 +183,8 @@ Freedom/
         ├── StampsView.swift             ✅ list + empty state
         ├── StampPurchaseView.swift      ✅ preset chips + cost + buy
         ├── StampExtendView.swift        🚧 deferred — extend duration / size
-        ├── SwarmConnectSheet.swift      (WP4)
+        ├── SwarmConnectSheet.swift      ✅ (WP4) approval for swarm_requestAccess.
+        │                                    Plain sheet — no account derivation, no chain.
         ├── SwarmPublishSheet.swift      (WP5)
         └── SwarmFeedAccessSheet.swift   (WP6)
 ```
@@ -530,14 +555,29 @@ Reuse `OriginIdentity.from(displayURL:)` — already shipped. The address-bar UR
 
 ### 8.3 Routing
 
-`SwarmRouter` parallels `RPCRouter` exactly:
+`SwarmRouter` parallels `RPCRouter` in shape but with two material departures:
 
 ```swift
 @MainActor
-func handle(method: String, params: [Any], origin: OriginIdentity) async throws -> Any
+final class SwarmRouter {
+    init(
+        isConnected: @MainActor (String) -> Bool,
+        listFeedsForOrigin: @MainActor (String) -> [[String: Any]],
+        nodeFailureReason: @MainActor () -> String?,
+        feedOwner: @MainActor (String, String) -> String?,
+        readFeed: @MainActor (String, String, UInt64?) async throws -> FeedRead
+    )
+    func handle(method: String, params: [String: Any], origin: OriginIdentity) async throws -> Any
+}
 ```
 
-Dispatches by method name; permission checks happen before any service call. Error codes: 4001 (user rejected), 4100 (unauthorized — "connect first"), 4200 (unsupported method), 4900 (resource unavailable — Bee not running / not ready), -32602 (invalid params), -32603 (internal error). Codes are in `SwarmErrorPayload.Code` constants (no string literals in handlers).
+1. **Closure-based dependencies** instead of holding stores directly. Discovered during WP4: instantiating SwiftData `@Model` types in unit tests without a `ModelContainer` trips a runtime `malloc` fault on the iOS 26 simulator. The closures keep the router transport-and-SwiftData-free; production wiring in `BrowserTab.init` composes them from `SwarmPermissionStore` / `SwarmFeedStore` / `SwarmServices.nodeFailureReason` / `BeeAPIClient`. Tests stub plain Swift functions — no malloc.
+
+2. **`params: [String: Any]`** rather than `[Any]` (positional). SWIP draft uses object params; EIP-1193 uses positional arrays. The bridge transports each shape into the matching router.
+
+`ErrorPayload` is **nested inside `SwarmRouter`** rather than its own file — same pattern as `RPCRouter.ErrorPayload`, drops the originally-planned `SwarmErrorPayload.swift`. Error codes: 4001 / 4100 / 4200 / 4900 / -32002 (resource unavailable) / -32602 / -32603. SWIP wire reasons (`not-connected`, `feed_empty`, `invalid_topic`, …) live as `ErrorPayload.Reason.*` constants — single source of truth so the `swarm_getCapabilities.reason` field and `error.data.reason` use the same vocabulary.
+
+Method split between bridge and router: **interactive** methods (any that park an `ApprovalRequest` continuation — `swarm_requestAccess` at WP4, the publish + feed-write methods at WP5/WP6) live in `SwarmBridge.dispatch`. **Non-interactive** methods route through `SwarmRouter.handle`.
 
 ### 8.4 Approval sheets
 
@@ -618,10 +658,19 @@ Originally six WPs, one PR each. WP1–3 shipped on `feature/swarm-publishing`. 
 - **(feat) ✅ — Chequebook auto-top-up** (`2f94afc`).
   After every stamp purchase, top up chequebook to a 0.1 xBZZ floor from the node wallet. Hard prerequisite for WP4–6 to actually publish (peers won't serve content with an unfunded chequebook). See §7.6.
 
-### Not started
+- **WP4.1 ✅ — Permission + feed stores** (`fa9e036`).
+  `SwarmPermission` + `SwarmPermissionStore` (parallel to `DappPermission` / `PermissionStore` — different trust tier so a separate model rather than reusing the wallet's), `SwarmFeedRecord` + `SwarmFeedStore` (read-only API; writers in WP6), `SwarmDefaults` notification-name file, ModelContainer schema add, FreedomApp `@State` + env-injection. Auto-approve flags + `identityMode` ship empty now to dodge a SwiftData migration when WP6's `swarm_createFeed` lands.
 
-- **WP4 — `window.swarm` bridge foundation**.
-  New: `SwarmBridge` + preload, `SwarmRouter`, `SwarmErrorPayload`, `SwarmPermission` + `SwarmPermissionStore`, `SwarmConnectSheet`. Methods 1-3: `getCapabilities`, `requestAccess`, `readFeedEntry` + `listFeeds`. Extend `ApprovalRequest.Kind` with `.swarmConnect`. Tests: router dispatch, permission gating, origin normalization. ~600-800 LoC.
+- **WP4.2 ✅ — Read-method router** (`c6c1af3`).
+  `SwarmRouter` + nested `ErrorPayload` + `Reason` vocabulary, `SwarmCapabilities` + `Limits.defaults`, `FeedTopic.derive` (keccak256 with the canonical `web3.swift` chain). Closure-based dependencies (see §8.3) — discovered during the test-bring-up that instantiating `@Model` types without a `ModelContainer` trips a malloc fault on the iOS 26 simulator. All swarm tests are async-marked for the same reason. `swarm_getCapabilities` + `swarm_listFeeds` live; `swarm_readFeedEntry` and the publish/feed-write methods return `4200` until WP4.4 / WP5 / WP6.
+
+- **WP4.3 ✅ — Bridge + connect flow** (`388ee6e`).
+  `SwarmBridge` (`WKScriptMessageHandler`) + `SwarmBridge.js` preload (with `isFreedomBrowser: true` for parity with desktop's existing test pages), `SwarmServices` bundle threaded `FreedomApp → TabStore → BrowserTab → SwarmBridge`, `.swarmConnect` `ApprovalRequest.Kind`, `SwarmConnectSheet`. `BrowserTab` gains a `reinstallPreloads()` coordinator so `removeAllUserScripts()` runs once per navigation and each bridge re-installs cleanly without trampling the other's user script. The bridge's reply path is intentionally a near-duplicate of `EthereumBridge`'s — refactor into a shared `BridgeReplyChannel` deferred to a focused commit later.
+  
+- **WP4.4 ✅ — `swarm_readFeedEntry`** (`39eb51a`).
+  `BeeAPIClient.getFeedPayload(owner:topic:index:)` (bee 2.x `GET /feeds/{owner}/{topic}` returns SOC payload bytes + `swarm-feed-index{,-next}` headers), `sendData` refactored to return `(Data, headers)`. `SwarmRouter.readFeedEntry` handler with the SWIP param matrix (topic vs name, owner-required-with-topic, hex/length/charset checks, index validation) + 404 → `feed_empty` / `entry_not_found` mapping + bee-unreachable → `node-stopped`. No separate `/node` reachability probe — the actual `/feeds` call surfaces the unreachable case directly via `BeeAPIClient.Error.notRunning`, halving the request count and dodging the probe-then-call race. 17 tests cover the param matrix and error mapping.
+
+### Not started
 
 - **WP5 — Publish path**.
   Methods 4-6: `publishData`, `publishFiles`, `getUploadStatus`. New: `SwarmPublishService`, `TagOwnership`, `SwarmPublishSheet`. Extend `ApprovalRequest.Kind` with `.swarmPublish`. Per-origin `autoApprovePublish` toggle. Stamp auto-selection (best fit). Tests: publish round-trips against a local Bee, tag scoping rejects cross-origin reads. ~500-700 LoC.
@@ -644,16 +693,19 @@ Originally six WPs, one PR each. WP1–3 shipped on `feature/swarm-publishing`. 
 
 ## 11. Open items
 
-Resolved during WP1–3:
+Resolved during WP1–4:
 
 - ~~**The exact `fundNodeAndBuyStamp` ABI**~~ — confirmed at WP2 against the deployed contract; selector pinned at `0x834aeb80` in `FundNodeBuilder` with a regression test.
 - ~~**`xbzzMinOut` slippage policy**~~ — defaulted to 5% (`SwarmFunderConstants.defaultSlippageBps = 500`). Hardcoded for now; will surface as an advanced setting if real users hit slippage failures.
 - ~~**`/health` vs. `/readiness` polling cadence**~~ — replaced with a single `/chainstate`-driven loop at adaptive 3 s / 30 s (see §6.5).
+- ~~**bee 2.x `/feeds/{owner}/{topic}` wire format**~~ — confirmed at WP4.4 by reading bee-js's `feed.js` module and curl-probing the running node: response body is the SOC payload as raw bytes, with `swarm-feed-index` (current) and `swarm-feed-index-next` (next writable, latest-read only) as 16-char hex headers.
 
 Still open:
 
+- **`BridgeReplyChannel` refactor**. `SwarmBridge` and `EthereumBridge` both carry near-duplicate `reply / evaluateResponse / emit / jsonLiteral`. Flagged during WP4.3's `/simplify` and deferred to a focused refactor commit before WP5 to avoid muddying the WP4 diffs.
 - **Stamp price USD estimate**. UI shows xBZZ only. Add a USD/EUR conversion when there's user-facing pricing demand.
 - **Feed-write retry on transient errors**. WP6 — explicit retry vs. surface failure to dapp? Lean toward surfacing; dapps can retry with their own backoff.
 - **Wallet-doc updates**. After WP1 shipped, `wallet-architecture.md` §5.1 should mark `m/44'/60'/0'/0/1` as "surfaced" and add the publisher-key row when WP6 lands. Cross-reference this doc.
 - **Top-up flows for node wallet + chequebook**. Currently the only deposit path is the funder (one-tx) and the auto-top-up (post-stamp-buy). Real management surface (top-up node wallet from main wallet; manual top-up of chequebook from node wallet) deferred until users hit balance floors in practice.
 - **`BeePasswordTests` re-enablement**. Currently `XCTSkipIf`'d because a test wipe of the production Keychain entry triggers `FreedomApp`'s legacy migration on next launch. Proper fix: parameterize `BeePassword` to use a `.test` Keychain account and remove the skip.
+- **Cross-platform `FeedTopic` byte-identity test**. WP6 — pin a captured desktop fixture (`(origin, name) → 32-byte topic`) so the iOS keccak chain can't drift from desktop's bee-js without breaking a unit test. Premature to fabricate one at WP4.
