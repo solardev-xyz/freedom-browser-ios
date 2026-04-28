@@ -23,6 +23,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
     // side of the edge must be weak — otherwise BrowserTab's deinit would
     // never fire and tab-close would leak the bridge + webView + config.
     private weak var contentController: WKUserContentController?
+    private let replies: BridgeReplyChannel
     private var notificationTokens: [NSObjectProtocol] = []
 
     private var vault: Vault { services.vault }
@@ -40,6 +41,9 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         self.router = router
         self.services = services
         self.contentController = contentController
+        self.replies = BridgeReplyChannel(
+            jsGlobal: "__freedomEthereum", webView: tab.webView
+        )
         super.init()
         contentController.add(self, name: Self.messageHandlerName)
         installUserScript()
@@ -473,9 +477,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
     // MARK: - Event emission
 
     private func emit(event: String, data: Any) {
-        guard let webView = tab?.webView else { return }
-        let js = "window.__freedomEthereum && window.__freedomEthereum.__handleEvent(\(jsonLiteral(event)), \(jsonLiteral(data)));"
-        webView.evaluateJavaScript(js, completionHandler: nil)
+        replies.emit(event: event, data: data)
     }
 
     private func subscribeToNotifications() {
@@ -515,27 +517,10 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
     // MARK: - Reply path
 
     private func reply(id: Int, result: Any) {
-        evaluateResponse(id: id, resultJSON: jsonLiteral(result), errorJSON: "null")
+        replies.reply(id: id, result: result)
     }
 
     private func reply(id: Int, error: RPCRouter.ErrorPayload) {
-        let errJSON = jsonLiteral(["code": error.code, "message": error.message])
-        evaluateResponse(id: id, resultJSON: "null", errorJSON: errJSON)
-    }
-
-    private func evaluateResponse(id: Int, resultJSON: String, errorJSON: String) {
-        guard let webView = tab?.webView else { return }
-        let js = "window.__freedomEthereum && window.__freedomEthereum.__handleResponse(\(id), \(resultJSON), \(errorJSON));"
-        webView.evaluateJavaScript(js, completionHandler: nil)
-    }
-
-    /// JSONSerialization quotes + escapes strings, so direct interpolation
-    /// into evaluateJavaScript is injection-safe. Returns "null" on failure.
-    private func jsonLiteral(_ value: Any) -> String {
-        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]),
-              let string = String(data: data, encoding: .utf8) else {
-            return "null"
-        }
-        return string
+        replies.reply(id: id, errorObject: ["code": error.code, "message": error.message])
     }
 }

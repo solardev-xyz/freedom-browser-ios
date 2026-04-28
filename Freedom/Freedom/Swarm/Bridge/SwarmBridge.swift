@@ -27,6 +27,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
     /// so this side of the edge must not retain back — otherwise tab
     /// teardown would never run.
     private weak var contentController: WKUserContentController?
+    private let replies: BridgeReplyChannel
 
     init(
         tab: BrowserTab,
@@ -38,6 +39,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         self.router = router
         self.services = services
         self.contentController = contentController
+        self.replies = BridgeReplyChannel(
+            jsGlobal: "__freedomSwarm", webView: tab.webView
+        )
         super.init()
         contentController.add(self, name: Self.messageHandlerName)
         installUserScript()
@@ -663,7 +667,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
     // MARK: - Reply path
 
     private func reply(id: Int, result: Any) {
-        evaluateResponse(id: id, resultJSON: jsonLiteral(result), errorJSON: "null")
+        replies.reply(id: id, result: result)
     }
 
     private func reply(id: Int, error: SwarmRouter.ErrorPayload) {
@@ -671,7 +675,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         if let reason = error.dataReason {
             dict["data"] = ["reason": reason]
         }
-        evaluateResponse(id: id, resultJSON: "null", errorJSON: jsonLiteral(dict))
+        replies.reply(id: id, errorObject: dict)
     }
 
     /// One-line shortcut for `reply(id:error:)` from inside a handler.
@@ -684,27 +688,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         ))
     }
 
-    private func evaluateResponse(id: Int, resultJSON: String, errorJSON: String) {
-        guard let webView = tab?.webView else { return }
-        let js = "window.__freedomSwarm && window.__freedomSwarm.__handleResponse(\(id), \(resultJSON), \(errorJSON));"
-        webView.evaluateJavaScript(js, completionHandler: nil)
-    }
-
     private func emit(event: String, data: Any) {
-        guard let webView = tab?.webView else { return }
-        let js = "window.__freedomSwarm && window.__freedomSwarm.__handleEvent(\(jsonLiteral(event)), \(jsonLiteral(data)));"
-        webView.evaluateJavaScript(js, completionHandler: nil)
-    }
-
-    /// JSONSerialization quotes + escapes strings, so direct
-    /// interpolation into evaluateJavaScript is injection-safe. Returns
-    /// `"null"` on failure — the JS handler treats that as a missing
-    /// result/error and does nothing.
-    private func jsonLiteral(_ value: Any) -> String {
-        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]),
-              let string = String(data: data, encoding: .utf8) else {
-            return "null"
-        }
-        return string
+        replies.emit(event: event, data: data)
     }
 }
