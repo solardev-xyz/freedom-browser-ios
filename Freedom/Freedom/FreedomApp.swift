@@ -65,10 +65,8 @@ struct FreedomApp: App {
             self._beeIdentity = State(wrappedValue: BeeIdentityCoordinator(settings: settings))
             let swarmInstance = SwarmNode()
             self._swarm = State(wrappedValue: swarmInstance)
-            self._beeReadiness = State(wrappedValue: BeeReadiness(
-                swarm: swarmInstance,
-                settings: settings
-            ))
+            let readiness = BeeReadiness(swarm: swarmInstance, settings: settings)
+            self._beeReadiness = State(wrappedValue: readiness)
             let stamps = StampService(swarm: swarmInstance, settings: settings)
             let walletInfo = BeeWalletInfo(swarm: swarmInstance, settings: settings)
             // Stamp service triggers a chequebook auto-deposit after
@@ -78,19 +76,42 @@ struct FreedomApp: App {
             stamps.attach(walletInfo: walletInfo)
             self._stampService = State(wrappedValue: stamps)
             self._beeWalletInfo = State(wrappedValue: walletInfo)
-            self._swarmPermissionStore = State(wrappedValue: SwarmPermissionStore(
-                context: container.mainContext
-            ))
-            self._swarmFeedStore = State(wrappedValue: SwarmFeedStore(
-                context: container.mainContext
-            ))
+            let swarmPermissions = SwarmPermissionStore(context: container.mainContext)
+            let feedStore = SwarmFeedStore(context: container.mainContext)
+            self._swarmPermissionStore = State(wrappedValue: swarmPermissions)
+            self._swarmFeedStore = State(wrappedValue: feedStore)
+            // Composed once; closure reads the four observables live so a
+            // mode flip / sync tick / stamp purchase is reflected on the
+            // next swarm_getCapabilities without rebuilding anything.
+            let nodeFailureReason: @MainActor () -> String? = {
+                if swarmInstance.status != .running {
+                    return SwarmRouter.ErrorPayload.Reason.nodeStopped
+                }
+                if settings.beeNodeMode == .ultraLight {
+                    return SwarmRouter.ErrorPayload.Reason.ultraLightMode
+                }
+                if readiness.state != .ready {
+                    return SwarmRouter.ErrorPayload.Reason.nodeNotReady
+                }
+                if !stamps.hasUsableStamps {
+                    return SwarmRouter.ErrorPayload.Reason.noUsableStamps
+                }
+                return nil
+            }
+            let swarmServices = SwarmServices(
+                permissionStore: swarmPermissions,
+                feedStore: feedStore,
+                bee: BeeAPIClient(),
+                nodeFailureReason: nodeFailureReason
+            )
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
                 historyStore: history,
                 faviconStore: favicons,
                 ensResolver: resolver,
                 settings: settings,
-                wallet: wallet
+                wallet: wallet,
+                swarm: swarmServices
             ))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")

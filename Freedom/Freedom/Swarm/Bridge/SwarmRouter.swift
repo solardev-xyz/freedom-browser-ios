@@ -35,6 +35,11 @@ final class SwarmRouter {
             static let unauthorized = 4100         // SWIP §"4100"
             static let unsupportedMethod = 4200    // SWIP §"4200"
             static let nodeUnavailable = 4900      // SWIP §"4900"
+            /// EIP-1474; not in the SWIP table but the wallet bridge
+            /// returns it for the same condition (concurrent-approval
+            /// contention) so a dapp's single error handler can match
+            /// across both providers.
+            static let resourceUnavailable = -32002
             static let invalidParams = -32602      // JSON-RPC 2.0
             static let internalError = -32603      // JSON-RPC 2.0
         }

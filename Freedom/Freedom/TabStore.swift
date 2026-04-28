@@ -17,6 +17,7 @@ final class TabStore {
     @ObservationIgnored private let ensResolver: ENSResolver
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private let wallet: WalletServices
+    @ObservationIgnored private let swarm: SwarmServices
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
     init(
@@ -25,7 +26,8 @@ final class TabStore {
         faviconStore: FaviconStore,
         ensResolver: ENSResolver,
         settings: SettingsStore,
-        wallet: WalletServices
+        wallet: WalletServices,
+        swarm: SwarmServices
     ) {
         self.context = context
         self.historyStore = historyStore
@@ -33,6 +35,7 @@ final class TabStore {
         self.ensResolver = ensResolver
         self.settings = settings
         self.wallet = wallet
+        self.swarm = swarm
         reloadRecords()
     }
 
@@ -82,6 +85,7 @@ final class TabStore {
         // leak the awaiting task.
         liveTabs[id]?.stop()
         liveTabs[id]?.resolvePendingApproval(.denied)
+        liveTabs[id]?.resolvePendingSwarmApproval(.denied)
         liveTabs.removeValue(forKey: id)
         if let record = record(for: id) {
             context.delete(record)
@@ -128,7 +132,8 @@ final class TabStore {
             recordID: id,
             ensResolver: ensResolver,
             settings: settings,
-            wallet: wallet
+            wallet: wallet,
+            swarm: swarm
         )
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }

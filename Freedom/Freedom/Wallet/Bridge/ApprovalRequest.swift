@@ -29,6 +29,10 @@ struct ApprovalRequest: Identifiable {
         case typedData(TypedData)
         case sendTransaction(SendTransactionDetails)
         case switchChain(SwitchChainDetails)
+        /// `swarm_requestAccess` — same per-origin connection-grant
+        /// shape as `.connect` but a different sheet (no account
+        /// derivation, no chain), and a different permission store.
+        case swarmConnect
     }
 
     enum Decision {

@@ -53,6 +53,17 @@ struct ContentView: View {
         )
     }
 
+    private var swarmApprovalBinding: Binding<ApprovalRequest?> {
+        Binding(
+            get: { tabStore.activeTab?.pendingSwarmApproval },
+            set: { newValue in
+                if newValue == nil {
+                    tabStore.activeTab?.resolvePendingSwarmApproval(.denied)
+                }
+            }
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             nodeStatusBar
@@ -108,6 +119,17 @@ struct ContentView: View {
                 ApproveTxSheet(approval: approval, details: details)
             case .switchChain(let details):
                 ApproveChainSwitchSheet(approval: approval, details: details)
+            case .swarmConnect:
+                EmptyView()  // routed via swarmApprovalBinding's sheet
+            }
+        }
+        .sheet(item: swarmApprovalBinding) { approval in
+            switch approval.kind {
+            case .swarmConnect:
+                SwarmConnectSheet(approval: approval)
+            case .connect, .personalSign, .typedData,
+                 .sendTransaction, .switchChain:
+                EmptyView()  // routed via approvalBinding's sheet
             }
         }
         .onChange(of: tabStore.activeTab?.displayURL) { _, new in

@@ -58,10 +58,17 @@ final class BrowserTab {
     /// dismissal path (tab close, swipe) so the resolver fires exactly once
     /// — `ApprovalResolver` is the fire-once guard.
     var pendingEthereumApproval: ApprovalRequest?
+    var pendingSwarmApproval: ApprovalRequest?
 
     func resolvePendingApproval(_ decision: ApprovalRequest.Decision) {
         let pending = pendingEthereumApproval
         pendingEthereumApproval = nil
+        pending?.decide(decision)
+    }
+
+    func resolvePendingSwarmApproval(_ decision: ApprovalRequest.Decision) {
+        let pending = pendingSwarmApproval
+        pendingSwarmApproval = nil
         pending?.decide(decision)
     }
 
@@ -82,13 +89,16 @@ final class BrowserTab {
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private let navDelegate = NavDelegate()
     @ObservationIgnored private var activeResolveTask: Task<Void, Never>?
+    @ObservationIgnored private let contentController: WKUserContentController
     @ObservationIgnored fileprivate var walletBridge: EthereumBridge?
+    @ObservationIgnored fileprivate var swarmBridge: SwarmBridge?
 
     init(
         recordID: UUID = UUID(),
         ensResolver: ENSResolver,
         settings: SettingsStore,
-        wallet: WalletServices
+        wallet: WalletServices,
+        swarm: SwarmServices
     ) {
         self.recordID = recordID
         self.ensResolver = ensResolver
@@ -98,6 +108,7 @@ final class BrowserTab {
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         let contentController = WKUserContentController()
         config.userContentController = contentController
+        self.contentController = contentController
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = navDelegate
         navDelegate.owner = self
@@ -120,8 +131,33 @@ final class BrowserTab {
             services: wallet
         )
 
+        let swarmRouter = SwarmRouter(
+            isConnected: { swarm.permissionStore.isConnected($0) },
+            listFeedsForOrigin: { origin in
+                swarm.feedStore.all(forOrigin: origin).map(\.asListFeedsRow)
+            },
+            nodeFailureReason: swarm.nodeFailureReason
+        )
+        self.swarmBridge = SwarmBridge(
+            tab: self,
+            router: swarmRouter,
+            contentController: contentController,
+            services: swarm
+        )
+
         observeWebView()
         installPullToRefresh()
+    }
+
+    /// Single coordination point for per-navigation preload reinstall.
+    /// `removeAllUserScripts()` is called once, then each bridge
+    /// reinstalls its own — preserves both `window.ethereum` and
+    /// `window.swarm` on every navigation, with the wallet bridge
+    /// regenerating its EIP-6963 UUID along the way.
+    fileprivate func reinstallPreloads() {
+        contentController.removeAllUserScripts()
+        walletBridge?.installUserScript()
+        swarmBridge?.installUserScript()
     }
 
     private func installPullToRefresh() {
@@ -320,9 +356,9 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
     weak var owner: BrowserTab?
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        // Fresh EIP-6963 UUID per page session — reinstall the preload.
+        // Fresh EIP-6963 UUID + idempotent swarm preload per page session.
         MainActor.assumeIsolated {
-            owner?.walletBridge?.reinstallForNewNavigation()
+            owner?.reinstallPreloads()
         }
     }
 

@@ -51,14 +51,6 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         notificationTokens.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
-    /// Regenerate the EIP-6963 UUID and reinstall the preload. `removeAllUserScripts`
-    /// also nukes anything else a sibling component might have added to this
-    /// content controller — today nothing does; revisit if that changes.
-    func reinstallForNewNavigation() {
-        contentController?.removeAllUserScripts()
-        installUserScript()
-    }
-
     // MARK: - Preload
 
     private static let iconDataURI: String = {
@@ -91,7 +83,9 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         return raw.replacingOccurrences(of: "<", with: "\\u003c")
     }()
 
-    private func installUserScript() {
+    /// Fresh EIP-6963 UUID per call. Driven from
+    /// `BrowserTab.reinstallPreloads`.
+    func installUserScript() {
         guard let controller = contentController else { return }
         let preamble = Self.preambleHead + UUID().uuidString.lowercased() + Self.preambleTail
         let script = WKUserScript(
