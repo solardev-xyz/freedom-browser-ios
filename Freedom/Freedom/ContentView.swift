@@ -428,9 +428,9 @@ struct ContentView: View {
     }
 
     /// Status-bar suffix for light-mode readiness — shows what bee is
-    /// busy with (chequebook deploy, syncing) so the user always knows
-    /// without having to open the node sheet. Nil means "nothing
-    /// noteworthy" → status bar stays compact.
+    /// busy with (starting, syncing) so the user always knows without
+    /// having to open the node sheet. Nil means "nothing noteworthy" →
+    /// status bar stays compact.
     private var readinessSuffix: String? {
         // When bee crashed, the prefix already says "failed". Don't
         // contradict it with "· starting" derived from BeeReadiness'
@@ -439,7 +439,7 @@ struct ContentView: View {
         switch beeReadiness.state {
         case .browsingOnly, .ready: return nil
         case .initializing: return "starting"
-        case .deployingChequebook: return "deploying chequebook"
+        case .startingUp: return "starting up"
         case .syncingPostage(let percent, _, _): return "syncing \(percent)%"
         }
     }

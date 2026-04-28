@@ -62,8 +62,7 @@ struct FreedomApp: App {
             self._swarm = State(wrappedValue: swarmInstance)
             self._beeReadiness = State(wrappedValue: BeeReadiness(
                 swarm: swarmInstance,
-                settings: settings,
-                walletRPC: registry.walletRPC
+                settings: settings
             ))
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
@@ -102,7 +101,7 @@ struct FreedomApp: App {
                 .environment(beeReadiness)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
-                .task { beeReadiness.start(intervalSeconds: 30) }
+                .task { beeReadiness.start() }
         }
     }
 

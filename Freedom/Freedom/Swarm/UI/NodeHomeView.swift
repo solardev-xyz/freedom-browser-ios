@@ -167,7 +167,7 @@ struct NodeHomeView: View {
         switch (settings.beeNodeMode, beeReadiness.state) {
         case (.ultraLight, _): return "Ultralight"
         case (.light, .ready): return "Light · ready"
-        case (.light, .deployingChequebook): return "Light · deploying chequebook"
+        case (.light, .startingUp): return "Light · starting up"
         case (.light, .syncingPostage(let percent, _, _)):
             return "Light · syncing \(percent)%"
         case (.light, .initializing): return "Light · starting"

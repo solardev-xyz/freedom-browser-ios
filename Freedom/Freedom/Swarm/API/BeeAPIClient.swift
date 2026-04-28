@@ -19,8 +19,9 @@ struct BeeAPIClient {
         self.session = session
     }
 
-    /// Most Bee endpoints return flat dicts; structured ones go through
-    /// `getJSONArray` or build their own decoder.
+    /// Bee endpoints return flat dicts. Wrapper objects (e.g. `/stamps`
+    /// returning `{stamps: [...]}`) are handled by the caller casting
+    /// the wrapped value out of the dict.
     func getJSON(_ path: String) async throws -> [String: Any] {
         let data = try await getData(path)
         guard let object = try? JSONSerialization.jsonObject(with: data),
@@ -28,16 +29,6 @@ struct BeeAPIClient {
             throw Error.malformedResponse
         }
         return dict
-    }
-
-    /// Used by `/stamps`.
-    func getJSONArray(_ path: String) async throws -> [Any] {
-        let data = try await getData(path)
-        guard let object = try? JSONSerialization.jsonObject(with: data),
-              let array = object as? [Any] else {
-            throw Error.malformedResponse
-        }
-        return array
     }
 
     private func getData(_ path: String) async throws -> Data {

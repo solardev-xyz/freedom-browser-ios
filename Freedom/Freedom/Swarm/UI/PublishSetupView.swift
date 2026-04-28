@@ -5,9 +5,13 @@ import web3
 
 /// Four-step checklist that takes a user from ultralight to a fully-synced
 /// light node ready to publish. Step 1 is the one-tx funder
-/// (`SwarmNodeFunder.fundNodeAndBuyStamp`); steps 2 and 3 are passive
-/// progress watching driven by `BeeReadiness`; step 4 is a placeholder
-/// pointing at WP3's stamp UI.
+/// (`SwarmNodeFunder.fundNodeAndBuyStamp`). Step 2 is passive watching of
+/// the live `/chainstate` percent during the bundled-snapshot ingest.
+/// Step 3 is the post-sync chequebook confirmation — bee's chequebook
+/// subsystem only comes online once the node is `.ready`, so this is the
+/// first moment we can verify the on-chain deploy from step 1 succeeded.
+/// Step 4 is the stamp purchase placeholder (WP3); auto-completes for
+/// returning users whose `/stamps` already shows entries.
 @MainActor
 struct PublishSetupView: View {
     @Environment(SwarmNode.self) private var swarm
@@ -46,8 +50,6 @@ struct PublishSetupView: View {
         .navigationTitle("Setup publishing")
         .navigationBarTitleDisplayMode(.inline)
         .task { await refreshAll() }
-        .task { beeReadiness.start(intervalSeconds: 5) }
-        .onDisappear { beeReadiness.start(intervalSeconds: 30) }
         .alert(
             "Funding failed",
             isPresented: Binding(
@@ -78,18 +80,9 @@ struct PublishSetupView: View {
     private var step2: some View {
         PublishStepRow(
             number: 2,
-            title: "Deploy chequebook",
-            summary: "Bee broadcasts an on-chain transaction to Gnosis. Typically 1-2 minutes.",
+            title: "Syncing light node",
+            summary: step2Copy,
             status: step2Status
-        ) { EmptyView() }
-    }
-
-    private var step3: some View {
-        PublishStepRow(
-            number: 3,
-            title: "Sync postage data",
-            summary: step3Copy,
-            status: step3Status
         ) {
             Group {
                 if case .syncingPostage(let percent, _, _) = beeReadiness.state {
@@ -100,11 +93,20 @@ struct PublishSetupView: View {
         }
     }
 
+    private var step3: some View {
+        PublishStepRow(
+            number: 3,
+            title: "Chequebook deployed",
+            summary: step3Copy,
+            status: step3Status
+        ) { EmptyView() }
+    }
+
     private var step4: some View {
         PublishStepRow(
             number: 4,
             title: "Buy your first stamp",
-            summary: "Postage stamps are how Bee pays the network for storage. Stamp purchase coming in the next update.",
+            summary: step4Copy,
             status: step4Status
         ) { EmptyView() }
     }
@@ -118,25 +120,44 @@ struct PublishSetupView: View {
         return "One transaction from your main wallet swaps xDAI for xBZZ and forwards a small amount of xDAI to your Bee node for chequebook deploy gas."
     }
 
-    private var step3Copy: String {
+    private var step2Copy: String {
         if case .syncingPostage(let percent, let lastSynced, let head) = beeReadiness.state {
             if head > 0 {
-                return "\(percent)% · block \(lastSynced.formatted()) of \(head.formatted()). Sync resumes after app restart — feel free to close."
+                return "\(percent)% · block \(lastSynced.formatted()) of \(head.formatted())"
             }
-            return "Block \(lastSynced.formatted()). Sync resumes after app restart — feel free to close."
+            return "Block \(lastSynced.formatted())"
         }
-        return "Bee downloads historical batch data from Gnosis. Up to ~20 minutes on a fresh node — you can close the app."
+        if case .startingUp = beeReadiness.state {
+            return "Connecting to Gnosis…"
+        }
+        return "Bee catches up to the chain. Takes a few minutes — please keep the app open."
     }
 
-    /// Where the user currently is in the four-step funnel. Computed once
-    /// from (mode, readiness); each `stepNStatus` is a comparison against
-    /// this ordinal — keeps the four step rows in lock-step instead of
-    /// each running its own switch (and getting a case wrong).
+    private var step3Copy: String {
+        if let addr = beeReadiness.chequebookAddress {
+            return "Chequebook \(addr.shortenedHex())"
+        }
+        // Reached `.ready` but the one-shot address fetch failed —
+        // chequebook is deployed (bee wouldn't be ready otherwise),
+        // we just couldn't display it. Don't show the pending copy.
+        if step3Status == .completed { return "Chequebook deployed." }
+        return "Confirms once your light node has finished syncing."
+    }
+
+    private var step4Copy: String {
+        if step4Status == .completed {
+            return "Done. Your node already has a postage stamp."
+        }
+        return "Postage stamps are how Bee pays the network for storage. Stamp purchase coming in the next update."
+    }
+
+    /// Where the user currently is in the funnel. Step 3 (chequebook
+    /// confirmed) auto-completes the moment we hit `.stamp`, so it
+    /// doesn't get its own phase ordinal.
     private enum Phase: Int, Comparable {
         case fund        // step 1 active
-        case deploy      // step 2 active (waiting)
-        case sync        // step 3 active (waiting + progress)
-        case stamp       // step 4 active (placeholder for WP3)
+        case sync        // step 2 active (passive watching, % from /chainstate)
+        case stamp       // step 4 active — also flips step 3 to .completed
 
         static func < (lhs: Phase, rhs: Phase) -> Bool {
             lhs.rawValue < rhs.rawValue
@@ -146,8 +167,7 @@ struct PublishSetupView: View {
     private var phase: Phase {
         if settings.beeNodeMode == .ultraLight { return .fund }
         switch beeReadiness.state {
-        case .browsingOnly, .initializing, .deployingChequebook: return .deploy
-        case .syncingPostage: return .sync
+        case .browsingOnly, .initializing, .startingUp, .syncingPostage: return .sync
         case .ready: return .stamp
         }
     }
@@ -159,13 +179,17 @@ struct PublishSetupView: View {
     }
 
     private var step1Status: PublishStepStatus { status(at: .fund, waitingWhenActive: false) }
-    private var step2Status: PublishStepStatus { status(at: .deploy) }
-    private var step3Status: PublishStepStatus { status(at: .sync) }
+    private var step2Status: PublishStepStatus { status(at: .sync) }
+    private var step3Status: PublishStepStatus {
+        // Auto-completes on .ready (`/chequebook/address` is the first
+        // post-sync verifiable signal that step 1's tx succeeded).
+        phase >= .stamp ? .completed : .pending
+    }
     private var step4Status: PublishStepStatus {
-        // WP3 will turn step 4 into `.active` once stamps land. Today it's
-        // permanently `.pending` even when sync is done — there's no UI
-        // behind it yet, so .pending communicates "not your turn yet".
-        .pending
+        // Stays pending without UI behind it (WP3). Auto-completes for
+        // returning users with stamps from a prior session.
+        if phase >= .stamp && beeReadiness.hasStamps { return .completed }
+        return .pending
     }
 
     // MARK: - Step 1 body (active state)
