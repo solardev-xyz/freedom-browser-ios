@@ -30,7 +30,7 @@ struct FreedomApp: App {
             let container = try ModelContainer(
                 for: TabRecord.self, HistoryEntry.self, Bookmark.self, Favicon.self,
                 DappPermission.self, AutoApproveRule.self,
-                SwarmPermission.self, SwarmFeedRecord.self
+                SwarmPermission.self, SwarmFeedRecord.self, SwarmFeedIdentity.self
             )
             self.modelContainer = container
             let history = HistoryStore(context: container.mainContext)

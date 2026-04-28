@@ -5,7 +5,9 @@ import SwiftData
 /// `OriginIdentity.key`. Separate model from `DappPermission` because the
 /// two surfaces sit at different trust tiers (wallet exposes account
 /// signatures; swarm exposes node bandwidth + storage) and persist
-/// independently.
+/// independently. Feed identity (mode + per-origin publisher key index)
+/// lives on `SwarmFeedIdentity` instead — that survives revocation; this
+/// row doesn't.
 @Model
 final class SwarmPermission {
     @Attribute(.unique) var origin: String
@@ -13,10 +15,6 @@ final class SwarmPermission {
     var lastUsedAt: Date
     var autoApprovePublish: Bool
     var autoApproveFeeds: Bool
-    /// `"app-scoped"` or `"bee-wallet"`. Picked at the first feed grant
-    /// and immutable thereafter — flipping it would orphan existing
-    /// feeds (the topic + signing key are derived from this choice).
-    var identityMode: String
 
     init(origin: String, connectedAt: Date = .now) {
         self.origin = origin
@@ -24,6 +22,5 @@ final class SwarmPermission {
         self.lastUsedAt = connectedAt
         self.autoApprovePublish = false
         self.autoApproveFeeds = false
-        self.identityMode = "app-scoped"
     }
 }

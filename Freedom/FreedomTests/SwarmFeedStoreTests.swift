@@ -9,7 +9,10 @@ final class SwarmFeedStoreTests: XCTestCase {
 
     override func setUp() async throws {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        container = try ModelContainer(for: SwarmFeedRecord.self, configurations: config)
+        container = try ModelContainer(
+            for: SwarmFeedRecord.self, SwarmFeedIdentity.self,
+            configurations: config
+        )
         store = SwarmFeedStore(context: container.mainContext)
     }
 
@@ -94,6 +97,127 @@ final class SwarmFeedStoreTests: XCTestCase {
         let row = record.asListFeedsRow
         XCTAssertEqual(row["lastUpdated"] as? Int, 2_000)
         XCTAssertEqual(row["lastReference"] as? String, String(repeating: "e", count: 64))
+    }
+
+    // MARK: - Writers (WP6.1)
+
+    func testUpsertCreatesAndIsIdempotent() {
+        let topic = String(repeating: "a", count: 64)
+        let manifest = String(repeating: "b", count: 64)
+        let owner = "0x1111111111111111111111111111111111111111"
+        store.upsert(origin: "foo.eth", name: "posts",
+                     topic: topic, owner: owner, manifestReference: manifest)
+        store.upsert(origin: "foo.eth", name: "posts",
+                     topic: topic, owner: owner, manifestReference: manifest)
+        // SWIP "createFeed is idempotent" — re-creating the same
+        // (origin, name) must not produce a duplicate row.
+        XCTAssertEqual(store.all(forOrigin: "foo.eth").count, 1)
+    }
+
+    func testUpdateReferencePopulatesPointerFields() throws {
+        store.upsert(
+            origin: "foo.eth", name: "posts",
+            topic: String(repeating: "a", count: 64),
+            owner: "0x1111111111111111111111111111111111111111",
+            manifestReference: String(repeating: "b", count: 64)
+        )
+        let newRef = String(repeating: "c", count: 64)
+        store.updateReference(origin: "foo.eth", name: "posts", reference: newRef)
+        let record = try XCTUnwrap(store.lookup(origin: "foo.eth", name: "posts"))
+        XCTAssertEqual(record.lastReference, newRef)
+        XCTAssertNotNil(record.lastUpdatedAt)
+    }
+
+    func testUpdateReferenceOnUnknownFeedIsNoOp() {
+        store.updateReference(
+            origin: "foo.eth", name: "ghost",
+            reference: String(repeating: "c", count: 64)
+        )
+        // No row created, no crash.
+        XCTAssertEqual(store.all(forOrigin: "foo.eth").count, 0)
+    }
+
+    // MARK: - Feed identity
+
+    func testFeedIdentityRoundtrip() throws {
+        XCTAssertNil(store.feedIdentity(origin: "foo.eth"))
+        store.setFeedIdentity(
+            origin: "foo.eth", identityMode: .appScoped, publisherKeyIndex: 0
+        )
+        let identity = try XCTUnwrap(store.feedIdentity(origin: "foo.eth"))
+        XCTAssertEqual(identity.identityMode, .appScoped)
+        XCTAssertEqual(identity.publisherKeyIndex, 0)
+    }
+
+    func testFeedIdentityIsImmutableAfterFirstSet() throws {
+        store.setFeedIdentity(
+            origin: "foo.eth", identityMode: .appScoped, publisherKeyIndex: 0
+        )
+        // Per SWIP §8.6, identity mode is immutable per origin once
+        // chosen — flipping it would orphan existing feeds. Subsequent
+        // calls must be no-ops.
+        store.setFeedIdentity(
+            origin: "foo.eth", identityMode: .beeWallet, publisherKeyIndex: nil
+        )
+        let identity = try XCTUnwrap(store.feedIdentity(origin: "foo.eth"))
+        XCTAssertEqual(identity.identityMode, .appScoped)
+        XCTAssertEqual(identity.publisherKeyIndex, 0)
+    }
+
+    func testFeedIdentityScopedPerOrigin() throws {
+        store.setFeedIdentity(
+            origin: "foo.eth", identityMode: .appScoped, publisherKeyIndex: 0
+        )
+        store.setFeedIdentity(
+            origin: "bar.eth", identityMode: .beeWallet, publisherKeyIndex: nil
+        )
+        XCTAssertEqual(store.feedIdentity(origin: "foo.eth")?.identityMode, .appScoped)
+        XCTAssertEqual(store.feedIdentity(origin: "bar.eth")?.identityMode, .beeWallet)
+        XCTAssertNil(store.feedIdentity(origin: "bar.eth")?.publisherKeyIndex)
+    }
+
+    // MARK: - nextPublisherKeyIndex
+
+    func testNextPublisherKeyIndexEmptyStoreYieldsZero() {
+        XCTAssertEqual(store.nextPublisherKeyIndex(), 0)
+    }
+
+    func testNextPublisherKeyIndexMonotonicAcrossAppScopedOrigins() {
+        XCTAssertEqual(store.nextPublisherKeyIndex(), 0)
+        store.setFeedIdentity(origin: "a.eth", identityMode: .appScoped,
+                              publisherKeyIndex: 0)
+        XCTAssertEqual(store.nextPublisherKeyIndex(), 1)
+        store.setFeedIdentity(origin: "b.eth", identityMode: .appScoped,
+                              publisherKeyIndex: 1)
+        XCTAssertEqual(store.nextPublisherKeyIndex(), 2)
+        store.setFeedIdentity(origin: "c.eth", identityMode: .appScoped,
+                              publisherKeyIndex: 2)
+        XCTAssertEqual(store.nextPublisherKeyIndex(), 3)
+    }
+
+    func testNextPublisherKeyIndexSkipsBeeWalletOrigins() {
+        // bee-wallet rows have publisherKeyIndex == nil and must not
+        // perturb the allocator's max+1.
+        store.setFeedIdentity(origin: "wallet.eth", identityMode: .beeWallet,
+                              publisherKeyIndex: nil)
+        XCTAssertEqual(store.nextPublisherKeyIndex(), 0)
+        store.setFeedIdentity(origin: "a.eth", identityMode: .appScoped,
+                              publisherKeyIndex: 0)
+        XCTAssertEqual(store.nextPublisherKeyIndex(), 1)
+        store.setFeedIdentity(origin: "wallet2.eth", identityMode: .beeWallet,
+                              publisherKeyIndex: nil)
+        XCTAssertEqual(store.nextPublisherKeyIndex(), 1)
+    }
+
+    func testNextPublisherKeyIndexRespectsExistingMaxIndex() {
+        // Multi-origin user re-launching the app continues from the
+        // existing max, not restart at 0.
+        for i in 0...5 {
+            store.setFeedIdentity(origin: "origin\(i).eth",
+                                  identityMode: .appScoped,
+                                  publisherKeyIndex: i)
+        }
+        XCTAssertEqual(store.nextPublisherKeyIndex(), 6)
     }
 
     func testListIsSortedByCreatedAt() throws {

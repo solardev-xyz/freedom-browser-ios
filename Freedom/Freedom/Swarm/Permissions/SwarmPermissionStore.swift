@@ -26,9 +26,10 @@ final class SwarmPermissionStore {
         self.connectedOrigins = Set(fetched.map(\.origin))
     }
 
-    /// An existing row keeps its auto-approve flags and identity mode;
-    /// `revoke` (which deletes the row) is the only path that resets
-    /// them. Re-granting after revoke therefore starts fresh.
+    /// An existing row keeps its auto-approve flags; `revoke` (which
+    /// deletes the row) is the only path that resets them. Re-granting
+    /// after revoke therefore starts fresh on connection-level state.
+    /// Feed identity (`SwarmFeedIdentity`) survives revoke separately.
     func grant(origin: String) {
         if let existing = fetch(origin: origin) {
             existing.lastUsedAt = .now
@@ -76,6 +77,22 @@ final class SwarmPermissionStore {
         guard let permission = fetch(origin: origin) else { return }
         guard permission.autoApprovePublish != enabled else { return }
         permission.autoApprovePublish = enabled
+        save()
+    }
+
+    /// Mirrors `isAutoApprovePublish` for the feed-write surface
+    /// (`swarm_createFeed` / `_updateFeed` / `_writeFeedEntry`). The
+    /// first-ever feed grant for an origin always shows the sheet
+    /// regardless — the bridge handler decides on grant existence
+    /// (`SwarmFeedIdentity` row presence), not on this flag.
+    func isAutoApproveFeeds(origin: String) -> Bool {
+        fetch(origin: origin)?.autoApproveFeeds ?? false
+    }
+
+    func setAutoApproveFeeds(origin: String, enabled: Bool) {
+        guard let permission = fetch(origin: origin) else { return }
+        guard permission.autoApproveFeeds != enabled else { return }
+        permission.autoApproveFeeds = enabled
         save()
     }
 

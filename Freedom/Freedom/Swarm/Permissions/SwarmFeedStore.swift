@@ -1,10 +1,13 @@
 import Foundation
 import Observation
+import OSLog
 import SwiftData
 
-/// Read-only access to `SwarmFeedRecord`. Backs `swarm_readFeedEntry`'s
-/// `name → owner` lookup and `swarm_listFeeds`. Writers
-/// (`swarm_createFeed`, `swarm_updateFeed`) land in WP6.
+private let log = Logger(subsystem: "com.browser.Freedom", category: "SwarmFeedStore")
+
+/// Manages `SwarmFeedRecord` (per-feed metadata) and `SwarmFeedIdentity`
+/// (per-origin publisher identity). Both survive permission revocation
+/// — re-granting an origin restores its prior feeds and signing key.
 @MainActor
 @Observable
 final class SwarmFeedStore {
@@ -13,6 +16,8 @@ final class SwarmFeedStore {
     init(context: ModelContext) {
         self.context = context
     }
+
+    // MARK: - Feed records
 
     func lookup(origin: String, name: String) -> SwarmFeedRecord? {
         let descriptor = FetchDescriptor<SwarmFeedRecord>(
@@ -29,5 +34,77 @@ final class SwarmFeedStore {
             sortBy: [SortDescriptor(\.createdAt)]
         )
         return (try? context.fetch(descriptor)) ?? []
+    }
+
+    /// Idempotent. SWIP §"swarm_createFeed": creating a feed that
+    /// already exists returns the existing metadata; this writer
+    /// honors that — re-creating the same `(origin, name)` is a no-op.
+    func upsert(
+        origin: String, name: String,
+        topic: String, owner: String, manifestReference: String
+    ) {
+        if lookup(origin: origin, name: name) != nil { return }
+        let record = SwarmFeedRecord(
+            origin: origin, name: name,
+            topic: topic, owner: owner, manifestReference: manifestReference
+        )
+        context.insert(record)
+        save()
+    }
+
+    /// Update the feed's mutable pointer after a `swarm_updateFeed`.
+    /// No-op for unknown `(origin, name)` — caller already verified
+    /// existence before issuing the bee write.
+    func updateReference(origin: String, name: String, reference: String) {
+        guard let record = lookup(origin: origin, name: name) else { return }
+        record.lastReference = reference
+        record.lastUpdatedAt = .now
+        save()
+    }
+
+    // MARK: - Feed identity
+
+    func feedIdentity(origin: String) -> SwarmFeedIdentity? {
+        let descriptor = FetchDescriptor<SwarmFeedIdentity>(
+            predicate: #Predicate { $0.origin == origin }
+        )
+        return try? context.fetch(descriptor).first
+    }
+
+    /// First-write-wins. SWIP §8.6 makes mode immutable — subsequent
+    /// calls for the same origin are no-ops, even with different args.
+    func setFeedIdentity(
+        origin: String,
+        identityMode: SwarmFeedIdentityMode,
+        publisherKeyIndex: Int?
+    ) {
+        if feedIdentity(origin: origin) != nil { return }
+        let identity = SwarmFeedIdentity(
+            origin: origin,
+            identityMode: identityMode,
+            publisherKeyIndex: publisherKeyIndex
+        )
+        context.insert(identity)
+        save()
+    }
+
+    /// Monotonically-increasing publisher key index for the next
+    /// `appScoped` origin. Derived as `max(existing index) + 1` —
+    /// `SwarmFeedIdentity` rows are never deleted, so max-derivation
+    /// never re-allocates a previously-used index. Caller persists the
+    /// returned index via `setFeedIdentity` in the same transaction.
+    func nextPublisherKeyIndex() -> Int {
+        let descriptor = FetchDescriptor<SwarmFeedIdentity>()
+        let rows = (try? context.fetch(descriptor)) ?? []
+        let max = rows.compactMap(\.publisherKeyIndex).max() ?? -1
+        return max + 1
+    }
+
+    private func save() {
+        do {
+            try context.save()
+        } catch {
+            log.error("SwarmFeedStore save failed: \(String(describing: error), privacy: .public)")
+        }
     }
 }

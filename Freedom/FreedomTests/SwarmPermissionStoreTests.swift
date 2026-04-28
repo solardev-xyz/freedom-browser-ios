@@ -58,4 +58,31 @@ final class SwarmPermissionStoreTests: XCTestCase {
         XCTAssertGreaterThan(updated, initial)
     }
 
+    // MARK: - autoApproveFeeds (WP6.1)
+
+    func testAutoApproveFeedsDefaultsToFalse() {
+        store.grant(origin: "foo.eth")
+        XCTAssertFalse(store.isAutoApproveFeeds(origin: "foo.eth"))
+    }
+
+    func testSetAutoApproveFeedsRoundtrip() {
+        store.grant(origin: "foo.eth")
+        store.setAutoApproveFeeds(origin: "foo.eth", enabled: true)
+        XCTAssertTrue(store.isAutoApproveFeeds(origin: "foo.eth"))
+        store.setAutoApproveFeeds(origin: "foo.eth", enabled: false)
+        XCTAssertFalse(store.isAutoApproveFeeds(origin: "foo.eth"))
+    }
+
+    func testSetAutoApproveFeedsOnUnknownOriginIsNoOp() {
+        // No grant exists — must not crash, must not create a stub row.
+        store.setAutoApproveFeeds(origin: "ghost.eth", enabled: true)
+        XCTAssertFalse(store.isAutoApproveFeeds(origin: "ghost.eth"))
+    }
+
+    func testAutoApproveFlagsAreIndependent() {
+        store.grant(origin: "foo.eth")
+        store.setAutoApprovePublish(origin: "foo.eth", enabled: true)
+        XCTAssertTrue(store.isAutoApprovePublish(origin: "foo.eth"))
+        XCTAssertFalse(store.isAutoApproveFeeds(origin: "foo.eth"))
+    }
 }
