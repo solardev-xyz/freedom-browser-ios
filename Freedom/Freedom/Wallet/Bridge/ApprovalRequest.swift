@@ -116,10 +116,18 @@ struct SwitchChainDetails {
 /// its handler's local scope and uploads it after the user approves
 /// (or auto-approve fires). Only the user-visible summary lives here.
 struct SwarmPublishDetails: Equatable {
+    /// Total bytes the dapp wants to upload (data payload, or sum of
+    /// all file `bytes` fields in files mode).
     let sizeBytes: Int
-    let contentType: String
-    /// Optional `name` query param the dapp passed; surfaced as a row
-    /// on the sheet when present so the user can match the publish to
-    /// what the dapp told them they were publishing.
-    let name: String?
+    let mode: Mode
+
+    /// Discriminates the two upload modes — `data` carries an
+    /// optional caller-supplied `name`; `files` carries the path
+    /// list and an optional `indexDocument`. Same `ApprovalRequest`
+    /// kind (`.swarmPublish`) covers both, per desktop's
+    /// `showSwarmPublishApproval(params)` shape.
+    enum Mode: Equatable {
+        case data(contentType: String, name: String?)
+        case files(paths: [String], indexDocument: String?)
+    }
 }

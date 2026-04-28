@@ -47,15 +47,41 @@ struct SwarmPublishSheet: View {
 
     private var detailsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ApprovalLabeledRow(label: "Size", value: Self.formatBytes(details.sizeBytes))
-            ApprovalLabeledRow(label: "Content type", value: details.contentType)
-            if let name = details.name {
-                ApprovalLabeledRow(label: "Name", value: name)
+            switch details.mode {
+            case .data(let contentType, let name):
+                ApprovalLabeledRow(label: "Size", value: Self.formatBytes(details.sizeBytes))
+                ApprovalLabeledRow(label: "Content type", value: contentType)
+                if let name {
+                    ApprovalLabeledRow(label: "Name", value: name)
+                }
+            case .files(let paths, let indexDocument):
+                ApprovalLabeledRow(
+                    label: "Files",
+                    value: "\(paths.count) file\(paths.count == 1 ? "" : "s")"
+                )
+                ApprovalLabeledRow(label: "Size", value: Self.formatBytes(details.sizeBytes))
+                if let indexDocument {
+                    ApprovalLabeledRow(label: "Index", value: indexDocument)
+                }
+                // Long single paths get middle-truncated rather than
+                // overflowing the row width.
+                ApprovalLabeledRow(label: "Paths", value: Self.previewPaths(paths))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
         .padding()
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// First three paths joined by ", ", plus a "…and N more" suffix
+    /// when the dapp uploads more than three. Matches desktop's
+    /// publish-sheet preview line.
+    private static func previewPaths(_ paths: [String]) -> String {
+        let head = paths.prefix(3).joined(separator: ", ")
+        let extra = paths.count > 3 ? " …and \(paths.count - 3) more" : ""
+        return head + extra
     }
 
     private var autoApproveToggle: some View {

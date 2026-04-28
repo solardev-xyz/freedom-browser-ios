@@ -100,6 +100,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         case "swarm_publishData":
             await handlePublishData(id: id, origin: origin, params: params)
             return
+        case "swarm_publishFiles":
+            await handlePublishFiles(id: id, origin: origin, params: params)
+            return
         default:
             break
         }
@@ -112,24 +115,47 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
+    // MARK: - Approval-flow guards
+
+    /// `true` iff the origin is on the wallet allowlist and no other
+    /// swarm approval is currently parked. Mirrors
+    /// `EthereumBridge.assertEligibleAndFree` (different pending slot).
+    /// Replies with the appropriate error and returns `false` otherwise.
+    private func assertEligibleAndFree(id: Int, origin: OriginIdentity) -> Bool {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        guard origin.isEligibleForWallet else {
+            replyError(id: id, code: Code.unauthorized,
+                       message: "Origin not permitted.")
+            return false
+        }
+        guard tab?.pendingSwarmApproval == nil else {
+            replyError(id: id, code: Code.resourceUnavailable,
+                       message: "Another approval is already pending.")
+            return false
+        }
+        return true
+    }
+
+    /// `true` iff the origin has previously been granted a swarm
+    /// connection via `swarm_requestAccess`. Replies with `4100
+    /// not-connected` and returns `false` otherwise.
+    private func requireConnectedOrigin(id: Int, origin: OriginIdentity) -> Bool {
+        guard services.permissionStore.isConnected(origin.key) else {
+            replyError(
+                id: id,
+                code: SwarmRouter.ErrorPayload.Code.unauthorized,
+                message: "Connect first — \(origin.displayString) isn't authorized.",
+                reason: SwarmRouter.ErrorPayload.Reason.notConnected
+            )
+            return false
+        }
+        return true
+    }
+
     // MARK: - swarm_requestAccess
 
     private func handleRequestAccess(id: Int, origin: OriginIdentity) async {
-        // Same allowlist as the wallet bridge — see `OriginIdentity`.
-        guard origin.isEligibleForWallet else {
-            return replyError(
-                id: id,
-                code: SwarmRouter.ErrorPayload.Code.unauthorized,
-                message: "Origin not permitted."
-            )
-        }
-        guard tab?.pendingSwarmApproval == nil else {
-            return replyError(
-                id: id,
-                code: SwarmRouter.ErrorPayload.Code.resourceUnavailable,
-                message: "Another approval is already pending."
-            )
-        }
+        guard assertEligibleAndFree(id: id, origin: origin) else { return }
 
         if services.permissionStore.isConnected(origin.key) {
             services.permissionStore.touchLastUsed(origin: origin.key)
@@ -190,21 +216,8 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         let Code = SwarmRouter.ErrorPayload.Code.self
         let Reason = SwarmRouter.ErrorPayload.Reason.self
 
-        guard origin.isEligibleForWallet else {
-            return replyError(id: id, code: Code.unauthorized,
-                              message: "Origin not permitted.")
-        }
-        guard services.permissionStore.isConnected(origin.key) else {
-            return replyError(
-                id: id, code: Code.unauthorized,
-                message: "Connect first — \(origin.displayString) isn't authorized.",
-                reason: Reason.notConnected
-            )
-        }
-        guard tab?.pendingSwarmApproval == nil else {
-            return replyError(id: id, code: Code.resourceUnavailable,
-                              message: "Another approval is already pending.")
-        }
+        guard assertEligibleAndFree(id: id, origin: origin),
+              requireConnectedOrigin(id: id, origin: origin) else { return }
 
         let parsed: ParsedPublishData
         do {
@@ -251,8 +264,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                 origin: origin,
                 kind: .swarmPublish(SwarmPublishDetails(
                     sizeBytes: parsed.data.count,
-                    contentType: parsed.contentType,
-                    name: parsed.name
+                    mode: .data(contentType: parsed.contentType, name: parsed.name)
                 ))
             )
         }
@@ -325,6 +337,242 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         let nameRaw = params["name"] as? String
         let name = (nameRaw?.isEmpty ?? true) ? nil : nameRaw
         return ParsedPublishData(data: payload, contentType: contentType, name: name)
+    }
+
+    // MARK: - swarm_publishFiles
+
+    private struct ParsedPublishFiles {
+        let entries: [TarBuilder.Entry]
+        let totalBytes: Int
+        let indexDocument: String?
+    }
+
+    /// Same shape as `handlePublishData` — same eligibility / connection
+    /// / capability gates, same approval flow, same upload path. The
+    /// only differences are param shape (files array, not a single
+    /// payload) and that the body sent to bee is a USTAR tar built by
+    /// `TarBuilder` rather than the raw bytes.
+    private func handlePublishFiles(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        let Reason = SwarmRouter.ErrorPayload.Reason.self
+
+        guard assertEligibleAndFree(id: id, origin: origin),
+              requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        let parsed: ParsedPublishFiles
+        do {
+            parsed = try Self.parsePublishFilesParams(params)
+        } catch let SwarmRouter.RouterError.invalidParams(reason, message) {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: message, reason: reason)
+        } catch {
+            return replyError(id: id, code: Code.internalError,
+                              message: "\(error)")
+        }
+
+        let caps = router.capabilities(origin: origin)
+        if !caps.canPublish {
+            let reason = caps.reason ?? Reason.nodeNotReady
+            return replyError(id: id, code: Code.nodeUnavailable,
+                              message: "Node not ready: \(reason)",
+                              reason: reason)
+        }
+
+        guard let batch = StampService.selectBestBatch(
+            forBytes: parsed.totalBytes,
+            in: services.currentStamps()
+        ) else {
+            return replyError(
+                id: id, code: Code.nodeUnavailable,
+                message: "No usable stamp with sufficient capacity.",
+                reason: Reason.noUsableStamps
+            )
+        }
+
+        let tarBytes: Data
+        do {
+            tarBytes = try TarBuilder.build(entries: parsed.entries)
+        } catch TarBuilder.Error.pathTooLong(let path) {
+            return replyError(
+                id: id, code: Code.invalidParams,
+                message: "path exceeds 100-char USTAR limit: \(path)"
+            )
+        } catch {
+            return replyError(id: id, code: Code.internalError,
+                              message: "tar build failed: \(error)")
+        }
+
+        let decision: ApprovalRequest.Decision
+        if services.permissionStore.isAutoApprovePublish(origin: origin.key) {
+            decision = .approved
+        } else {
+            decision = await parkAndAwait(
+                origin: origin,
+                kind: .swarmPublish(SwarmPublishDetails(
+                    sizeBytes: parsed.totalBytes,
+                    mode: .files(
+                        paths: parsed.entries.map(\.path),
+                        indexDocument: parsed.indexDocument
+                    )
+                ))
+            )
+        }
+
+        switch decision {
+        case .denied:
+            replyError(id: id, code: Code.userRejected,
+                       message: "User rejected the request.")
+        case .approved:
+            do {
+                let result = try await services.publishService.publishFiles(
+                    tarBytes,
+                    indexDocument: parsed.indexDocument,
+                    batchID: batch.batchID
+                )
+                services.permissionStore.touchLastUsed(origin: origin.key)
+                reply(id: id, result: [
+                    "reference": result.reference,
+                    "bzzUrl": "bzz://\(result.reference)",
+                    "tagUid": result.tagUid as Any? ?? NSNull(),
+                ])
+            } catch SwarmPublishService.PublishError.unreachable {
+                replyError(id: id, code: Code.nodeUnavailable,
+                           message: "Bee unreachable.",
+                           reason: Reason.nodeStopped)
+            } catch {
+                replyError(id: id, code: Code.internalError,
+                           message: "Publish failed: \(error)")
+            }
+        }
+    }
+
+    /// SWIP §"swarm_publishFiles" Params: `files: [{path, bytes,
+    /// contentType?}]`, optional `indexDocument`. Per-file `bytes` is
+    /// always a base64 string here — the JS preload's `__toBase64`
+    /// wrapper normalizes `Uint8Array`/`ArrayBuffer` before postMessage
+    /// so the native side has a consistent shape regardless of the
+    /// dapp's input form. `contentType` is accepted but ignored at
+    /// upload time (bee-js's `uploadFilesFromDirectory` infers MIME
+    /// from extensions; we follow that — desktop has the same
+    /// limitation).
+    private static func parsePublishFilesParams(
+        _ params: [String: Any]
+    ) throws -> ParsedPublishFiles {
+        guard let filesRaw = params["files"] as? [[String: Any]],
+              !filesRaw.isEmpty else {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil,
+                message: "files must be a non-empty array."
+            )
+        }
+        let limits = SwarmCapabilities.Limits.defaults
+        if filesRaw.count > limits.maxFileCount {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: SwarmRouter.ErrorPayload.Reason.payloadTooLarge,
+                message: "file count exceeds \(limits.maxFileCount)."
+            )
+        }
+        var seenPaths = Set<String>()
+        var entries: [TarBuilder.Entry] = []
+        var totalBytes = 0
+        for (i, fileRaw) in filesRaw.enumerated() {
+            guard let path = fileRaw["path"] as? String else {
+                throw SwarmRouter.RouterError.invalidParams(
+                    reason: nil,
+                    message: "files[\(i)].path must be a string."
+                )
+            }
+            try validateVirtualPath(path, index: i)
+            guard seenPaths.insert(path).inserted else {
+                throw SwarmRouter.RouterError.invalidParams(
+                    reason: nil,
+                    message: "Duplicate path: \(path)"
+                )
+            }
+            guard let base64 = fileRaw["bytes"] as? String,
+                  let bytes = Data(base64Encoded: base64) else {
+                throw SwarmRouter.RouterError.invalidParams(
+                    reason: nil,
+                    message: "files[\(i)].bytes must be a base64-encoded string."
+                )
+            }
+            totalBytes += bytes.count
+            entries.append(TarBuilder.Entry(path: path, bytes: bytes))
+        }
+        if totalBytes > limits.maxFilesBytes {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: SwarmRouter.ErrorPayload.Reason.payloadTooLarge,
+                message: "Total size exceeds \(limits.maxFilesBytes) bytes."
+            )
+        }
+        let indexDocument = (params["indexDocument"] as? String).flatMap {
+            $0.isEmpty ? nil : $0
+        }
+        if let indexDocument, !seenPaths.contains(indexDocument) {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil,
+                message: "indexDocument must match an existing file path."
+            )
+        }
+        return ParsedPublishFiles(
+            entries: entries, totalBytes: totalBytes, indexDocument: indexDocument
+        )
+    }
+
+    /// SWIP §"Path validation rules" — applies before tar-build so the
+    /// bridge can return `-32602` with a clear message instead of bee
+    /// rejecting the upload mid-stream. The 100-char cap matches USTAR
+    /// (no PAX); SWIP allows up to 256, tracked as a divergence.
+    private static func validateVirtualPath(_ path: String, index: Int) throws {
+        if path.isEmpty {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil, message: "files[\(index)].path is empty."
+            )
+        }
+        // USTAR's 100 is a *byte* limit on the header field; multi-byte
+        // UTF-8 chars count toward it. `String.count` (Characters) would
+        // miss the difference and let through paths that silently
+        // truncate inside `TarBuilder.header`.
+        if path.utf8.count > 100 {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil,
+                message: "files[\(index)].path exceeds 100-byte USTAR limit."
+            )
+        }
+        if path.contains("\\") {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil,
+                message: "files[\(index)].path: backslashes not allowed."
+            )
+        }
+        if path.hasPrefix("/") {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil,
+                message: "files[\(index)].path: leading slash not allowed."
+            )
+        }
+        for scalar in path.unicodeScalars where scalar.value < 32 {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil,
+                message: "files[\(index)].path: control chars not allowed."
+            )
+        }
+        for segment in path.split(separator: "/", omittingEmptySubsequences: false) {
+            if segment.isEmpty {
+                throw SwarmRouter.RouterError.invalidParams(
+                    reason: nil,
+                    message: "files[\(index)].path: empty segment."
+                )
+            }
+            if segment == "." || segment == ".." {
+                throw SwarmRouter.RouterError.invalidParams(
+                    reason: nil,
+                    message: "files[\(index)].path: '.' / '..' not allowed."
+                )
+            }
+        }
     }
 
     // MARK: - Reply path

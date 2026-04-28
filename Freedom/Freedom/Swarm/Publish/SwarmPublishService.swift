@@ -53,6 +53,13 @@ struct SwarmPublishService {
     /// Bee `POST /bzz` for a single payload. Returns the 64-char
     /// reference + optional tag UID; throws `PublishError` for the
     /// bridge to translate into a SWIP wire-format error.
+    ///
+    /// `Swarm-Pin: true` is mandatory per SWIP §"swarm_publishData
+    /// behavior" — without it, bee may garbage-collect the chunks.
+    /// `Swarm-Deferred-Upload: true` makes bee return immediately
+    /// with the reference + a tag UID and dispatch to the network
+    /// asynchronously (otherwise the response blocks until every
+    /// chunk is sent — slower, and bee may not return a tag at all).
     func publishData(
         _ data: Data,
         contentType: String,
@@ -61,12 +68,48 @@ struct SwarmPublishService {
     ) async throws -> UploadResult {
         var query: [String: String] = [:]
         if let name, !name.isEmpty { query["name"] = name }
-        let headers: [String: String] = ["Swarm-Postage-Batch-Id": batchID]
+        return try await postUpload(
+            body: data, contentType: contentType,
+            extraHeaders: [:], query: query, batchID: batchID
+        )
+    }
+
+    /// Bee `POST /bzz` for a USTAR tar archive. `Swarm-Collection: true`
+    /// tells bee to parse the tar and emit a manifest pointing at each
+    /// entry; `Swarm-Index-Document: <path>` (when set) marks the
+    /// default file served from the manifest's root URL.
+    func publishFiles(
+        _ tarBytes: Data,
+        indexDocument: String?,
+        batchID: String
+    ) async throws -> UploadResult {
+        var headers: [String: String] = ["Swarm-Collection": "true"]
+        if let indexDocument {
+            headers["Swarm-Index-Document"] = indexDocument
+        }
+        return try await postUpload(
+            body: tarBytes, contentType: "application/x-tar",
+            extraHeaders: headers, query: [:], batchID: batchID
+        )
+    }
+
+    private func postUpload(
+        body: Data, contentType: String,
+        extraHeaders: [String: String],
+        query: [String: String],
+        batchID: String
+    ) async throws -> UploadResult {
+        var headers: [String: String] = [
+            "Swarm-Postage-Batch-Id": batchID,
+            "Swarm-Pin": "true",
+            "Swarm-Deferred-Upload": "true",
+        ]
+        headers.merge(extraHeaders) { _, new in new }
         let responseData: Data
         let responseHeaders: [String: String]
         do {
             (responseData, responseHeaders) = try await upload(
-                "/bzz", data, contentType, headers, query
+                "/bzz", body, contentType, headers, query
             )
         } catch BeeAPIClient.Error.notRunning {
             throw PublishError.unreachable

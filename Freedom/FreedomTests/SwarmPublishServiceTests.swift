@@ -34,7 +34,7 @@ final class SwarmPublishServiceTests: XCTestCase {
 
     // MARK: - Request shape
 
-    func testPublishDataPostsToBzzWithBatchHeader() async throws {
+    func testPublishDataPostsToBzzWithRequiredHeaders() async throws {
         successResponse(reference: "abc", tag: "42")
         let svc = makeService()
         let result = try await svc.publishData(
@@ -48,6 +48,11 @@ final class SwarmPublishServiceTests: XCTestCase {
         XCTAssertEqual(lastRequest?.path, "/bzz")
         XCTAssertEqual(lastRequest?.contentType, "text/plain")
         XCTAssertEqual(lastRequest?.headers["Swarm-Postage-Batch-Id"], "batch1")
+        // SWIP-required pin (without it bee may GC chunks) + deferred
+        // upload (without it bee blocks until sync + may not return a
+        // tag UID).
+        XCTAssertEqual(lastRequest?.headers["Swarm-Pin"], "true")
+        XCTAssertEqual(lastRequest?.headers["Swarm-Deferred-Upload"], "true")
         XCTAssertEqual(lastRequest?.body, Data("hello".utf8))
     }
 
@@ -143,6 +148,51 @@ final class SwarmPublishServiceTests: XCTestCase {
             )
             XCTFail("expected malformedResponse")
         } catch SwarmPublishService.PublishError.malformedResponse {
+            // expected
+        } catch {
+            XCTFail("unexpected: \(error)")
+        }
+    }
+
+    // MARK: - publishFiles
+
+    func testPublishFilesPostsTarWithCollectionHeaders() async throws {
+        successResponse(reference: "ref", tag: "7")
+        let tar = Data("fake-tar-bytes".utf8)
+        let result = try await makeService().publishFiles(
+            tar, indexDocument: "index.html", batchID: "batch1"
+        )
+        XCTAssertEqual(result.reference, "ref")
+        XCTAssertEqual(result.tagUid, 7)
+        XCTAssertEqual(lastRequest?.path, "/bzz")
+        XCTAssertEqual(lastRequest?.contentType, "application/x-tar")
+        XCTAssertEqual(lastRequest?.body, tar)
+        XCTAssertEqual(lastRequest?.headers["Swarm-Postage-Batch-Id"], "batch1")
+        XCTAssertEqual(lastRequest?.headers["Swarm-Collection"], "true")
+        XCTAssertEqual(lastRequest?.headers["Swarm-Index-Document"], "index.html")
+        XCTAssertEqual(lastRequest?.headers["Swarm-Pin"], "true")
+        XCTAssertEqual(lastRequest?.headers["Swarm-Deferred-Upload"], "true")
+    }
+
+    func testPublishFilesOmitsIndexDocumentHeaderWhenNil() async throws {
+        successResponse(reference: "ref")
+        _ = try await makeService().publishFiles(
+            Data(), indexDocument: nil, batchID: "b"
+        )
+        XCTAssertNil(lastRequest?.headers["Swarm-Index-Document"])
+        // Collection header still set — bee uses it to distinguish
+        // tar-mode from raw-blob-mode regardless of indexDocument.
+        XCTAssertEqual(lastRequest?.headers["Swarm-Collection"], "true")
+    }
+
+    func testPublishFilesMapsBeeNotRunningToUnreachable() async {
+        nextResult = .failure(BeeAPIClient.Error.notRunning)
+        do {
+            _ = try await makeService().publishFiles(
+                Data(), indexDocument: nil, batchID: "b"
+            )
+            XCTFail("expected unreachable")
+        } catch SwarmPublishService.PublishError.unreachable {
             // expected
         } catch {
             XCTFail("unexpected: \(error)")
