@@ -136,7 +136,26 @@ final class BrowserTab {
             listFeedsForOrigin: { origin in
                 swarm.feedStore.all(forOrigin: origin).map(\.asListFeedsRow)
             },
-            nodeFailureReason: swarm.nodeFailureReason
+            nodeFailureReason: swarm.nodeFailureReason,
+            feedOwner: { origin, name in
+                swarm.feedStore.lookup(origin: origin, name: name)?.owner
+            },
+            readFeed: { owner, topic, index in
+                do {
+                    let result = try await swarm.bee.getFeedPayload(
+                        owner: owner, topic: topic, index: index
+                    )
+                    return SwarmRouter.FeedRead(
+                        payload: result.payload,
+                        index: result.index,
+                        nextIndex: result.nextIndex
+                    )
+                } catch BeeAPIClient.Error.notFound {
+                    throw SwarmRouter.FeedReadError.notFound
+                } catch BeeAPIClient.Error.notRunning {
+                    throw SwarmRouter.FeedReadError.unreachable
+                }
+            }
         )
         self.swarmBridge = SwarmBridge(
             tab: self,

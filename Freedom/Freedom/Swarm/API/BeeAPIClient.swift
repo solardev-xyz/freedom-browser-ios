@@ -24,8 +24,39 @@ struct BeeAPIClient {
     /// returning `{stamps: [...]}`) are handled by the caller casting
     /// the wrapped value out of the dict.
     func getJSON(_ path: String) async throws -> [String: Any] {
-        let data = try await sendData(path: path, method: "GET", timeout: 60)
+        let (data, _) = try await sendData(path: path, method: "GET", timeout: 60)
         return try Self.parseDict(data)
+    }
+
+    /// `GET /feeds/{owner}/{topic}` with optional `?index=...`. Returns
+    /// the SOC payload bytes plus the bee-supplied feed-index headers
+    /// (16-char hex; `Swarm-Feed-Index-Next` only present on
+    /// latest-update reads, never on a specific-index read). 404 maps to
+    /// `Error.notFound`; `cannotConnectToHost` etc. propagate as
+    /// `Error.notRunning` — both are translated to SWIP wire reasons by
+    /// the router.
+    func getFeedPayload(
+        owner: String, topic: String, index: UInt64? = nil
+    ) async throws -> FeedReadResult {
+        let path = "/feeds/\(owner)/\(topic)"
+        // Bee encodes the FeedIndex (`bytes(8)`) as 16-char zero-padded
+        // lowercase hex. `%016x` produces exactly that.
+        let query: [String: String] = index.map { ["index": String(format: "%016x", $0)] } ?? [:]
+        let (data, headers) = try await sendData(
+            path: path, query: query, method: "GET", timeout: 60
+        )
+        guard let indexHex = headers["swarm-feed-index"],
+              let parsedIndex = UInt64(indexHex, radix: 16) else {
+            throw Error.malformedResponse
+        }
+        let nextIndex = headers["swarm-feed-index-next"].flatMap { UInt64($0, radix: 16) }
+        return FeedReadResult(payload: data, index: parsedIndex, nextIndex: nextIndex)
+    }
+
+    struct FeedReadResult: Equatable {
+        let payload: Data
+        let index: UInt64
+        let nextIndex: UInt64?
     }
 
     /// `POST` with no body, used for both path-encoded operations
@@ -38,18 +69,22 @@ struct BeeAPIClient {
         query: [String: String] = [:],
         timeout: TimeInterval = 300
     ) async throws -> [String: Any] {
-        let data = try await sendData(
+        let (data, _) = try await sendData(
             path: path, query: query, method: "POST", timeout: timeout
         )
         return try Self.parseDict(data)
     }
 
+    /// Returns response data plus headers (lowercased keys for case-
+    /// insensitive lookup). Header access is needed by `getFeedPayload`
+    /// which carries indices in `Swarm-Feed-Index` / `…-Next`; JSON
+    /// callers ignore the second tuple value.
     private func sendData(
         path: String,
         query: [String: String] = [:],
         method: String,
         timeout: TimeInterval
-    ) async throws -> Data {
+    ) async throws -> (Data, [String: String]) {
         let baseWithPath = Self.baseURL.appendingPathComponent(path)
         guard var components = URLComponents(url: baseWithPath, resolvingAgainstBaseURL: false) else {
             throw Error.malformedResponse
@@ -66,7 +101,14 @@ struct BeeAPIClient {
                 throw Error.malformedResponse
             }
             switch http.statusCode {
-            case 200..<300: return data
+            case 200..<300:
+                var headers: [String: String] = [:]
+                for (key, value) in http.allHeaderFields {
+                    if let k = key as? String, let v = value as? String {
+                        headers[k.lowercased()] = v
+                    }
+                }
+                return (data, headers)
             case 404: throw Error.notFound
             case 500..<600: throw Error.transient(http.statusCode)
             default: throw Error.malformedResponse

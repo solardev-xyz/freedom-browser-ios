@@ -28,7 +28,9 @@ final class SwarmRouterTests: XCTestCase {
         return SwarmRouter(
             isConnected: { connected.contains($0) },
             listFeedsForOrigin: { feeds[$0] ?? [] },
-            nodeFailureReason: { reason }
+            nodeFailureReason: { reason },
+            feedOwner: { _, _ in nil },
+            readFeed: { _, _, _ in throw SwarmRouter.FeedReadError.notFound }
         )
     }
 
@@ -117,7 +119,6 @@ final class SwarmRouterTests: XCTestCase {
         let methods = [
             "swarm_publishData", "swarm_publishFiles", "swarm_getUploadStatus",
             "swarm_createFeed", "swarm_updateFeed", "swarm_writeFeedEntry",
-            "swarm_readFeedEntry",
         ]
         for method in methods {
             do {

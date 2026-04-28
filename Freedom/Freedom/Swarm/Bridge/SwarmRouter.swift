@@ -69,6 +69,29 @@ final class SwarmRouter {
         }
     }
 
+    /// Result shape passed back from the bee feed-read closure. Mirrors
+    /// `BeeAPIClient.FeedReadResult` but kept router-local so the router
+    /// has no transport dependency.
+    struct FeedRead: Equatable {
+        let payload: Data
+        let index: UInt64
+        let nextIndex: UInt64?
+    }
+
+    /// Sentinel errors the `readFeed` closure surfaces. The router
+    /// translates them into SWIP wire reasons; transport / parse
+    /// failures the closure can't classify propagate as `internalError`.
+    enum FeedReadError: Swift.Error, Equatable {
+        /// Bee returned 404 — `feed_empty` (no index) or `entry_not_found`
+        /// (specific index) depending on the read shape.
+        case notFound
+        /// Bee's HTTP API isn't responding — `node-stopped`. Lets us skip
+        /// a separate `/node` reachability probe (the actual `/feeds`
+        /// call surfaces this directly) and dodges the probe-then-call
+        /// race where state changes between the two.
+        case unreachable
+    }
+
     /// Hot-path connection check — `SwarmPermissionStore.isConnected` in
     /// production. Closure rather than a store reference so the router
     /// has read-only access to exactly what it needs (no `grant`/`revoke`
@@ -84,15 +107,28 @@ final class SwarmRouter {
     /// `SwarmNode.status`, `SettingsStore.beeNodeMode`,
     /// `BeeReadiness.state`, and `StampService.hasUsableStamps`.
     private let nodeFailureReason: @MainActor () -> String?
+    /// Stored owner address for `(origin, name)`, from the local feed
+    /// store. Returns `nil` when no record exists — `swarm_readFeedEntry`
+    /// translates that to `feed_not_found`.
+    private let feedOwner: @MainActor (String, String) -> String?
+    /// `(owner, topic, index?)` → bee `GET /feeds/{owner}/{topic}`.
+    /// Throws `FeedReadError.notFound` for bee 404,
+    /// `FeedReadError.unreachable` when bee's HTTP API can't be reached,
+    /// anything else for transport / parse failures.
+    private let readFeed: @MainActor (String, String, UInt64?) async throws -> FeedRead
 
     init(
         isConnected: @escaping @MainActor (String) -> Bool,
         listFeedsForOrigin: @escaping @MainActor (String) -> [[String: Any]],
-        nodeFailureReason: @escaping @MainActor () -> String?
+        nodeFailureReason: @escaping @MainActor () -> String?,
+        feedOwner: @escaping @MainActor (String, String) -> String?,
+        readFeed: @escaping @MainActor (String, String, UInt64?) async throws -> FeedRead
     ) {
         self.isConnected = isConnected
         self.listFeedsForOrigin = listFeedsForOrigin
         self.nodeFailureReason = nodeFailureReason
+        self.feedOwner = feedOwner
+        self.readFeed = readFeed
     }
 
     func handle(method: String, params: [String: Any], origin: OriginIdentity) async throws -> Any {
@@ -101,6 +137,8 @@ final class SwarmRouter {
             return capabilities(origin: origin).asJSONDict
         case "swarm_listFeeds":
             return listFeeds(origin: origin)
+        case "swarm_readFeedEntry":
+            return try await readFeedEntry(params: params, origin: origin)
         default:
             throw RouterError.unsupportedMethod(method: method)
         }
@@ -127,6 +165,143 @@ final class SwarmRouter {
     /// existence to other dapps.
     func listFeeds(origin: OriginIdentity) -> [[String: Any]] {
         listFeedsForOrigin(origin.key)
+    }
+
+    /// SWIP §"swarm_readFeedEntry". No permission gate (feeds are public
+    /// data; the same lookup is available from any bee gateway), the
+    /// only pre-flight is HTTP reachability. Param shape:
+    /// - exactly one of `topic` (raw 64-hex) or `name` (string for
+    ///   `keccak256(origin + "/" + name)` derivation)
+    /// - `owner` is required with `topic`; with `name` it falls back to
+    ///   the local feed-store record, and is required if no record
+    /// - optional `index` — non-negative integer
+    func readFeedEntry(params: [String: Any], origin: OriginIdentity) async throws -> [String: Any] {
+        // `as? String` collapses both "key absent" and "key present with
+        // NSNull" to nil — exactly what we want; the dapp can't
+        // distinguish those two on the JSON-RPC wire either.
+        let topicString = params["topic"] as? String
+        let nameString = params["name"] as? String
+        if topicString != nil && nameString != nil {
+            throw RouterError.invalidParams(
+                reason: nil,
+                message: "Provide either topic or name, not both."
+            )
+        }
+
+        let resolvedIndex: UInt64?
+        switch params["index"] {
+        case nil, is NSNull:
+            resolvedIndex = nil
+        case let int as Int where int >= 0:
+            resolvedIndex = UInt64(int)
+        default:
+            throw RouterError.invalidParams(
+                reason: nil,
+                message: "index must be a non-negative integer."
+            )
+        }
+
+        let topicHex: String
+        let ownerHex: String
+
+        if let topic = topicString {
+            guard Self.isValidTopicHex(topic) else {
+                throw RouterError.invalidParams(
+                    reason: ErrorPayload.Reason.invalidTopic,
+                    message: "topic must be a 64-character hex string."
+                )
+            }
+            topicHex = topic.lowercased()
+            guard let owner = (params["owner"] as? String)
+                .flatMap(Self.normalizeOwnerHex) else {
+                throw RouterError.invalidParams(
+                    reason: ErrorPayload.Reason.invalidOwner,
+                    message: "owner is required when using topic."
+                )
+            }
+            ownerHex = owner
+        } else if let name = nameString {
+            guard Self.isValidFeedName(name) else {
+                throw RouterError.invalidParams(
+                    reason: ErrorPayload.Reason.invalidFeedName,
+                    message: "name must be 1-64 chars, no '/', no control chars."
+                )
+            }
+            topicHex = FeedTopic.derive(origin: origin.key, name: name)
+            if let providedOwner = params["owner"] as? String {
+                guard let normalized = Self.normalizeOwnerHex(providedOwner) else {
+                    throw RouterError.invalidParams(
+                        reason: ErrorPayload.Reason.invalidOwner,
+                        message: "owner must be a 40-character hex address."
+                    )
+                }
+                ownerHex = normalized
+            } else if let stored = feedOwner(origin.key, name).flatMap(Self.normalizeOwnerHex) {
+                ownerHex = stored
+            } else {
+                throw RouterError.invalidParams(
+                    reason: ErrorPayload.Reason.feedNotFound,
+                    message: "Feed not found locally — pass owner explicitly."
+                )
+            }
+        } else {
+            throw RouterError.invalidParams(
+                reason: nil,
+                message: "Either topic or name is required."
+            )
+        }
+
+        let result: FeedRead
+        do {
+            result = try await readFeed(ownerHex, topicHex, resolvedIndex)
+        } catch FeedReadError.unreachable {
+            throw RouterError.nodeUnavailable(reason: ErrorPayload.Reason.nodeStopped)
+        } catch FeedReadError.notFound {
+            if let index = resolvedIndex {
+                throw RouterError.invalidParams(
+                    reason: ErrorPayload.Reason.entryNotFound,
+                    message: "No entry at index \(index)."
+                )
+            }
+            throw RouterError.invalidParams(
+                reason: ErrorPayload.Reason.feedEmpty,
+                message: "Feed has no entries."
+            )
+        } catch {
+            throw RouterError.internalError(message: "\(error)")
+        }
+
+        // SWIP §"swarm_readFeedEntry" Result — `nextIndex` is only
+        // populated when reading the latest entry. `NSNull` (rather
+        // than dropping the key) so JSCore surfaces a real `null` to
+        // the dapp instead of `undefined`.
+        var dict: [String: Any] = [
+            "data": result.payload.base64EncodedString(),
+            "encoding": "base64",
+            "index": Int(result.index),
+            "nextIndex": NSNull(),
+        ]
+        if resolvedIndex == nil, let next = result.nextIndex {
+            dict["nextIndex"] = Int(next)
+        }
+        return dict
+    }
+
+    private static func isValidTopicHex(_ s: String) -> Bool {
+        s.count == 64 && s.allSatisfy(\.isHexDigit)
+    }
+
+    /// Returns lowercased 40-char hex, no `0x` prefix. `nil` for any
+    /// input that doesn't match the canonical Ethereum-address shape.
+    private static func normalizeOwnerHex(_ raw: String) -> String? {
+        let prefixed = Hex.prefixed(raw)
+        guard Hex.isAddressShape(prefixed) else { return nil }
+        return Hex.stripped(prefixed).lowercased()
+    }
+
+    private static func isValidFeedName(_ name: String) -> Bool {
+        guard !name.isEmpty, name.count <= 64, !name.contains("/") else { return false }
+        return name.unicodeScalars.allSatisfy { $0.value >= 32 }
     }
 
     /// Map `RouterError` to the wire-format envelope. Bridge calls this
