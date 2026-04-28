@@ -33,6 +33,11 @@ struct ApprovalRequest: Identifiable {
         /// shape as `.connect` but a different sheet (no account
         /// derivation, no chain), and a different permission store.
         case swarmConnect
+        /// `swarm_publishData` (and `swarm_publishFiles` at WP5.3) —
+        /// per-call approval to upload N bytes through the user's bee
+        /// node. Auto-approve toggle on the sheet writes back to
+        /// `SwarmPermissionStore.autoApprovePublish`.
+        case swarmPublish(SwarmPublishDetails)
     }
 
     enum Decision {
@@ -104,4 +109,17 @@ struct AutoApproveOffer: Equatable {
 struct SwitchChainDetails {
     let from: Chain
     let to: Chain
+}
+
+/// Per-call metadata for `swarm_publishData` and `swarm_publishFiles`.
+/// The raw bytes never reach the sheet — the bridge keeps the data in
+/// its handler's local scope and uploads it after the user approves
+/// (or auto-approve fires). Only the user-visible summary lives here.
+struct SwarmPublishDetails: Equatable {
+    let sizeBytes: Int
+    let contentType: String
+    /// Optional `name` query param the dapp passed; surfaced as a row
+    /// on the sheet when present so the user can match the publish to
+    /// what the dapp told them they were publishing.
+    let name: String?
 }

@@ -61,6 +61,24 @@ final class SwarmPermissionStore {
         save()
     }
 
+    /// Read by the bridge before parking a `swarm_publishData` /
+    /// `swarm_publishFiles` approval — `true` skips the sheet. Single
+    /// SwiftData fetch per publish call; not cached because publish
+    /// frequency is bounded by user clicks.
+    func isAutoApprovePublish(origin: String) -> Bool {
+        fetch(origin: origin)?.autoApprovePublish ?? false
+    }
+
+    /// Set by the publish sheet's auto-approve toggle when the user
+    /// approves with the toggle on. No-op if the origin has no grant
+    /// yet — auto-approve only meaningful for connected origins.
+    func setAutoApprovePublish(origin: String, enabled: Bool) {
+        guard let permission = fetch(origin: origin) else { return }
+        guard permission.autoApprovePublish != enabled else { return }
+        permission.autoApprovePublish = enabled
+        save()
+    }
+
     private func fetch(origin: String) -> SwarmPermission? {
         let descriptor = FetchDescriptor<SwarmPermission>(
             predicate: #Predicate { $0.origin == origin }

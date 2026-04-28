@@ -119,7 +119,7 @@ struct ContentView: View {
                 ApproveTxSheet(approval: approval, details: details)
             case .switchChain(let details):
                 ApproveChainSwitchSheet(approval: approval, details: details)
-            case .swarmConnect:
+            case .swarmConnect, .swarmPublish:
                 EmptyView()  // routed via swarmApprovalBinding's sheet
             }
         }
@@ -127,6 +127,8 @@ struct ContentView: View {
             switch approval.kind {
             case .swarmConnect:
                 SwarmConnectSheet(approval: approval)
+            case .swarmPublish(let details):
+                SwarmPublishSheet(approval: approval, details: details)
             case .connect, .personalSign, .typedData,
                  .sendTransaction, .switchChain:
                 EmptyView()  // routed via approvalBinding's sheet

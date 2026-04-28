@@ -98,11 +98,14 @@ struct FreedomApp: App {
                 }
                 return nil
             }
+            let swarmBee = BeeAPIClient()
             let swarmServices = SwarmServices(
                 permissionStore: swarmPermissions,
                 feedStore: feedStore,
-                bee: BeeAPIClient(),
-                nodeFailureReason: nodeFailureReason
+                bee: swarmBee,
+                publishService: SwarmPublishService.live(bee: swarmBee),
+                nodeFailureReason: nodeFailureReason,
+                currentStamps: { stamps.stamps }
             )
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
