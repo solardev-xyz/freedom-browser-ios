@@ -15,6 +15,10 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
     /// need it, without breaking older clients that only knew
     /// `"publish"`.
     private static let supportedCapabilities = ["publish"]
+    /// SWIP §"swarm_getUploadStatus": "Tag not found or not owned by
+    /// this origin." Used both when the tag was never recorded under
+    /// this origin and when bee evicted it; same desktop wording.
+    private static let tagNotOwnedMessage = "Tag not found or not owned by this origin."
 
     private weak var tab: BrowserTab?
     private let router: SwarmRouter
@@ -103,6 +107,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         case "swarm_publishFiles":
             await handlePublishFiles(id: id, origin: origin, params: params)
             return
+        case "swarm_getUploadStatus":
+            await handleGetUploadStatus(id: id, origin: origin, params: params)
+            return
         default:
             break
         }
@@ -134,6 +141,19 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             return false
         }
         return true
+    }
+
+    /// Bookkeeping after a `publishData` / `publishFiles` upload
+    /// returns successfully — touch `lastUsedAt` and (when bee returned
+    /// a tag) record `(tagUid, origin)` for the cross-origin defense in
+    /// `swarm_getUploadStatus`. With WP5.3's `Swarm-Deferred-Upload:
+    /// true` the tag is reliably present, but the optional check
+    /// stays for robustness.
+    private func recordPublishSuccess(tagUid: Int?, origin: OriginIdentity) {
+        services.permissionStore.touchLastUsed(origin: origin.key)
+        if let tagUid {
+            services.tagOwnership.record(tag: tagUid, origin: origin.key)
+        }
     }
 
     /// `true` iff the origin has previously been granted a swarm
@@ -281,7 +301,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                     name: parsed.name,
                     batchID: batch.batchID
                 )
-                services.permissionStore.touchLastUsed(origin: origin.key)
+                recordPublishSuccess(tagUid: result.tagUid, origin: origin)
                 reply(id: id, result: [
                     "reference": result.reference,
                     "bzzUrl": "bzz://\(result.reference)",
@@ -431,7 +451,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                     indexDocument: parsed.indexDocument,
                     batchID: batch.batchID
                 )
-                services.permissionStore.touchLastUsed(origin: origin.key)
+                recordPublishSuccess(tagUid: result.tagUid, origin: origin)
                 reply(id: id, result: [
                     "reference": result.reference,
                     "bzzUrl": "bzz://\(result.reference)",
@@ -573,6 +593,71 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                 )
             }
         }
+    }
+
+    // MARK: - swarm_getUploadStatus
+
+    /// SWIP §"swarm_getUploadStatus". Non-interactive (no approval),
+    /// but lives in the bridge anyway so the cross-origin scoping
+    /// check can read `tab`/`origin` and `services.tagOwnership`. The
+    /// SWIP requires `4100` for "tag not owned"; we conflate that
+    /// with "we forgot the tag" and "bee evicted the tag" into a
+    /// single error to match desktop's behavior.
+    private func handleGetUploadStatus(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+
+        guard origin.isEligibleForWallet else {
+            return replyError(id: id, code: Code.unauthorized,
+                              message: "Origin not permitted.")
+        }
+
+        guard let tagUid = BeeAPIClient.intFromAnyJSON(params["tagUid"]),
+              tagUid > 0 else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "tagUid must be a positive integer.")
+        }
+
+        guard services.tagOwnership.owner(of: tagUid) == origin.key else {
+            return replyError(id: id, code: Code.unauthorized,
+                              message: Self.tagNotOwnedMessage)
+        }
+
+        let tag: BeeAPIClient.TagResponse
+        do {
+            tag = try await services.bee.getTag(uid: tagUid)
+        } catch BeeAPIClient.Error.notFound {
+            // Bee evicted the tag — drop our record so the next call
+            // takes the unauthorized path on the in-memory check
+            // alone (saves the round-trip).
+            services.tagOwnership.forget(tag: tagUid)
+            return replyError(id: id, code: Code.unauthorized,
+                              message: Self.tagNotOwnedMessage)
+        } catch BeeAPIClient.Error.notRunning {
+            return replyError(
+                id: id, code: Code.nodeUnavailable,
+                message: "Bee unreachable.",
+                reason: SwarmRouter.ErrorPayload.Reason.nodeStopped
+            )
+        } catch {
+            return replyError(id: id, code: Code.internalError,
+                              message: "\(error)")
+        }
+
+        if tag.isDone {
+            services.tagOwnership.forget(tag: tagUid)
+        }
+        reply(id: id, result: [
+            "tagUid": tag.uid,
+            "split": tag.split,
+            "seen": tag.seen,
+            "stored": tag.stored,
+            "sent": tag.sent,
+            "synced": tag.synced,
+            "progress": tag.progressPercent,
+            "done": tag.isDone,
+        ])
     }
 
     // MARK: - Reply path

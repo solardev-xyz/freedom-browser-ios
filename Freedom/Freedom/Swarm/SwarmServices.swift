@@ -11,6 +11,12 @@ struct SwarmServices {
     let feedStore: SwarmFeedStore
     let bee: BeeAPIClient
     let publishService: SwarmPublishService
+    /// Tag ownership map for `swarm_getUploadStatus`'s cross-origin
+    /// defense — bridge records the `(tagUid, origin)` after every
+    /// successful publish, looks it up before forwarding the status
+    /// query to bee. One instance per app session; shared across all
+    /// `BrowserTab`s so cross-tab same-origin reads work.
+    let tagOwnership: TagOwnership
     /// Returns `nil` when bee is fully ready, or one of
     /// `SwarmRouter.ErrorPayload.Reason`'s node-side strings otherwise.
     /// Composed once in `FreedomApp.init` from the four observable

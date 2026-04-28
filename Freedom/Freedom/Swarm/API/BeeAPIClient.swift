@@ -59,6 +59,58 @@ struct BeeAPIClient {
         let nextIndex: UInt64?
     }
 
+    /// `GET /tags/{uid}` — bee's per-upload progress shape. The bridge
+    /// rejects 404 (and `notFound` propagates to the SWIP-required
+    /// `4100` response) before this typed parser runs, so a successful
+    /// return implies bee found the tag.
+    func getTag(uid: Int) async throws -> TagResponse {
+        let dict = try await getJSON("/tags/\(uid)")
+        guard let parsedUid = Self.intFromAnyJSON(dict["uid"]),
+              let split = Self.intFromAnyJSON(dict["split"]),
+              let seen = Self.intFromAnyJSON(dict["seen"]),
+              let stored = Self.intFromAnyJSON(dict["stored"]),
+              let sent = Self.intFromAnyJSON(dict["sent"]),
+              let synced = Self.intFromAnyJSON(dict["synced"]) else {
+            throw Error.malformedResponse
+        }
+        return TagResponse(
+            uid: parsedUid, split: split, seen: seen,
+            stored: stored, sent: sent, synced: synced
+        )
+    }
+
+    struct TagResponse: Equatable {
+        let uid: Int
+        /// Total chunks the upload split into. `0` is briefly visible
+        /// right after tag creation, before bee has chunked the payload —
+        /// the derived properties below guard for it.
+        let split: Int
+        /// Chunks bee has seen (i.e. received from the upload stream).
+        let seen: Int
+        /// Chunks stored locally on this bee node.
+        let stored: Int
+        /// Chunks dispatched onto the network. Bee can briefly report
+        /// `sent > split` if it counts retries; `progressPercent`
+        /// clamps at 100 so dapps' progress bars don't overshoot.
+        let sent: Int
+        /// Chunks confirmed synced (other peers acknowledged storage).
+        let synced: Int
+
+        /// SWIP §"swarm_getUploadStatus" `progress` — `sent / split * 100`,
+        /// clamped at `100`, `0` when bee hasn't chunked yet.
+        var progressPercent: Int {
+            guard split > 0 else { return 0 }
+            return min(100, Int(Double(sent) / Double(split) * 100))
+        }
+
+        /// SWIP §"swarm_getUploadStatus" `done` — `true` once every
+        /// chunk has been dispatched. The `split > 0` guard catches
+        /// the brief post-creation window where both fields are zero.
+        var isDone: Bool {
+            split > 0 && sent >= split
+        }
+    }
+
     /// `POST` with no body, used for both path-encoded operations
     /// (`/stamps/{amount}/{depth}`) and query-encoded ones
     /// (`/chequebook/deposit?amount=...`). Bee's chain-tx endpoints
