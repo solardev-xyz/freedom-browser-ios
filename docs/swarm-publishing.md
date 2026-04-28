@@ -2,6 +2,8 @@
 
 A sketch of the Swarm publishing surface for the iOS Freedom Browser: identity injection from the user's BIP-39 seed into the embedded Bee node, ultralight↔light upgrade, postage-stamp purchase + management, and the `window.swarm` provider for dapps. Parallel in spirit to the desktop browser's publishing surface (`/Users/florian/Git/freedom-dev/freedom-browser/src/main/swarm/` + `src/main/identity/`) but native throughout — no bee-js port, no Electron IPC, no JS-side key handling. This document is a starting point to iterate on, not a committed plan.
 
+> **Status (2026-04-28)**: WP1 (identity injection), WP2 (light-mode upgrade + one-tx funding), WP3 (stamp management) shipped on `feature/swarm-publishing`, plus the chequebook auto-top-up follow-on. WP4–6 (`window.swarm` bridge) not started. Several deviations from the original plan along the way — module layout (§4), readiness state model (§6.5), and the buy state machine (§7.3) all simplified during implementation. See §9 for the actual commit trail.
+
 > **Reading order**: read after [`wallet-architecture.md`](./wallet-architecture.md) — this assumes the BIP-39 vault, HD-derivation, and approval-sheet patterns from M5 are already in your head, and reuses them throughout. Cross-reference [`architecture.md`](./architecture.md) §3-5 for the SwarmKit / bee-lite-java pipeline (the embedded Bee node is the substrate every section here builds on). The desktop browser is the reference implementation — the SWIP draft `/Users/florian/Git/freedom-dev/SWIPs/SWIPs/swip-draft_provider_api.md` is the wire-format spec.
 
 ## 1. What publishing needs to do
@@ -78,61 +80,88 @@ Out of scope:
 
 ## 4. Module layout
 
-Target shape, alongside the existing `Wallet/` tree under `Freedom/Freedom/`. `✅` = shipped; unmarked = planned for the milestone shown.
+Actual shape (post-WP3) alongside the existing `Wallet/` tree under `Freedom/Freedom/`. `✅` = shipped; `🚧` = deferred / future WP; unmarked = WP4–6 planned.
 
 ```
 Freedom/
 ├── Wallet/                              ✅ (M5, see wallet-architecture.md)
-│   ├── Vault/HDKey.swift                ✅ adds publisherKey(originIndex:) at WP1
+│   ├── Vault/HDKey.swift                ✅ publisherKey(originIndex:) deferred to WP6
 │   └── Transactions/TransactionService.swift
-│                                        ✅ adds buildFundNode(...) at WP2
+│                                        ✅ Used as-is by funder via direct
+│                                            (to, value, data) tuple — no
+│                                            buildFundNode helper needed.
 └── Swarm/                               ── new tree at M6
     ├── Identity/
-    │   ├── BeeKeystore.swift            V3 JSON encoder (scrypt + AES-128-CTR)
-    │   ├── BeeIdentityInjector.swift    write keystore → wipe stale state → restart
-    │   └── BeeStateDirs.swift           filesystem layout + wipe rules
+    │   ├── BeeKeystore.swift            ✅ V3 JSON encoder (scrypt + AES-128-CTR)
+    │   ├── BeeIdentityInjector.swift    ✅ inject / revertToAnonymous / restartForMode
+    │   ├── BeeIdentityCoordinator.swift ✅ in-flight swap state machine + switchMode
+    │   │                                    (orchestration that the original plan
+    │   │                                    placed in BeeNodeController)
+    │   ├── BeeStateDirs.swift           ✅ filesystem layout + wipe rules
+    │   ├── BeePassword.swift            ✅ random 32-byte hex, Keychain-backed
+    │   └── BeeBootConfig.swift          ✅ password+mode → SwarmConfig builder
     ├── Node/
-    │   ├── BeeNodeMode.swift            .ultraLight | .light enum
-    │   ├── BeeNodeController.swift      mode toggle + restart orchestration
-    │   ├── BeeReadiness.swift           classifier port of swarm-readiness.js
-    │   └── BeePassword.swift            random 32-byte hex, Keychain-backed
+    │   ├── BeeNodeMode.swift            ✅ .ultraLight | .light enum
+    │   ├── BeeReadiness.swift           ✅ /chainstate-driven, see §6.5
+    │   └── BeeWalletInfo.swift          ✅ polls /wallet + /chequebook/balance
+    │                                       (replaces the planned BeeWalletCard
+    │                                       service-side; UI lives in NodeHomeView)
     ├── Funder/
-    │   ├── SwarmNodeFunder.swift        contract ABI (single method) + builder
-    │   └── FundNodeFlow.swift           UI orchestration (estimate → approve → broadcast)
+    │   ├── SwarmFunderConstants.swift   ✅ pinned addresses, decimals, slippage
+    │   ├── SwarmFunderQuote.swift       ✅ spot from sqrtPriceX96, expected/min BZZ
+    │   ├── SwarmFunderPool.swift        ✅ slot0() reader via WalletRPC
+    │   └── FundNodeBuilder.swift        ✅ hand-rolled ABI encoder for
+    │                                       fundNodeAndBuyStamp (selector 0x834aeb80)
     ├── API/
-    │   ├── BeeAPIClient.swift           URLSession wrapper, localhost:1633
-    │   └── BeeError.swift               typed errors (notFound, transient, etc.)
+    │   └── BeeAPIClient.swift           ✅ URLSession wrapper. GET + POST (with
+    │                                       optional query params for endpoints
+    │                                       like /chequebook/deposit?amount=…).
+    │                                       BeeError shaped as a typed enum inside
+    │                                       this file rather than a separate file.
     ├── Stamps/
-    │   ├── StampService.swift           list/buy/extend, state machine
-    │   ├── PostageBatch.swift           normalized model
-    │   └── StampUSDPricing.swift        cost estimation (Bee /stamps/cost)
-    ├── Bridge/
+    │   ├── StampService.swift           ✅ list/buy + chequebook auto-top-up
+    │   │                                    (see §7.5). State machine in §7.3.
+    │   ├── PostageBatch.swift           ✅ normalized model
+    │   ├── StampMath.swift              ✅ depth/amount/cost — replicates bee-js's
+    │   │                                    getDepthForSize + getAmountForDuration
+    │   │                                    (bee has no /stamps/cost endpoint
+    │   │                                    despite the original §7.3 plan)
+    │   └── StampUSDPricing.swift        🚧 deferred (UI shows xBZZ only)
+    ├── Bridge/                          (WP4)
     │   ├── SwarmBridge.swift            WKScriptMessageHandler, parallel to EthereumBridge
     │   ├── SwarmBridge.js               preload script, injects window.swarm
     │   ├── SwarmRouter.swift            10-method dispatch, parallel to RPCRouter
     │   └── SwarmErrorPayload.swift      4001 / 4100 / 4200 / 4900 / -32602 / -32603
-    ├── Permissions/
+    ├── Permissions/                     (WP4 / WP6)
     │   ├── SwarmPermission.swift        @Model: origin, autoApprovePublish, autoApproveFeeds
     │   ├── SwarmPermissionStore.swift   parallel to PermissionStore
     │   ├── SwarmFeedRecord.swift        @Model: origin, name, topic, owner, manifestRef, ...
     │   └── SwarmFeedStore.swift         @Query-friendly access
-    ├── Publish/
+    ├── Publish/                         (WP5)
     │   ├── SwarmPublishService.swift    bee.uploadFile / uploadFiles
     │   └── TagOwnership.swift           session-scoped [tagUid: origin]
-    ├── Feeds/
+    ├── Feeds/                           (WP6)
     │   ├── SwarmFeedService.swift       create/update/write/read with per-topic actor
     │   ├── FeedTopic.swift              keccak256(origin + "/" + name)
     │   └── PublisherKeyAllocator.swift  manages nextPublisherKeyIndex
     └── UI/
-        ├── BeeWalletCard.swift          xDAI/xBZZ on the wallet home (read-only)
-        ├── NodeModeView.swift           ultraLight / light toggle + funder CTA
-        ├── FundNodeReviewView.swift     1-tx funding approval (extends SendReview pattern)
-        ├── StampsView.swift             list + purchase form
-        ├── StampPurchaseView.swift      preset + custom flow
-        ├── StampExtendView.swift        duration + size extension
-        ├── SwarmConnectSheet.swift      window.swarm origin connect
-        ├── SwarmPublishSheet.swift      publish-data / publish-files approval
-        └── SwarmFeedAccessSheet.swift   feed grant + identity-mode picker
+        ├── NodeHomeView.swift           ✅ status + node wallet + chequebook
+        │                                    + stamps row + log link. Hosts the
+        │                                    inline mode toggle that the original
+        │                                    plan called NodeModeView.
+        ├── NodeLogView.swift            ✅ separate diagnostic surface
+        ├── PublishSetupView.swift       ✅ 4-step checklist (fund → sync →
+        │                                    chequebook deployed → buy stamp).
+        │                                    Hosts the funder UI inline that the
+        │                                    original plan split into FundNodeFlow
+        │                                    + FundNodeReviewView.
+        ├── PublishStepRow.swift         ✅ checklist row component
+        ├── StampsView.swift             ✅ list + empty state
+        ├── StampPurchaseView.swift      ✅ preset chips + cost + buy
+        ├── StampExtendView.swift        🚧 deferred — extend duration / size
+        ├── SwarmConnectSheet.swift      (WP4)
+        ├── SwarmPublishSheet.swift      (WP5)
+        └── SwarmFeedAccessSheet.swift   (WP6)
 ```
 
 Nothing here imports anything outside `Wallet/` and `SwarmKit` except what's already in `architecture.md`'s graph.
@@ -244,6 +273,15 @@ We **keep** the `bee-data/` parent directory, the `config.yaml` if any, and any 
 
 `BeeStateDirs.wipe()` is the single function that does this. It's idempotent (paths that don't exist are silently skipped).
 
+### 5.4.1 In-process restart and bee's leveldb LOCK (added during WP2 smoke)
+
+Stopping bee with `MobileStopNode` and immediately restarting it on the same `dataDir` initially failed with `init state store: resource temporarily unavailable` (the leveldb LOCK fcntl from the prior bee was still held). Two underlying bee bugs surfaced in sequence:
+
+1. `pkg/storage/cache/cache.go::Close()` purged the in-memory cache but never closed the wrapped LevelDB store.
+2. After fixing (1), the same shape was hit on Kademlia's metrics `shed.DB`, which `Kad.Close()` flushed but didn't close.
+
+Both were patched in [`flotob/bee@v2.7.0-freedom.2`](https://github.com/flotob/bee) and re-bundled as [`bee-lite-java@ios-v0.1.2`](https://github.com/solardev-xyz/bee-lite-java/releases/tag/ios-v0.1.2). `Packages/SwarmKit/Package.swift` pins this binary target. The originally-planned retry-with-backoff workaround in `restartForMode` has been removed — `shutdown()` now releases the LOCK synchronously and the next `start()` succeeds immediately.
+
 ### 5.5 Restart sequencing
 
 On vault create:
@@ -300,12 +338,11 @@ If the pinned URL goes flaky, the symptom is "the user's light node has connecti
 
 ### 6.3 Funding gate
 
-Mandatory. Light mode without funding produces a node that can't pay for chunk retrieval and silently fails — Bee's design, not ours. Gate uses two parallel checks:
+Mandatory. Light mode without funding produces a node that can't pay for chunk retrieval and silently fails — Bee's design, not ours.
 
-- **Chequebook check**: `GET 127.0.0.1:1633/chequebook/address` returns 200 with `chequebookAddress != "0x0000…"` → already deployed.
-- **xDAI balance check**: `eth_getBalance(beeWalletAddress)` against Gnosis RPC. > 0 means funded for chequebook deploy.
+**Shipped gate**: `settings.beeNodeMode` itself, plus the publish-setup checklist at `PublishSetupView`. Users in `.ultraLight` see the `publishSetupCTA` banner on the node sheet and can only enter `.light` by going through the funder (step 1 of the checklist). The dual chequebook+xDAI check the original plan called for didn't ship — by the time the user is past step 1's tx confirmation, the chequebook deploy is in flight regardless of any client-side check, so an in-app "is this funded?" probe would just race bee's own state.
 
-Either one passing is sufficient to proceed. Both failing surfaces the funding flow (§6.4). Same logic as desktop `swarm-readiness.js:208-223`.
+The publish-setup banner stays visible until the user has a usable stamp (`StampService.hasUsableStamps == true`) — covers fresh-ultralight, mid-sync, and the light+ready+no-stamps gap, so the setup is "done" only when the user can actually publish.
 
 ### 6.4 One-tx funding via SwarmNodeFunder
 
@@ -336,32 +373,42 @@ We model it as a normal Ethereum send through the existing `TransactionService`:
 - `data = abi.encode(fundNodeAndBuyStamp(...))` — hand-encoded selector + ABI args, no new tooling
 - `chain = .gnosis`
 
-`TransactionService.buildFundNode(...)` returns the same `(to, value, data)` tuple shape as `buildSend`, so the existing prepare/quote/broadcast pipeline handles it without modification. The approval sheet uses a new `ApprovalRequest.Kind.fundBeeNode(amount: xdai, recipient: beeWallet)` variant with a custom review row layout ("Fund Bee node — gets ~X xBZZ + Y xDAI").
+**Shipped path**: `FundNodeBuilder.build(...)` returns a `(to, value, data)` tuple consumed directly by the existing `TransactionService.prepare → send → awaitConfirmation` pipeline — no `buildFundNode` helper on `TransactionService`, no new `ApprovalRequest.Kind.fundBeeNode`. The funder tx uses the standard `eth_sendTransaction` approval sheet; the funding context is communicated via `PublishSetupView`'s checklist + step-1 copy ("One transaction from your main wallet swaps xDAI for xBZZ and forwards a small amount of xDAI…").
 
-After the tx confirms:
+After the tx confirms (`PublishSetupView.fundAndUpgrade`):
 
-1. Persist `beeNodeMode = .light` in settings.
-2. Run the §5 restart sequence (now with `rpcEndpoint != nil`).
-3. Poll Bee `/readiness` until `ok: true` (chequebook deploys at this point — can take 30-60s).
-4. Poll `/stamps` until at least one usable batch *or* surface "no stamps yet — buy one to start publishing" (links to §7's stamp-purchase flow).
+1. `beeIdentity.switchMode(to: .light, swarm:)` → persists `beeNodeMode = .light` and runs the restart through `BeeIdentityInjector.restartForMode`.
+2. The restart blocks (gomobile-bound) for the duration of bee's full init — `swarm.status` flips to `.running` only at the end. `BeeReadiness` polls `/chainstate` during `.starting` to surface the live percent (see §6.5).
+3. The publish-setup checklist auto-advances through steps 2 → 3 → 4 as `BeeReadiness.state` and `StampService.hasUsableStamps` change.
 
-UI: `NodeModeView.swift` has the toggle. Tapping `.light` while not funded routes through `FundNodeReviewView.swift` → confirm → tx → restart → readiness wait → done. Tapping while already funded skips straight to restart.
+UI: the mode toggle lives inline in `NodeHomeView.statusCard.modeRow` (visible once `settings.hasCompletedPublishSetup` is true). The funder flow itself is `PublishSetupView` step 1, not a dedicated `NodeModeView` / `FundNodeReviewView` pair.
 
 ### 6.5 Readiness classification
 
-Single source of truth — port of desktop's `swarm-readiness.js`:
+`BeeReadiness` is the single source of truth for "what's the node busy with", driving the status-bar suffix in `ContentView` and the publish-setup checklist progression. The shipped state machine differs materially from the original sketch:
 
 ```swift
-enum ReadinessState {
-    case error(message: String)
-    case browsingOnly                        // ultralight, no funding, no chequebook
-    case initializing(detail: String)        // light start → readiness pending
-    case noUsableStamps                      // light + ready, but no stamps
-    case ready                               // light + ready + ≥1 stamp
+enum State: Equatable {
+    case browsingOnly
+    case initializing                     // swarm.status not in {.starting, .running}
+    case startingUp                       // bee alive, /chainstate not yet reachable
+    case syncingPostage(percent: Int, lastSynced: Int, chainHead: Int)
+    case ready
 }
 ```
 
-Inputs: `beeStatus`, `desiredMode`, `actualMode`, `readiness` (from `/readiness`), `stamps`, `stampsKnown`. UI in `NodeModeView` switches off this single value. Polling intervals: `/health` 1s, `/readiness` 2s, `/stamps` 5s — all backed off after readiness reaches `.ready` to 30s.
+Notable shape changes:
+
+- **`noUsableStamps` was dropped from this enum.** Stamps are tracked separately in `StampService.hasUsableStamps`; consumers compose the two signals.
+- **Progress comes from `/chainstate`, not `/status`.** During the bundled-snapshot ingest (the bulk of the ~5 min wait), every other endpoint returns `503 "Node is syncing"`. `/chainstate` stays available the whole time and returns `{block, chainTip, …}` directly, giving us a smooth real-time percent (`block / chainTip`) without a separate Gnosis chain-head poll. This drops `walletRPC` as a `BeeReadiness` dependency and removes the 60s `cachedChainHead` cache the original plan needed.
+- **`/readiness` is the master gate.** Only when bee says `"ready"` do we transition to `.ready`; on that transition we also fetch `/chequebook/address` once and stash it for the publish-setup "Chequebook deployed" row.
+- **Adaptive polling**: 3s while light + not-ready, 30s once `.ready` (sticky). Replaces the per-endpoint cadences in the original plan. `StampService` polls separately (5s during a buy, 30s otherwise); `BeeWalletInfo` polls `/wallet` + `/chequebook/balance` at a flat 30s.
+- **`swarm.status == .starting` matters too.** `MobileStartNode` is a blocking gomobile call that doesn't return — so doesn't flip status to `.running` — until bee's full init completes (~5 min for a fresh light boot). Bee's HTTP server is up the whole time. The readiness loop polls during both `.starting` and `.running` so the percent is visible from the start.
+
+The publish-setup checklist in `PublishSetupView` reads `BeeReadiness.state` directly (no `NodeModeView` shipped):
+- step 2 = `.startingUp` or `.syncingPostage(N%)` → "Light · syncing N%"
+- step 3 (chequebook deployed) = auto-completes on `.ready`
+- step 4 (stamp) = pending until `.ready`, then active or completed depending on `StampService.hasUsableStamps`
 
 ## 7. Stamps
 
@@ -392,38 +439,65 @@ Field meanings + math match desktop `stamp-service.js:27-72`. Helper conversions
 
 ### 7.3 Purchase flow
 
-State machine in `StampService`:
+State machine in `StampService` (post-WP3 + `/simplify`):
 
 ```
 .idle
-    ↓ user picks preset (1GB/7d, 1GB/30d, 5GB/30d) or custom
+    ↓ user picks preset (Try it out / Small project / Standard) and taps Buy
 .estimating
-    ↓ GET /stamps/cost?depth=N&amount=M → bzz amount + xBZZ check
-.readyToBuy        (or .insufficientFunds — surfaces topup CTA)
-    ↓ user confirms
+    ↓ fetch /chainstate.currentPrice (cached 10s for preset toggling)
+    ↓ depth   = StampMath.depthForSize(bytes:)
+    ↓ amount  = StampMath.amountForDuration(seconds:, pricePerBlock:)
 .purchasing
-    ↓ POST /stamps/{amount}/{depth} → batchId
+    ↓ POST /stamps/{amount}/{depth} → batchID  (bee blocks until tx confirms,
+    ↓                                            5min timeout matching desktop)
 .waitingForUsable
-    ↓ poll GET /stamps every 5s, up to 120s
-.usable            (or .timedOut — show "still pending, check later")
+    ↓ poll GET /stamps every 5s; flips to .usable when batch.usable == true
+.usable
 ```
 
-Mirrors desktop `stamp-manager.js:23-31`. Presets cover 95% of users; "custom" surfaces depth + amount sliders for the 5%.
+Differences from the original sketch:
 
-### 7.4 Extension flows
+- **No `/stamps/cost` endpoint.** Bee does not expose one. We replicate bee-js's `getDepthForSize` + `getAmountForDuration` + `getStampCost` exactly in `StampMath.swift` (with the same effective-size breakpoint table and the `+1` safety margin), so iOS and desktop pay the same for the same preset. Golden-vector tests in `StampMathTests` pin the math.
+- **No `.readyToBuy` case.** It was implemented initially, then dropped during `/simplify` because it was set then synchronously overwritten before any UI tick — never observable.
+- **No `.insufficientFunds`** branch. A pre-check rejection would be a UX nicety; today the user sees the actual bee error if the wallet can't cover the buy. Worth revisiting later, deferred.
+- **No `.timedOut` branch.** The "waitingForUsable" timeout we'd guard against is a corner case (bee's batch takes longer than 120s to flip usable) that we haven't observed; can be added if it surfaces in real-world use.
+- **Custom-input form is deferred** — presets-only for v1 (see §10).
 
-Two endpoints, two UIs:
+Presets ([`StampService.swift`](../Freedom/Freedom/Swarm/Stamps/StampService.swift)) mirror desktop `stamp-manager.js:14-19` exactly:
+- Try it out — 1 GB / 7 days
+- Small project — 1 GB / 30 days *(default)*
+- Standard — 5 GB / 30 days
 
-- **Extend duration**: `PATCH /stamps/topup/{batchId}/{amount}` — adds amount to the existing batch, extending TTL. Presets: +7d, +30d, +90d.
-- **Extend size**: `PATCH /stamps/dilute/{batchId}/{depth}` — bumps depth, doubling capacity per increment. **Important Bee semantic**: depth is the new *absolute* depth, not an increment. Our UI shows size presets ("1GB → 5GB → 25GB") and computes depth deltas internally.
+### 7.4 Extension flows — 🚧 deferred
 
-Both require cost estimation (`/stamps/cost`) before confirm. UI is `StampExtendView.swift` with two tabs.
+Originally part of WP3, deferred in the actual ship. Cheap presets last 7-30 days; users won't hit expiry for weeks/months and the UI would compete for attention with the WP4-6 publishing payoff. Pick this back up when usage signals a need (or when a real user's batch gets close to expiry).
+
+When we do implement, the shape is straightforward — endpoints already exist:
+
+- **Extend duration**: `PATCH /stamps/topup/{batchId}/{amount}` — adds amount to the existing batch. Cost = `2^depth × additionalAmount`. Presets: +7d, +30d, +90d.
+- **Extend size**: `PATCH /stamps/dilute/{batchId}/{depth}` — bumps depth. **Bee semantic gotcha**: depth is the *absolute* new depth, not a delta. UI presets ("1 GB → 5 GB → 25 GB") compute the depth target via `StampMath.depthForSize`.
+
+`StampMath.costPlur(depth:amount:)` already gives us cost client-side, same as the buy flow — no new math needed. New file would be `StampExtendView.swift` with two tabs.
 
 ### 7.5 UI
 
-`StampsView.swift` — empty state ("No stamps yet — buy one to start publishing") if list is empty, else cards with usability badge / size / TTL / usage%. Tap a card → details + extend actions. "Buy stamp" CTA leads to `StampPurchaseView.swift`.
+`StampsView.swift` — empty state ("No stamps yet — buy one to start publishing") if list is empty, else cards with usability badge / size / TTL / usage%. "Buy stamp" CTA pushes `StampPurchaseView.swift`.
 
-Stamps surface lives under Wallet → Storage in the wallet sheet hierarchy. Visible only when `beeNodeMode == .light` (ultralight nodes don't pay for storage so the surface is irrelevant). Settings page has a "Manage storage" link too.
+Stamps surface lives under the **node sheet**, not "Wallet → Storage" as originally planned. A dedicated "Storage stamps" row in `NodeHomeView` pushes `StampsView`; the row is gated on `settings.hasCompletedPublishSetup` (same gate as the inline mode toggle). The publish-setup checklist also pushes `StampPurchaseView` from step 4 — single destination, two ways in.
+
+### 7.6 Chequebook auto-top-up
+
+Bee uses xBZZ in the chequebook to pay peers via SWAP for relaying content. With the chequebook at zero, peers won't actually serve published content — a hard prerequisite for the upcoming WP4–6 publish flow. After **every** successful stamp purchase, `StampService.topUpChequebookIfBelowFloor` runs:
+
+1. Read `/chequebook/balance.availableBalance`.
+2. If `available >= floor` (0.1 xBZZ in PLUR = `BigUInt(10).power(15)`) → no-op.
+3. Compute `shortfall = floor - available`.
+4. If node wallet xBZZ < shortfall → no-op (silent — the user can top up manually later when we add that surface).
+5. `POST /chequebook/deposit?amount={shortfall}` with the same 5-min timeout as the stamp-purchase POST.
+6. Kick `BeeWalletInfo.refresh()` so the node sheet's chequebook card snaps to the new balance instead of waiting for the next 30 s poll tick.
+
+Fires as a fire-and-forget `Task` so the buy state machine doesn't wait on the deposit's chain tx (~30 s on Gnosis). Mirrors desktop's `autoDepositChequebookIfEmpty` semantically, but with the stricter top-up-to-floor rule (desktop only deposits when chequebook is empty; we keep it at the floor across all subsequent buys).
 
 ## 8. The `window.swarm` bridge
 
@@ -509,16 +583,42 @@ Feed writes to the same topic must not race — concurrent writes both targeting
 
 ## 9. Work-package lineup
 
-Six WPs, one PR each. Order is load-bearing — each WP unblocks the next. Builds + tests + `/simplify` between every WP, smoke-test before commit.
+Originally six WPs, one PR each. WP1–3 shipped on `feature/swarm-publishing`. Builds + tests + `/simplify` between every WP, smoke-test before commit.
 
-- **WP1 — Bee identity injection (no UI changes for end user)**.
-  Add CryptoSwift to SwiftPM (single use: `Scrypt`). Add `HDKey.Path.publisherKey(originIndex:)`. New: `BeeKeystore` (~80 LoC), `BeeStateDirs`, `BeePassword`, `BeeIdentityInjector`. Wire into `VaultCreateView` / `VaultImportView` / wallet-wipe completion. Replace `FreedomApp.swift:102` hardcoded password. One-time migration on first launch after this WP ships: detect Keychain absence and wipe the existing bee data dir (the old `"freedom-default"` keystore is unreadable with the new random password). Tests: V3 keystore round-trip (encrypt→decrypt our own output), state-dir wipe is idempotent, same-mnemonic re-import is a no-op, BeePassword Keychain round-trip + wipe, integration round-trip (encrypt with our code, decrypt with Bee's Go scrypt path) if feasible. Estimated ~500-700 LoC + ~250 LoC tests.
+### Shipped (`feature/swarm-publishing`)
 
-- **WP2 — Light-mode upgrade with one-tx funding**.
-  New: `BeeNodeMode` setting, `BeeNodeController`, `BeeReadiness`, `SwarmNodeFunder` ABI binding, `FundNodeFlow`, `NodeModeView`, `FundNodeReviewView`. Extend `TransactionService` with `buildFundNode(...)`. Pinned Gnosis RPC. Tests: ABI encoding cross-checks against the deployed contract's known signature, readiness classifier, funding-gate logic, restart-with-rpcEndpoint sequencing. ~600-800 LoC.
+- **WP1 ✅ — Bee identity injection** (`a4877fb`).
+  Added CryptoSwift to SwiftPM for `Scrypt`. New: `BeeKeystore`, `BeeStateDirs`, `BeePassword`, `BeeIdentityInjector`. Wired into `VaultCreateView` / `VaultImportView` / wallet-wipe completion. Replaced `FreedomApp`'s hardcoded `"freedom-default"` password with the random per-install Keychain-backed one. Legacy migration on first launch detects Keychain absence and wipes the bee data dir. `HDKey.Path.publisherKey(originIndex:)` deferred to WP6 since it's only needed for feed signing.
 
-- **WP3 — Stamp purchase + management**.
-  New: `BeeAPIClient`, `BeeError`, `StampService`, `PostageBatch`, `StampsView`, `StampPurchaseView`, `StampExtendView`. UI surface under Wallet → Storage. Tests: model normalization, state-machine transitions, dilute depth-delta math. ~700-900 LoC.
+- **WP1.5 ✅ — Decouple wallet UX from Bee identity swap** (`797d526`).
+  In-flight refactor — `BeeIdentityCoordinator` runs the inject/revert/restart state machine in the background so the user sees the wallet land in ~1 s while bee restarts under the cover. Replaced what the original plan called `BeeNodeController`.
+
+- **WP1.6 ✅ — Node sheet** (`2a9de23`).
+  `NodeHomeView` plus the navigation stack hosting it. Status, wallet card, log preview, mode-toggle row.
+
+- **WP2 ✅ — Light-mode upgrade + one-tx funding** (`1e181ec`).
+  New: `BeeNodeMode`, `SwarmFunderConstants`/`Quote`/`Pool`, `FundNodeBuilder` (hand-rolled ABI for `fundNodeAndBuyStamp`, selector `0x834aeb80`), `BeeBootConfig`, `PublishSetupView` (4-step checklist hosting the funder UI inline rather than the planned `FundNodeFlow` + `FundNodeReviewView` split), `PublishStepRow`. The mode toggle moved into `NodeHomeView.statusCard.modeRow` rather than a separate `NodeModeView`.
+  Bumped `bee-lite-java` to `ios-v0.1.2` for the leveldb LOCK fix (see §5.4.1).
+
+- **(refactor) ✅ — `restartForMode` retry loop drop** (`1e626d7`).
+  After the bee statestore + Kademlia metrics close fixes landed, the retry-with-backoff was dead weight — collapsed back to `ensureStopped → start`.
+
+- **(fix) ✅ — Test isolation** (`0001a55`).
+  `BeeIdentityCoordinatorTests` was constructing `SettingsStore(defaults: .standard)` and clobbering the user's persisted `beeNodeMode`. `BeePasswordTests.tearDown` was also wiping production Keychain on every skip. Both fixed (UUID-suite UserDefaults + tearDown wipe removal).
+
+- **(refactor) ✅ — `/chainstate`-driven readiness with live sync %** (`9b8ed09`).
+  Replaced the planned `/health` 1s + `/readiness` 2s + `/stamps` 5s + Gnosis chain-head poll with a single localhost `/chainstate` query (returns `{block, chainTip}` directly, available throughout the syncing window). Adaptive polling 3 s / 30 s. `.deployingChequebook` → `.startingUp`. `walletRPC` dependency dropped from `BeeReadiness`. See §6.5 for the full state-machine update.
+
+- **WP3 ✅ — Stamp management** (`d9df664`).
+  New: `BeeAPIClient`, `StampService`, `PostageBatch`, `StampMath` (replicates bee-js's depth/amount/cost math; bee has no `/stamps/cost` endpoint), `StampsView`, `StampPurchaseView`, `StampMathTests`. Stamps surface lives under the node sheet (`StampsView`), not "Wallet → Storage" as originally planned. Stamp extend (`StampExtendView`) deferred (§7.4).
+
+- **(feat) ✅ — Node sheet wallet/chequebook + diagnostic logs** (`9481787`).
+  `BeeWalletInfo` polls `/wallet` + `/chequebook/balance` every 30 s. Replaced the bare wallet card with structured "Node wallet" (xDAI / xBZZ / shortened address with tap-to-copy) and "Chequebook" (xBZZ / shortened address) cards. The inline log preview moved to a separate `NodeLogView` reachable via a tertiary "View logs" link.
+
+- **(feat) ✅ — Chequebook auto-top-up** (`2f94afc`).
+  After every stamp purchase, top up chequebook to a 0.1 xBZZ floor from the node wallet. Hard prerequisite for WP4–6 to actually publish (peers won't serve content with an unfunded chequebook). See §7.6.
+
+### Not started
 
 - **WP4 — `window.swarm` bridge foundation**.
   New: `SwarmBridge` + preload, `SwarmRouter`, `SwarmErrorPayload`, `SwarmPermission` + `SwarmPermissionStore`, `SwarmConnectSheet`. Methods 1-3: `getCapabilities`, `requestAccess`, `readFeedEntry` + `listFeeds`. Extend `ApprovalRequest.Kind` with `.swarmConnect`. Tests: router dispatch, permission gating, origin normalization. ~600-800 LoC.
@@ -527,9 +627,7 @@ Six WPs, one PR each. Order is load-bearing — each WP unblocks the next. Build
   Methods 4-6: `publishData`, `publishFiles`, `getUploadStatus`. New: `SwarmPublishService`, `TagOwnership`, `SwarmPublishSheet`. Extend `ApprovalRequest.Kind` with `.swarmPublish`. Per-origin `autoApprovePublish` toggle. Stamp auto-selection (best fit). Tests: publish round-trips against a local Bee, tag scoping rejects cross-origin reads. ~500-700 LoC.
 
 - **WP6 — Feed path**.
-  Methods 7-10: `createFeed`, `updateFeed`, `writeFeedEntry`. (`readFeedEntry` shipped at WP4.) New: `SwarmFeedRecord` + `SwarmFeedStore`, `SwarmFeedService`, `FeedTopic`, `PublisherKeyAllocator`, `SwarmFeedAccessSheet`. Extend `ApprovalRequest.Kind` with `.swarmFeedAccess`. Per-origin `autoApproveFeeds` toggle. Tests: topic byte-identity vs desktop, per-topic write actor serialization, allocator monotonicity, identity mode immutability. ~700-900 LoC.
-
-Total estimated scope: ~3.8k-5k LoC across 6 PRs. Comparable to M5 (~5k LoC across 6 packages).
+  Methods 7-10: `createFeed`, `updateFeed`, `writeFeedEntry`. (`readFeedEntry` shipped at WP4.) New: `SwarmFeedRecord` + `SwarmFeedStore`, `SwarmFeedService`, `FeedTopic`, `PublisherKeyAllocator`, `SwarmFeedAccessSheet`. Extend `ApprovalRequest.Kind` with `.swarmFeedAccess`. Per-origin `autoApproveFeeds` toggle. Add `HDKey.Path.publisherKey(originIndex:)`. Tests: topic byte-identity vs desktop, per-topic write actor serialization, allocator monotonicity, identity mode immutability. ~700-900 LoC.
 
 ## 10. Out of scope (don't propose without re-discussing)
 
@@ -544,11 +642,18 @@ Total estimated scope: ~3.8k-5k LoC across 6 PRs. Comparable to M5 (~5k LoC acro
 - **ACT (Access Control Trie) encrypted publishing** — bee-lite supports it, our wrapper doesn't. Future SWIP, future WP.
 - **Radicle / IPFS identity surfaces** — derivation paths exist on desktop; iOS doesn't have those nodes. Out.
 
-## 11. Open items (not blocking start of WP1, but flag-forward)
+## 11. Open items
 
-- **The exact `fundNodeAndBuyStamp` ABI**. Inferred from the contributor's PR notes; confirm against the deployed contract's verified source at WP2 implementation time. Wrong field order will silently fail.
-- **`xbzzMinOut` slippage policy**. Need to pick a tolerance (1%? 3%?). Depends on pool depth at funding time. WP2 decision.
-- **Stamp price fetching**. Bee's `/stamps/cost` returns BZZ; user-facing UI may want a USD estimate. Defer to WP3 — initial UI shows BZZ only.
+Resolved during WP1–3:
+
+- ~~**The exact `fundNodeAndBuyStamp` ABI**~~ — confirmed at WP2 against the deployed contract; selector pinned at `0x834aeb80` in `FundNodeBuilder` with a regression test.
+- ~~**`xbzzMinOut` slippage policy**~~ — defaulted to 5% (`SwarmFunderConstants.defaultSlippageBps = 500`). Hardcoded for now; will surface as an advanced setting if real users hit slippage failures.
+- ~~**`/health` vs. `/readiness` polling cadence**~~ — replaced with a single `/chainstate`-driven loop at adaptive 3 s / 30 s (see §6.5).
+
+Still open:
+
+- **Stamp price USD estimate**. UI shows xBZZ only. Add a USD/EUR conversion when there's user-facing pricing demand.
 - **Feed-write retry on transient errors**. WP6 — explicit retry vs. surface failure to dapp? Lean toward surfacing; dapps can retry with their own backoff.
-- **`/health` vs. `/readiness` polling cadence** during readiness wait — the values in §6.5 are guesses, may need tuning on real hardware.
-- **Wallet-doc updates**. After WP1, `wallet-architecture.md` §5.1 should mark `m/44'/60'/0'/0/1` as "surfaced" and add the publisher-key row. Cross-reference this doc.
+- **Wallet-doc updates**. After WP1 shipped, `wallet-architecture.md` §5.1 should mark `m/44'/60'/0'/0/1` as "surfaced" and add the publisher-key row when WP6 lands. Cross-reference this doc.
+- **Top-up flows for node wallet + chequebook**. Currently the only deposit path is the funder (one-tx) and the auto-top-up (post-stamp-buy). Real management surface (top-up node wallet from main wallet; manual top-up of chequebook from node wallet) deferred until users hit balance floors in practice.
+- **`BeePasswordTests` re-enablement**. Currently `XCTSkipIf`'d because a test wipe of the production Keychain entry triggers `FreedomApp`'s legacy migration on next launch. Proper fix: parameterize `BeePassword` to use a `.test` Keychain account and remove the skip.
