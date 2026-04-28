@@ -75,6 +75,30 @@ struct BeeAPIClient {
         return try Self.parseDict(data)
     }
 
+    /// `POST` with a binary body — `swarm_publishData` (raw payload) and
+    /// `swarm_publishFiles` (tar collection). Caller supplies
+    /// `Content-Type` plus any bee-specific headers
+    /// (`Swarm-Postage-Batch-Id`, `Swarm-Collection`,
+    /// `Swarm-Index-Document`, …); we return the raw body + headers so
+    /// the publish-service can pull the JSON `reference` out of the body
+    /// and the `swarm-tag` out of the headers. `contentType:` wins over
+    /// any `Content-Type` in `headers`.
+    func postBytes(
+        _ path: String,
+        body: Data,
+        contentType: String,
+        headers: [String: String] = [:],
+        query: [String: String] = [:],
+        timeout: TimeInterval = 300
+    ) async throws -> (Data, [String: String]) {
+        var allHeaders = headers
+        allHeaders["Content-Type"] = contentType
+        return try await sendData(
+            path: path, query: query, method: "POST",
+            headers: allHeaders, body: body, timeout: timeout
+        )
+    }
+
     /// Returns response data plus headers (lowercased keys for case-
     /// insensitive lookup). Header access is needed by `getFeedPayload`
     /// which carries indices in `Swarm-Feed-Index` / `…-Next`; JSON
@@ -83,6 +107,8 @@ struct BeeAPIClient {
         path: String,
         query: [String: String] = [:],
         method: String,
+        headers: [String: String] = [:],
+        body: Data? = nil,
         timeout: TimeInterval
     ) async throws -> (Data, [String: String]) {
         let baseWithPath = Self.baseURL.appendingPathComponent(path)
@@ -95,8 +121,20 @@ struct BeeAPIClient {
         guard let url = components.url else { throw Error.malformedResponse }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = method
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        // For binary uploads (`postBytes`) `upload(for:from:)` streams
+        // the body to bee instead of buffering it inside `URLRequest`,
+        // which keeps publish-50 MB peaks off the heap.
+        // `data(for:)` stays on the bodyless path.
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response): (Data, URLResponse)
+            if let body {
+                (data, response) = try await session.upload(for: request, from: body)
+            } else {
+                (data, response) = try await session.data(for: request)
+            }
             guard let http = response as? HTTPURLResponse else {
                 throw Error.malformedResponse
             }

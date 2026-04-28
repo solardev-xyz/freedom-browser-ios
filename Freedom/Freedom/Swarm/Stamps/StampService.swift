@@ -288,4 +288,26 @@ final class StampService {
             label: label
         )
     }
+
+    // MARK: - Batch selection
+
+    /// Headroom multiplier applied on top of the dapp-supplied byte
+    /// count. Covers the chunk-encoding overhead bee adds at upload
+    /// time — without it, an upload that just barely fits a batch's
+    /// remaining capacity gets rejected mid-stream. Same `1.5` desktop
+    /// uses (`SIZE_SAFETY_MARGIN`).
+    static let sizeSafetyMargin: Double = 1.5
+
+    /// First-fit usable batch with at least `bytes × sizeSafetyMargin`
+    /// remaining capacity, longest-TTL among qualifiers as the
+    /// tiebreaker. Mirrors desktop's `selectBestBatch`.
+    static func selectBestBatch(
+        forBytes bytes: Int, in stamps: [PostageBatch]
+    ) -> PostageBatch? {
+        let required = Double(bytes) * sizeSafetyMargin
+        return stamps
+            .filter { $0.usable }
+            .filter { Double($0.effectiveBytes) * (1.0 - $0.usage) >= required }
+            .max(by: { $0.ttlSeconds < $1.ttlSeconds })
+    }
 }
