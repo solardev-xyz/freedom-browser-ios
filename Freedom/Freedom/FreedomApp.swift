@@ -66,14 +66,15 @@ struct FreedomApp: App {
                 swarm: swarmInstance,
                 settings: settings
             ))
-            self._stampService = State(wrappedValue: StampService(
-                swarm: swarmInstance,
-                settings: settings
-            ))
-            self._beeWalletInfo = State(wrappedValue: BeeWalletInfo(
-                swarm: swarmInstance,
-                settings: settings
-            ))
+            let stamps = StampService(swarm: swarmInstance, settings: settings)
+            let walletInfo = BeeWalletInfo(swarm: swarmInstance, settings: settings)
+            // Stamp service triggers a chequebook auto-deposit after
+            // every successful purchase; the attach lets it nudge
+            // BeeWalletInfo to refresh balances once the deposit lands
+            // instead of waiting for the next 30s poll tick.
+            stamps.attach(walletInfo: walletInfo)
+            self._stampService = State(wrappedValue: stamps)
+            self._beeWalletInfo = State(wrappedValue: walletInfo)
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
                 historyStore: history,

@@ -51,12 +51,22 @@ final class StampService {
     @ObservationIgnored private let bee: BeeAPIClient
     @ObservationIgnored private let swarm: SwarmNode
     @ObservationIgnored private let settings: SettingsStore
+    /// Set via `attach(walletInfo:)` so the stamp-buy auto-deposit can
+    /// trigger an immediate balance refresh. `weak` because both
+    /// services are owned by `FreedomApp` — no need to keep it alive.
+    @ObservationIgnored private weak var walletInfo: BeeWalletInfo?
     /// Short-lived cache of `/chainstate.currentPrice`. Used by both
     /// `estimateCost` (called per preset toggle) and `buy` so toggling
     /// presets in the purchase form doesn't pound bee with N back-to-
     /// back GETs. Price changes per ~5s block; 10s TTL keeps quoted
     /// cost within the same block window the buy will land in.
     @ObservationIgnored private var cachedPrice: (value: Int, expiry: Date)?
+
+    /// Floor balance we keep the chequebook topped up to after every
+    /// stamp purchase. 0.1 xBZZ in PLUR (1 BZZ = 1e16 PLUR) matches
+    /// desktop's `AUTO_DEPOSIT_BZZ` constant. `10^15` rather than a
+    /// digit literal so miscounted zeros surface as a build error.
+    private static let chequebookFloorPlur: BigUInt = BigUInt(10).power(15)
 
     init(
         swarm: SwarmNode,
@@ -66,6 +76,14 @@ final class StampService {
         self.swarm = swarm
         self.settings = settings
         self.bee = bee
+    }
+
+    /// Inject the wallet-info service so the chequebook auto-deposit
+    /// can trigger a fresh balance read once the deposit tx confirms.
+    /// `weak` to avoid the StampService↔BeeWalletInfo retain cycle if
+    /// the latter ever holds a reference back.
+    func attach(walletInfo: BeeWalletInfo) {
+        self.walletInfo = walletInfo
     }
 
     /// Idempotent — re-entry cancels the prior task. `activeInterval` is
@@ -150,6 +168,13 @@ final class StampService {
             let batchID = try await postBuy(amount: amount, depth: depth)
             buyState = .waitingForUsable(batchID: batchID)
             await refreshStamps()
+            // Keep the chequebook at its floor for SWAP bandwidth pay-
+            // ments. Fire-and-forget so the .usable transition doesn't
+            // wait on the deposit tx (~30s on Gnosis); polling picks
+            // up `.usable` independently.
+            Task { [weak self] in
+                await self?.topUpChequebookIfBelowFloor()
+            }
         } catch {
             buyState = .failed(error.localizedDescription)
         }
@@ -184,6 +209,41 @@ final class StampService {
             throw BeeAPIClient.Error.malformedResponse
         }
         return id
+    }
+
+    /// Read `/chequebook/balance.availableBalance` and, if it's below
+    /// our 0.1 xBZZ floor, deposit the shortfall from the node wallet.
+    /// Silent on failure (no surfaced error) — the chequebook can also
+    /// be topped up manually later via the (future) wallet UI; an
+    /// auto-deposit is best-effort plumbing, not user-visible state.
+    private func topUpChequebookIfBelowFloor() async {
+        guard let dict = try? await bee.getJSON("/chequebook/balance"),
+              let availableStr = dict["availableBalance"] as? String,
+              let available = BigUInt(availableStr, radix: 10) else {
+            return
+        }
+        let floor = Self.chequebookFloorPlur
+        guard available < floor else { return }
+        let shortfall = floor - available
+        // Skip if the node wallet can't cover the shortfall — surfacing
+        // a dialog mid-stamp-purchase would be jarring; user can top
+        // up manually later.
+        guard let walletDict = try? await bee.getJSON("/wallet"),
+              let walletStr = walletDict["bzzBalance"] as? String,
+              let walletBzz = BigUInt(walletStr, radix: 10),
+              walletBzz >= shortfall else {
+            return
+        }
+        // Bee blocks until the on-chain deposit tx confirms — same 5min
+        // budget as the stamp-purchase POST.
+        _ = try? await bee.postJSON(
+            "/chequebook/deposit",
+            query: ["amount": shortfall.description],
+            timeout: 300
+        )
+        // Snap balances fresh so the user doesn't have to wait for the
+        // 30s polling tick to see the chequebook update.
+        await walletInfo?.refresh()
     }
 
     private func fetchCurrentPrice() async throws -> Int {

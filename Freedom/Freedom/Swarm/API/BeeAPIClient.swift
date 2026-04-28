@@ -28,17 +28,36 @@ struct BeeAPIClient {
         return try Self.parseDict(data)
     }
 
-    /// `POST` with no body, used for path-encoded operations like
-    /// `/stamps/{amount}/{depth}`. Bee's stamp purchase blocks on the
-    /// chain tx confirming, which can take ~30s to several minutes —
+    /// `POST` with no body, used for both path-encoded operations
+    /// (`/stamps/{amount}/{depth}`) and query-encoded ones
+    /// (`/chequebook/deposit?amount=...`). Bee's chain-tx endpoints
+    /// block on confirmation, which can take ~30s to several minutes —
     /// caller passes a generous timeout.
-    func postJSON(_ path: String, timeout: TimeInterval = 300) async throws -> [String: Any] {
-        let data = try await sendData(path: path, method: "POST", timeout: timeout)
+    func postJSON(
+        _ path: String,
+        query: [String: String] = [:],
+        timeout: TimeInterval = 300
+    ) async throws -> [String: Any] {
+        let data = try await sendData(
+            path: path, query: query, method: "POST", timeout: timeout
+        )
         return try Self.parseDict(data)
     }
 
-    private func sendData(path: String, method: String, timeout: TimeInterval) async throws -> Data {
-        let url = Self.baseURL.appendingPathComponent(path)
+    private func sendData(
+        path: String,
+        query: [String: String] = [:],
+        method: String,
+        timeout: TimeInterval
+    ) async throws -> Data {
+        let baseWithPath = Self.baseURL.appendingPathComponent(path)
+        guard var components = URLComponents(url: baseWithPath, resolvingAgainstBaseURL: false) else {
+            throw Error.malformedResponse
+        }
+        if !query.isEmpty {
+            components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
+        }
+        guard let url = components.url else { throw Error.malformedResponse }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = method
         do {
