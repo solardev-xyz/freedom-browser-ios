@@ -1,9 +1,11 @@
+import BigInt
 import SwarmKit
 import SwiftUI
+import UIKit
 
-/// Container view for the embedded Swarm node — status, wallet, recent
-/// activity. Future surfaces (upgrade flow, stamp management) hang off
-/// the same NavigationStack via push.
+/// Container view for the embedded Swarm node — status, wallet,
+/// chequebook, stamps. Diagnostic logs hang off an unobtrusive footer
+/// link so the 99% of users who don't care never see them.
 @MainActor
 struct NodeHomeView: View {
     @Environment(SwarmNode.self) private var swarm
@@ -11,6 +13,7 @@ struct NodeHomeView: View {
     @Environment(BeeReadiness.self) private var beeReadiness
     @Environment(SettingsStore.self) private var settings
     @Environment(StampService.self) private var stampService
+    @Environment(BeeWalletInfo.self) private var beeWallet
 
     var body: some View {
         ScrollView {
@@ -24,7 +27,12 @@ struct NodeHomeView: View {
                     publishSetupCTA
                 }
                 statusCard
-                walletCard
+                nodeWalletCard
+                // Chequebook only exists in light mode and only after
+                // bee's chequebook subsystem has come online.
+                if beeReadiness.chequebookAddress != nil {
+                    chequebookCard
+                }
                 // Stamps row appears once the user has crossed `.ready`
                 // at least once — same gate as the inline mode toggle.
                 // Pre-setup users use the publish-setup CTA above and
@@ -32,7 +40,7 @@ struct NodeHomeView: View {
                 if settings.hasCompletedPublishSetup {
                     stampsRow
                 }
-                logCard
+                logsLink
             }
             .padding(20)
         }
@@ -95,21 +103,39 @@ struct NodeHomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    @ViewBuilder private var walletCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private var nodeWalletCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Node wallet").font(.caption).foregroundStyle(.secondary)
-            if displayAddress.isEmpty {
-                Text("Not yet available")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-            } else {
-                AddressPill(address: displayAddress)
+            // Balances only meaningful in light mode (bee's `/wallet`
+            // endpoint requires the chain backend). Pre-light users
+            // see the address alone — no "— —" rows that read as
+            // broken.
+            if settings.beeNodeMode == .light {
+                balanceRow(label: "xDAI", value: beeWallet.nodeXdai, decimals: 18)
+                balanceRow(label: "xBZZ", value: beeWallet.nodeXbzz, decimals: 16)
+            }
+            if !displayAddress.isEmpty {
+                CopyableAddressRow(address: displayAddress)
             }
         }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var chequebookCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Chequebook").font(.caption).foregroundStyle(.secondary)
+            balanceRow(label: "xBZZ", value: beeWallet.chequebookXbzz, decimals: 16)
+            if let addr = beeReadiness.chequebookAddress {
+                CopyableAddressRow(address: addr)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     /// Pushes onto the existing NodeSheet NavigationStack, same shape
@@ -146,25 +172,21 @@ struct NodeHomeView: View {
         return "\(count) batch\(count == 1 ? "" : "es") · \(usable) usable"
     }
 
-    @ViewBuilder private var logCard: some View {
-        if !swarm.log.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Recent activity").font(.caption).foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 4) {
-                    // 12 ≈ one restart cycle, fits without scrolling.
-                    ForEach(Array(swarm.log.suffix(12).enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
+    /// Diagnostic surface — tertiary text at the bottom of the sheet so
+    /// it's findable for bug reports but invisible to anyone scanning.
+    /// `.buttonStyle(.plain)` keeps the label's `.tertiary` foreground
+    /// from being overridden by NavigationLink's accent chrome.
+    private var logsLink: some View {
+        NavigationLink {
+            NodeLogView()
+        } label: {
+            Text("View logs")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.top, 8)
     }
 
     // MARK: - Helpers
@@ -225,6 +247,67 @@ struct NodeHomeView: View {
             Text(label).font(.caption).foregroundStyle(.secondary)
             Spacer()
             Text(value).font(.callout)
+        }
+    }
+
+    /// "Token name → numeric value" row used by both wallet + chequebook
+    /// cards. Renders a placeholder while bee hasn't reported a value
+    /// yet so the row's vertical rhythm doesn't jump on first poll.
+    private func balanceRow(label: String, value: BigUInt?, decimals: Int) -> some View {
+        HStack {
+            Text(label).font(.callout).foregroundStyle(.secondary)
+            Spacer()
+            if let value {
+                Text(BalanceFormatter.formatAmount(
+                    wei: value, decimals: decimals, maxFractionDigits: 4
+                ))
+                .font(.callout)
+                .monospacedDigit()
+            } else {
+                Text("—").font(.callout).foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+/// Tap-to-copy row with shortened address display. The full address
+/// goes on the pasteboard; the shortened form is just the visual.
+@MainActor
+private struct CopyableAddressRow: View {
+    let address: String
+    @State private var didCopy: Bool = false
+
+    var body: some View {
+        Button(action: copy) {
+            HStack(spacing: 8) {
+                Text(address.shortenedHex())
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                    .font(.footnote)
+                    .foregroundStyle(didCopy ? Color.green : .secondary)
+                if didCopy {
+                    Text("Copied")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            .background(Color(.tertiarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func copy() {
+        UIPasteboard.general.string = address
+        withAnimation { didCopy = true }
+        Task {
+            try? await Task.sleep(for: .milliseconds(1500))
+            withAnimation { didCopy = false }
         }
     }
 }
