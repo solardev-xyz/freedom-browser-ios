@@ -12,6 +12,12 @@ func inMemoryContainer(for models: any PersistentModel.Type...) throws -> ModelC
     return try ModelContainer(for: Schema(models), configurations: config)
 }
 
+/// Standard hardhat / anvil test mnemonic. Account 0 derives to
+/// `0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266`. Used across the wallet
+/// + bridge test suite; centralized so vector lookups against external
+/// docs match a single source.
+let hardhatMnemonic = "test test test test test test test test test test test junk"
+
 final class MutableClock {
     var now: Date
     init(now: Date) { self.now = now }

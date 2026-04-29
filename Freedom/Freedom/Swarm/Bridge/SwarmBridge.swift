@@ -2,6 +2,24 @@ import Foundation
 import web3
 import WebKit
 
+/// Surface the bridge needs from its hosting tab. `BrowserTab` conforms;
+/// tests stub this so the bridge can be exercised without a real
+/// `WKWebView` / `BrowserTab` graph.
+@MainActor
+protocol SwarmBridgeHost: AnyObject {
+    var displayURL: URL? { get }
+    var pendingSwarmApproval: ApprovalRequest? { get set }
+}
+
+/// Reply transport. `BridgeReplyChannel` conforms (production); tests
+/// inject a recording stub.
+@MainActor
+protocol SwarmBridgeReplies {
+    func reply(id: Int, result: Any)
+    func reply(id: Int, errorObject: [String: Any])
+    func emit(event: String, data: Any)
+}
+
 /// Per-`BrowserTab` `window.swarm` bridge. Origin identity is derived
 /// from `tab.displayURL` at every message receipt — the JS side never
 /// supplies it. Interactive methods that park an `ApprovalRequest`
@@ -21,29 +39,42 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
     /// this origin and when bee evicted it; same desktop wording.
     private static let tagNotOwnedMessage = "Tag not found or not owned by this origin."
 
-    private weak var tab: BrowserTab?
+    private weak var host: (any SwarmBridgeHost)?
     private let router: SwarmRouter
     private let services: SwarmServices
     /// Weak: `WKUserContentController.add(_:name:)` strongly retains us,
     /// so this side of the edge must not retain back — otherwise tab
     /// teardown would never run.
     private weak var contentController: WKUserContentController?
-    private let replies: BridgeReplyChannel
+    private let replies: any SwarmBridgeReplies
 
+    /// Test-friendly designated init. No WebKit side effects; production
+    /// uses the convenience init below which adds message-handler
+    /// registration + JS preload install.
     init(
+        host: any SwarmBridgeHost,
+        router: SwarmRouter,
+        services: SwarmServices,
+        replies: any SwarmBridgeReplies
+    ) {
+        self.host = host
+        self.router = router
+        self.services = services
+        self.replies = replies
+        super.init()
+    }
+
+    convenience init(
         tab: BrowserTab,
         router: SwarmRouter,
         contentController: WKUserContentController,
         services: SwarmServices
     ) {
-        self.tab = tab
-        self.router = router
-        self.services = services
-        self.contentController = contentController
-        self.replies = BridgeReplyChannel(
+        let replies = BridgeReplyChannel(
             jsGlobal: "__freedomSwarm", webView: tab.webView
         )
-        super.init()
+        self.init(host: tab, router: router, services: services, replies: replies)
+        self.contentController = contentController
         contentController.add(self, name: Self.messageHandlerName)
         installUserScript()
     }
@@ -84,14 +115,14 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
               let id = body["id"] as? Int,
               let method = body["method"] as? String else { return }
         let params = body["params"] as? [String: Any] ?? [:]
-        let origin = OriginIdentity.from(displayURL: tab?.displayURL)
+        let origin = OriginIdentity.from(displayURL: host?.displayURL)
 
         Task { [weak self] in
             await self?.dispatch(id: id, method: method, params: params, origin: origin)
         }
     }
 
-    private func dispatch(
+    func dispatch(
         id: Int, method: String, params: [String: Any], origin: OriginIdentity?
     ) async {
         guard let origin else {
@@ -149,7 +180,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                        message: "Origin not permitted.")
             return false
         }
-        guard tab?.pendingSwarmApproval == nil else {
+        guard host?.pendingSwarmApproval == nil else {
             replyError(id: id, code: Code.resourceUnavailable,
                        message: "Another approval is already pending.")
             return false
@@ -240,9 +271,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                 kind: kind,
                 resolver: ApprovalResolver(cont)
             )
-            tab?.pendingSwarmApproval = request
+            host?.pendingSwarmApproval = request
         }
-        tab?.pendingSwarmApproval = nil
+        host?.pendingSwarmApproval = nil
         return decision
     }
 
@@ -1083,3 +1114,6 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         replies.emit(event: event, data: data)
     }
 }
+
+extension BrowserTab: SwarmBridgeHost {}
+extension BridgeReplyChannel: SwarmBridgeReplies {}
