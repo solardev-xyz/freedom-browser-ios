@@ -217,6 +217,17 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         return true
     }
 
+    /// True when feed auto-approve grant exists *and* the vault is
+    /// unlocked. The auto-approve toggle skips the sheet, but the
+    /// sheet bakes in `ApprovalUnlockStrip` — silently firing
+    /// `signingKey(...)` on a locked vault would 4900 with `notUnlocked`
+    /// instead of giving the user a chance to unlock. So a locked
+    /// vault has to fall through to the sheet regardless.
+    private func feedAutoApproveActive(origin: OriginIdentity) -> Bool {
+        services.permissionStore.isAutoApproveFeeds(origin: origin.key)
+            && services.vault.state == .unlocked
+    }
+
     /// Routes through the router's `capabilities` (same vocabulary as
     /// `swarm_getCapabilities`) so dapps see the same `reason` strings
     /// across the feature-detect read and the write-time error. Replies
@@ -777,7 +788,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         // grants once the mode is locked.
         let isFirstGrant = services.feedStore.feedIdentity(origin: origin.key) == nil
         let decision: ApprovalRequest.Decision
-        if !isFirstGrant && services.permissionStore.isAutoApproveFeeds(origin: origin.key) {
+        if !isFirstGrant && feedAutoApproveActive(origin: origin) {
             decision = .approved
         } else {
             decision = await parkAndAwait(
@@ -915,7 +926,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         // updateFeed is never a first grant — identity was chosen at
         // create-time, so auto-approve is eligible.
         let decision: ApprovalRequest.Decision
-        if services.permissionStore.isAutoApproveFeeds(origin: origin.key) {
+        if feedAutoApproveActive(origin: origin) {
             decision = .approved
         } else {
             decision = await parkAndAwait(
@@ -1048,7 +1059,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         guard requireCanPublish(id: id, origin: origin) else { return }
 
         let decision: ApprovalRequest.Decision
-        if services.permissionStore.isAutoApproveFeeds(origin: origin.key) {
+        if feedAutoApproveActive(origin: origin) {
             decision = .approved
         } else {
             decision = await parkAndAwait(

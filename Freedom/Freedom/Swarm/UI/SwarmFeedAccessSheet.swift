@@ -49,6 +49,20 @@ struct SwarmFeedAccessSheet: View {
                     }
                 }
             }
+            // Sheet was opened only because the vault was locked at
+            // request time (the bridge's auto-approve path requires an
+            // unlocked vault; see `feedAutoApproveActive`). Once the
+            // user unlocks, honor the existing auto-approve grant and
+            // skip the sheet body — re-asking would defeat the whole
+            // "auto" part. First-grant must always show the picker.
+            .task(id: vault.state) {
+                guard !details.isFirstGrant,
+                      vault.state == .unlocked,
+                      permissionStore.isAutoApproveFeeds(origin: approval.origin.key)
+                else { return }
+                approval.decide(.approved)
+                dismiss()
+            }
         }
     }
 

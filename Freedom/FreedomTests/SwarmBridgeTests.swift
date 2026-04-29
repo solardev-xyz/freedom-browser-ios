@@ -872,4 +872,54 @@ final class SwarmBridgeTests: XCTestCase {
         )
         try assertSingleError(code: 4001)
     }
+
+    // MARK: - Auto-approve must yield to the sheet when the vault is locked
+
+    /// Regression: fresh-launch wallet-locked + auto-approve granted →
+    /// bridge previously fast-path approved, then `signingKey(...)`
+    /// threw `notUnlocked` and we returned a generic internal error
+    /// instead of giving the user a chance to unlock. Asserting via the
+    /// 4001-after-denied edge: if auto-approve had silently fired we'd
+    /// have seen an internal error instead.
+    func testCreateFeedAutoApproveButLockedVaultShowsSheet() async throws {
+        grantConnectedFeedIdentity(name: "existing")
+        fixture.permissionStore.setAutoApproveFeeds(origin: connectedOrigin.key, enabled: true)
+        armUsableStamps()
+        fixture.vault.lock()
+        fixture.setNextDecision(.denied)
+        await fixture.dispatch(
+            method: "swarm_createFeed",
+            params: ["name": "another"],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: 4001)
+    }
+
+    func testUpdateFeedAutoApproveButLockedVaultShowsSheet() async throws {
+        grantConnectedFeedIdentity(name: "posts")
+        fixture.permissionStore.setAutoApproveFeeds(origin: connectedOrigin.key, enabled: true)
+        armUsableStamps()
+        fixture.vault.lock()
+        fixture.setNextDecision(.denied)
+        await fixture.dispatch(
+            method: "swarm_updateFeed",
+            params: ["feedId": "posts", "reference": testContentRef],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: 4001)
+    }
+
+    func testWriteFeedEntryAutoApproveButLockedVaultShowsSheet() async throws {
+        grantConnectedFeedIdentity(name: "log")
+        fixture.permissionStore.setAutoApproveFeeds(origin: connectedOrigin.key, enabled: true)
+        armUsableStamps()
+        fixture.vault.lock()
+        fixture.setNextDecision(.denied)
+        await fixture.dispatch(
+            method: "swarm_writeFeedEntry",
+            params: ["name": "log", "data": b64("entry")],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: 4001)
+    }
 }
