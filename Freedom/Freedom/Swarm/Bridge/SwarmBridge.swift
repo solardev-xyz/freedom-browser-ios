@@ -755,10 +755,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
 
         let topicHex = FeedTopic.derive(origin: origin.key, name: name)
 
-        // Manifest is a single small chunk; 4 KB capacity fits with
-        // headroom. Matches desktop's createFeed estimate.
         guard let batch = StampService.selectBestBatch(
-            forBytes: 4096, in: services.currentStamps()
+            forBytes: StampService.estimatedBytes(forFeedWrite: 0),
+            in: services.currentStamps()
         ) else {
             return replyError(id: id, code: Code.nodeUnavailable,
                               message: "No usable stamp.",
@@ -873,9 +872,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                               message: "Couldn't derive feed signing key: \(error)")
         }
 
-        // 4 KB capacity matches `createFeed` — SOC body is small (40-byte payload).
         guard let batch = StampService.selectBestBatch(
-            forBytes: 4096, in: services.currentStamps()
+            forBytes: StampService.estimatedBytes(forFeedWrite: 0),
+            in: services.currentStamps()
         ) else {
             return replyError(id: id, code: Code.nodeUnavailable,
                               message: "No usable stamp.",
@@ -997,12 +996,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                               message: "Couldn't derive feed signing key: \(error)")
         }
 
-        // Stamp size estimate covers both paths: <= 4 KB direct write
-        // = one chunk; > 4 KB wrap = root + tree, so we charge against
-        // the full payload size + headroom for the SOC envelope.
-        let estimatedBytes = max(payload.count, SwarmSOC.maxChunkPayloadSize)
         guard let batch = StampService.selectBestBatch(
-            forBytes: estimatedBytes, in: services.currentStamps()
+            forBytes: StampService.estimatedBytes(forFeedWrite: payload.count),
+            in: services.currentStamps()
         ) else {
             return replyError(id: id, code: Code.nodeUnavailable,
                               message: "No usable stamp.",

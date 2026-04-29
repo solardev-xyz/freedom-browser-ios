@@ -310,4 +310,16 @@ final class StampService {
             .filter { Double($0.effectiveBytes) * (1.0 - $0.usage) >= required }
             .max(by: { $0.ttlSeconds < $1.ttlSeconds })
     }
+
+    /// Stamp-bytes estimate for any feed-write surface (`createFeed`,
+    /// `updateFeed`, `writeFeedEntry`). Feed writes always cost at
+    /// least one chunk: createFeed / updateFeed have no caller-supplied
+    /// payload but still write a single SOC; writeFeedEntry's wrap
+    /// path can exceed one chunk because the original payload fans
+    /// into a BMT tree under bee's `/bytes` path. `max` covers both.
+    /// Pass `0` for create / update (no payload) and the actual
+    /// payload size for `writeFeedEntry`.
+    static func estimatedBytes(forFeedWrite payloadBytes: Int) -> Int {
+        max(payloadBytes, SwarmSOC.maxChunkPayloadSize)
+    }
 }
