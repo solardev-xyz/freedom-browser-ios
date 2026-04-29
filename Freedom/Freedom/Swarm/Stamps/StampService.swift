@@ -154,6 +154,13 @@ final class StampService {
         pollTask = nil
     }
 
+    /// Lookup helper for views holding a `batchID` String — a successful
+    /// extend triggers `refreshStamps`, which replaces the array, so
+    /// pinned views read by id rather than holding a stale `PostageBatch`.
+    func batch(id batchID: String) -> PostageBatch? {
+        stamps.first(where: { $0.batchID == batchID })
+    }
+
     /// Pull `/stamps`, normalize, update observable state. Bee returns
     /// 503 with "Node is syncing" until the chequebook subsystem is up;
     /// during that window we leave `stamps` empty and try again next

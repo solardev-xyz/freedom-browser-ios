@@ -24,6 +24,14 @@ enum BalanceFormatter {
         format(wei: wei, decimals: nativeDecimals, symbol: symbol, maxFractionDigits: maxFractionDigits)
     }
 
+    /// PLUR → xBZZ display. 1 BZZ = 1e16 PLUR (bee's `toPLURBigInt`
+    /// convention, mirroring desktop's `formatRawTokenBalance(..., 16)`).
+    /// Stamp-cost call sites use 4 fractional digits — the smallest
+    /// fees we surface (~1e-4 BZZ) are still legible.
+    static func bzz(plur: BigUInt, maxFractionDigits: Int = 4) -> String {
+        format(wei: plur, decimals: 16, symbol: "xBZZ", maxFractionDigits: maxFractionDigits)
+    }
+
     static func parse(weiHex: String) -> BigUInt? {
         Hex.bigUInt(weiHex)
     }

@@ -83,7 +83,8 @@ struct StampPurchaseView: View {
             Text("Estimated cost").font(.caption).foregroundStyle(.secondary)
             Spacer()
             if let cost = estimatedCostPlur {
-                Text(formatBzz(cost)).font(.callout).monospacedDigit()
+                Text(BalanceFormatter.bzz(plur: cost))
+                    .font(.callout).monospacedDigit()
             } else {
                 Text("Estimating…").font(.callout).foregroundStyle(.tertiary)
             }
@@ -106,27 +107,20 @@ struct StampPurchaseView: View {
     @ViewBuilder private var stateMessage: some View {
         switch stampService.buyState {
         case .purchasing:
-            statusText("Submitting purchase to the network…", tint: .secondary)
+            stampStatusText("Submitting purchase to the network…", tint: .secondary)
         case .waitingForUsable:
-            statusText("Purchase confirmed. Waiting for the batch to become usable…", tint: .secondary)
+            stampStatusText("Purchase confirmed. Waiting for the batch to become usable…", tint: .secondary)
         case .usable:
-            statusText("Stamp ready.", tint: .green)
+            stampStatusText("Stamp ready.", tint: .green)
         case .failed(let msg):
             VStack(alignment: .leading, spacing: 8) {
-                statusText(msg, tint: .red)
+                stampStatusText(msg, tint: .red)
                 Button("Try again") { stampService.resetBuyState() }
                     .font(.callout)
             }
         case .idle, .estimating:
             EmptyView()
         }
-    }
-
-    private func statusText(_ text: String, tint: Color) -> some View {
-        Text(text)
-            .font(.callout)
-            .foregroundStyle(tint)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Derived
@@ -167,16 +161,5 @@ struct StampPurchaseView: View {
         estimatedCostPlur = nil
         let preset = StampService.presets[selectedIndex]
         estimatedCostPlur = await stampService.estimateCost(for: preset)
-    }
-
-    /// PLUR → xBZZ display. 1 BZZ = 1e16 PLUR (bee's `toPLURBigInt`
-    /// convention, mirroring desktop's `formatRawTokenBalance(..., 16)`).
-    private func formatBzz(_ plur: BigUInt) -> String {
-        return BalanceFormatter.format(
-            wei: plur,
-            decimals: 16,
-            symbol: "xBZZ",
-            maxFractionDigits: 4
-        )
     }
 }

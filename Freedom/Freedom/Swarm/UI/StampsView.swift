@@ -59,7 +59,12 @@ struct StampsView: View {
     private var list: some View {
         VStack(spacing: 12) {
             ForEach(stampService.stamps) { batch in
-                StampCard(batch: batch)
+                NavigationLink {
+                    StampDetailView(batchID: batch.batchID)
+                } label: {
+                    StampCard(batch: batch)
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -74,15 +79,15 @@ private struct StampCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                statusBadge
+                StampStatusBadge(usable: batch.usable)
                 Spacer()
                 Text(batch.batchID.shortenedHex())
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
-            row(label: "Size", value: formatBytes(batch.effectiveBytes))
+            row(label: "Size", value: StampFormatting.bytes(batch.effectiveBytes))
             row(label: "Used", value: "\(batch.usagePercent)%")
-            row(label: "Time remaining", value: formatTTL(batch.ttlSeconds))
+            row(label: "Time remaining", value: StampFormatting.ttl(batch.ttlSeconds))
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -91,43 +96,11 @@ private struct StampCard: View {
         .opacity(batch.usable ? 1.0 : 0.6)
     }
 
-    private var statusBadge: some View {
-        Text(batch.usable ? "Usable" : "Not usable")
-            .font(.caption2).fontWeight(.semibold)
-            .foregroundStyle(batch.usable ? Color.green : Color.orange)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(
-                (batch.usable ? Color.green : Color.orange)
-                    .opacity(0.15)
-            )
-            .clipShape(Capsule())
-    }
-
     private func row(label: String, value: String) -> some View {
         HStack {
             Text(label).font(.caption).foregroundStyle(.secondary)
             Spacer()
             Text(value).font(.callout)
         }
-    }
-
-    /// Bee uses 1000-base units (consistent with bee-js). 1 GB = 1e9.
-    private func formatBytes(_ bytes: Int) -> String {
-        let gb = Double(bytes) / 1_000_000_000
-        if gb >= 1 { return String(format: "%.1f GB", gb) }
-        let mb = Double(bytes) / 1_000_000
-        if mb >= 1 { return String(format: "%.0f MB", mb) }
-        return "\(bytes) B"
-    }
-
-    private func formatTTL(_ seconds: Int) -> String {
-        if seconds <= 0 { return "—" }
-        let days = seconds / 86_400
-        if days > 0 { return "\(days) day\(days == 1 ? "" : "s")" }
-        let hours = seconds / 3600
-        if hours > 0 { return "\(hours) hour\(hours == 1 ? "" : "s")" }
-        let mins = max(1, seconds / 60)
-        return "\(mins) minute\(mins == 1 ? "" : "s")"
     }
 }
