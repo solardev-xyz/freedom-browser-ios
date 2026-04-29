@@ -801,6 +801,34 @@ Still open:
 - **Stamp size estimate helper**. Four sites currently use three different formulas (`parsed.data.count`, `max(payload.count, 4096)`, literal `4096`). A `StampService.estimatedBytes(forFeedWrite:)` style helper would centralize the "feed writes always cost at least one chunk" rule. Flagged at WP6.4 /simplify; deferred so the WP6.4 commit didn't grow.
 - **Shared `save()` helper across SwiftData stores**. Eight stores (`FaviconStore`, `BookmarkStore`, `HistoryStore`, `TabStore`, `SwarmFeedStore`, `SwarmPermissionStore`, `AutoApproveStore`, `PermissionStore`) repeat the identical `try save() / log on error` 5-line shape. A `ModelContext.saveLogging(category:)` extension would collapse the duplication. Flagged at WP6.1 /simplify; predates the WP and deferred to a focused cleanup commit.
 - **Test fixture: shared `inMemoryContainer(for:)` helper**. Five test files repeat the `ModelConfiguration(isStoredInMemoryOnly: true)` + `ModelContainer(for: ...)` boilerplate. Flagged at WP6.1 /simplify; deferred.
-- **Bridge-handler unit tests**. The interactive handlers (`handleRequestAccess`, `handlePublishData/Files`, `handleCreateFeed`, `handleUpdateFeed`, `handleWriteFeedEntry`) are covered only by smoke. A closure-injected dispatch fixture would unit-test the gates / approval flow / error-mapping matrix. Flagged at WP6.2 and re-flagged at WP6.4; deferred.
+- **Bridge-handler unit tests**. Interactive `SwarmBridge` handlers are smoke-only today; service-level layers (`SwarmFeedService`, `SwarmRouter`) are well-covered. Sketched scope below to make this resumable from cold.
+
+  **Approach**. Mirror `SwarmRouterTests`'s closure-injection pattern — drive the bridge via a test-only entry point that calls the private `dispatch(id:method:params:origin:)`. Capture replies via a stub `BridgeReplyChannel` (or a `recordedReplies: [(id, success?, errorDict?)]` collector injected in place of the real channel). Park-and-await flows resolve through a stub `pendingSwarmApproval` writer that auto-resolves to a configurable `Decision` after each `parkAndAwait` returns control to MainActor.
+
+  **Fixture shape**. A `SwarmBridgeTestFixture` that constructs:
+    - In-memory `ModelContainer(for: SwarmPermission.self, SwarmFeedRecord.self, SwarmFeedIdentity.self, DappPermission.self)` via `inMemoryContainer(for:)`.
+    - Stub `SwarmServices` with closure-stubbed `SwarmFeedService` / `SwarmPublishService` / `BeeAPIClient` and real-but-empty `SwarmPermissionStore` / `SwarmFeedStore` / `TagOwnership` / `SwarmFeedWriteLock`.
+    - A `Vault` initialized from a fixed test mnemonic so `signingKey(via:)` can derive deterministic publisher keys.
+    - The reply channel returns a `[String: Any]` dict per call; the test asserts on `code` / `message` / `data.reason`.
+    - A `decide(_:)` injection point so park-and-await tests can return `.approved` / `.denied` after the sheet would have shown.
+
+  **Per-handler matrix** (each row = one test):
+    - `handleRequestAccess`: ineligible-origin / concurrent-pending / already-connected (no sheet, touch-last-used) / new-grant approved / new-grant denied.
+    - `handlePublishData`: not-connected / invalid `data` / invalid `contentType` / payload exceeds `maxDataBytes` / caps fail (no usable stamps / ultra-light / not-ready) / denied / approved-via-sheet / approved-via-auto-approve / bee unreachable.
+    - `handlePublishFiles`: same connection + caps + approval matrix as `publishData`, plus files-array specifics — empty array / `maxFileCount` exceeded / duplicate paths / invalid `path` shapes (leading slash, backslash, control chars, dots, > 100 bytes UTF-8) / `indexDocument` not in files.
+    - `handleGetUploadStatus`: ineligible-origin / invalid tagUid (non-int, negative) / tag-not-owned / bee 404 (forget tag) / bee unreachable / happy path (return all 6 progress fields) / happy path with `done == true` (forget tag).
+    - `handleCreateFeed`: not-connected / invalid name (empty, > 64 chars, contains `/`, control char) / idempotent re-create (no sheet, return existing) / orphan record (record without identity → -32603) / first-grant denied / first-grant approved (app-scoped → identity persisted with allocated index, bee call, record persisted) / first-grant approved (bee-wallet → identity persisted with `nil` index) / subsequent-grant auto-approve / vault locked / bee unreachable.
+    - `handleUpdateFeed`: not-connected / invalid `feedId` / invalid `reference` (not 64-hex) / feed-not-found (no record) / orphan record (record without identity) / caps fail / auto-approve skips sheet / denied / approved happy path (per-topic lock taken, `updateReference` + `touchLastUsed` + `tagOwnership.record` on tag) / bee unreachable / `feedService.indexAlreadyExists` is unreachable here (auto-index always).
+    - `handleWriteFeedEntry`: not-connected / invalid name / empty `data` / non-base64 `data` / negative explicit `index` / feed-not-found / orphan record / caps fail / auto-approve / denied / approved happy path (per-topic lock, `tagOwnership.record`) / explicit-index collision → `-32602` with `data.reason: "index_already_exists"` / bee unreachable.
+
+  **What NOT to test** (covered elsewhere, would just duplicate):
+    - SOC byte composition (covered by `SwarmSOCTests`).
+    - EIP-191 signing semantics (covered by `FeedSignerTests`).
+    - Capability-string vocabulary (covered by `SwarmCapabilitiesTests`).
+    - Feed-name / hex / topic validation rules (covered by `SwarmRouterTests`).
+    - Per-topic write-lock serialization (covered by `SwarmFeedWriteLockTests`).
+    - `BridgeReplyChannel` itself (one-line forwards over `JSONSerialization` + `evaluateJavaScript`; if the channel is wrong every existing smoke would have failed).
+
+  **Estimated size**: ~150 LoC fixture + ~30-50 LoC per handler × 7 = ~400-500 LoC of tests. Single commit if the fixture works on first try; possibly two commits (fixture + matrix). Flagged at WP6.2 and re-flagged at WP6.4 /simplify; deferred until the WP6 surface stopped moving.
 - **Vault-locked-after-unlock race UX**. User unlocks at the sheet, backgrounds the app long enough for auto-lock, foregrounds and taps Allow → bridge handler hits `Vault.Error.notUnlocked` and surfaces `-32603 internalError`. Real but rare; would benefit from a more specific error (e.g. `4001 user_rejected` with a re-prompt suggestion, or a new `4100` reason `vault-locked`). Flagged at WP6.2 /simplify; deferred.
 - **Bee `/feeds/{owner}/{topic}?index=N` at-or-before semantics**. Caught at WP6.4 smoke; iOS now uses `/chunks/{socAddress}` for explicit-index reads and probes. Worth raising upstream on bee that the feeds-endpoint behavior is surprising (most other implementations route the same way bee-js does — through the chunks endpoint — but the feeds endpoint suggests it should work for explicit indices).
