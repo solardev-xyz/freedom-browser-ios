@@ -21,6 +21,19 @@ final class StampService {
         case failed(String)
     }
 
+    /// Extend (topup / dilute) state. Independent of `BuyState` so a
+    /// concurrent buy + extend don't share one slot — bee accepts
+    /// both endpoints in parallel against different batches.
+    enum ExtendState: Equatable {
+        case idle
+        case estimating
+        /// Bee blocks on chain confirmation (~30 s, can stretch to
+        /// minutes). UI keeps the button locked + spinner shown.
+        case patching
+        case completed
+        case failed(String)
+    }
+
     /// Preset cards, copied verbatim from desktop
     /// `stamp-manager.js:14-19`. Default is index 1 (Small project).
     static let presets: [Preset] = [
@@ -41,11 +54,42 @@ final class StampService {
         var id: String { label }
     }
 
+    /// Duration-extend presets — additive days. Default (index 1, +30
+    /// days) lines up with the buy flow's "Small project" slot.
+    static let durationExtendPresets: [DurationExtendPreset] = [
+        .init(label: "+7 days", additionalDays: 7),
+        .init(label: "+30 days", additionalDays: 30),
+        .init(label: "+90 days", additionalDays: 90),
+    ]
+    static let defaultDurationExtendIndex = 1
+
+    /// Size-extend presets — absolute target sizes. Same tier ladder
+    /// as the buy presets so users see one mental model. UI disables
+    /// rows ≤ batch's current size.
+    static let sizeExtendPresets: [SizeExtendPreset] = [
+        .init(label: "1 GB", sizeGB: 1),
+        .init(label: "5 GB", sizeGB: 5),
+        .init(label: "25 GB", sizeGB: 25),
+    ]
+
+    struct DurationExtendPreset: Equatable, Identifiable {
+        let label: String
+        let additionalDays: Int
+        var id: String { label }
+    }
+
+    struct SizeExtendPreset: Equatable, Identifiable {
+        let label: String
+        let sizeGB: Int
+        var id: String { label }
+    }
+
     private(set) var stamps: [PostageBatch] = []
     /// True iff at least one of the current batches reports `usable`.
     /// Drives the publish-setup banner gate and step-4 status.
     private(set) var hasUsableStamps: Bool = false
     private(set) var buyState: BuyState = .idle
+    private(set) var extendState: ExtendState = .idle
 
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private let bee: BeeAPIClient
@@ -185,6 +229,92 @@ final class StampService {
     /// after a successful purchase.
     func resetBuyState() {
         buyState = .idle
+    }
+
+    // MARK: - Extend flows
+
+    /// Cost preview for `PATCH /stamps/topup`. The chequebook is charged
+    /// `2^depth × additionalAmount` where `additionalAmount` is derived
+    /// from `additionalDays` at the current network price.
+    func estimateExtendDurationCost(
+        batch: PostageBatch, additionalDays: Int
+    ) async -> BigUInt? {
+        guard let price = try? await fetchCurrentPrice() else { return nil }
+        let additionalAmount = StampMath.amountForDuration(
+            seconds: additionalDays * 86_400, pricePerBlock: price
+        )
+        return StampMath.costPlur(depth: batch.depth, amount: additionalAmount)
+    }
+
+    /// Cost preview for `PATCH /stamps/dilute`. No network call needed —
+    /// bee uses the existing batch's `amount`. Returns `nil` if
+    /// `targetSizeGB` would resolve to a depth ≤ current (UI should
+    /// disable that preset row anyway, but estimator fails closed).
+    func estimateExtendSizeCost(
+        batch: PostageBatch, targetSizeGB: Int
+    ) -> BigUInt? {
+        let newDepth = StampMath.depthForSize(bytes: targetSizeGB * 1_000_000_000)
+        guard newDepth > batch.depth, let oldAmount = batch.amountPlur else {
+            return nil
+        }
+        return StampMath.diluteCostPlur(
+            oldDepth: batch.depth, newDepth: newDepth, oldAmount: oldAmount
+        )
+    }
+
+    /// Run topup state machine: re-fetch price, post `PATCH /stamps/topup`,
+    /// refresh stamps, run chequebook auto-deposit. Mirrors `buy(...)`'s
+    /// structure but without the `.waitingForUsable` step — the batch
+    /// was already usable.
+    func extendDuration(batch: PostageBatch, additionalDays: Int) async {
+        extendState = .estimating
+        let price: Int
+        do {
+            price = try await fetchCurrentPrice()
+        } catch {
+            extendState = .failed("Couldn't read network price.")
+            return
+        }
+        let additionalAmount = StampMath.amountForDuration(
+            seconds: additionalDays * 86_400, pricePerBlock: price
+        )
+        extendState = .patching
+        do {
+            try await bee.topUpStamp(
+                batchID: batch.batchID, additionalAmount: additionalAmount
+            )
+            extendState = .completed
+            await refreshStamps()
+            Task { [weak self] in await self?.topUpChequebookIfBelowFloor() }
+        } catch {
+            extendState = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Run dilute state machine. `targetSizeGB` resolves to an absolute
+    /// depth via `StampMath.depthForSize` — bee's gotcha (the endpoint
+    /// takes absolute, not delta) is hidden behind this surface. Skips
+    /// `.estimating` (unlike `extendDuration`) — depth resolution is
+    /// synchronous, no network call to fail.
+    func extendSize(batch: PostageBatch, targetSizeGB: Int) async {
+        let newDepth = StampMath.depthForSize(bytes: targetSizeGB * 1_000_000_000)
+        guard newDepth > batch.depth else {
+            extendState = .failed("Target size must exceed current.")
+            return
+        }
+        extendState = .patching
+        do {
+            try await bee.diluteStamp(batchID: batch.batchID, newDepth: newDepth)
+            extendState = .completed
+            await refreshStamps()
+            Task { [weak self] in await self?.topUpChequebookIfBelowFloor() }
+        } catch {
+            extendState = .failed(error.localizedDescription)
+        }
+    }
+
+    func resetExtendState() {
+        extendState = .idle
     }
 
     // MARK: - Private

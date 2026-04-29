@@ -1,3 +1,4 @@
+import BigInt
 import Foundation
 
 /// Normalized model for a Bee postage batch. Maps from `/stamps` JSON.
@@ -27,4 +28,10 @@ struct PostageBatch: Equatable, Identifiable {
 
     var id: String { batchID }
     var usagePercent: Int { Int((usage * 100).rounded()) }
+
+    /// `amount` parsed as `BigUInt`. `nil` if bee returned a non-decimal
+    /// string — shouldn't happen, but callers that compute costs from
+    /// the amount (e.g. dilute estimator) should fail closed rather
+    /// than silently render `0`.
+    var amountPlur: BigUInt? { BigUInt(amount, radix: 10) }
 }

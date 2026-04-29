@@ -75,4 +75,14 @@ enum StampMath {
     static func costPlur(depth: Int, amount: BigUInt) -> BigUInt {
         return (BigUInt(1) << depth) * amount
     }
+
+    /// Additional cost in PLUR for `PATCH /stamps/dilute` from `oldDepth`
+    /// to `newDepth`, holding `oldAmount` constant. Bee charges
+    /// `(2^newDepth − 2^oldDepth) × oldAmount` from the chequebook.
+    /// Returns `0` when `newDepth ≤ oldDepth` (bee rejects, but the
+    /// estimator surface should fail closed).
+    static func diluteCostPlur(oldDepth: Int, newDepth: Int, oldAmount: BigUInt) -> BigUInt {
+        guard newDepth > oldDepth else { return 0 }
+        return ((BigUInt(1) << newDepth) - (BigUInt(1) << oldDepth)) * oldAmount
+    }
 }

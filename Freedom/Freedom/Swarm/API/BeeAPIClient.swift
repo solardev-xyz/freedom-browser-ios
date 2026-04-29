@@ -1,3 +1,4 @@
+import BigInt
 import Foundation
 
 /// Thin HTTP client for the embedded Bee node's REST API on
@@ -225,6 +226,30 @@ struct BeeAPIClient {
         }
         let tagUid = responseHeaders["swarm-tag"].flatMap { Int($0) }
         return (reference, tagUid)
+    }
+
+    /// `PATCH /stamps/topup/{batchID}/{additionalAmount}` — adds amount
+    /// to an existing batch's prepayment, extending its TTL. Bee blocks
+    /// the response until the chain tx confirms (~30 s on Gnosis, but
+    /// can stretch to minutes — same 5 min budget as the buy POST).
+    func topUpStamp(batchID: String, additionalAmount: BigUInt) async throws {
+        _ = try await sendData(
+            path: "/stamps/topup/\(batchID)/\(additionalAmount)",
+            method: "PATCH", timeout: 300
+        )
+    }
+
+    /// `PATCH /stamps/dilute/{batchID}/{newDepth}` — increases a batch's
+    /// depth (capacity). **Bee gotcha**: `newDepth` is the absolute new
+    /// depth, not a delta. Bee charges the chequebook
+    /// `(2^newDepth − 2^oldDepth) × oldAmount` automatically — caller
+    /// doesn't pass an amount. Same 5 min chain-confirm budget as
+    /// `topUpStamp`.
+    func diluteStamp(batchID: String, newDepth: Int) async throws {
+        _ = try await sendData(
+            path: "/stamps/dilute/\(batchID)/\(newDepth)",
+            method: "PATCH", timeout: 300
+        )
     }
 
     /// `POST` with a binary body — `swarm_publishData` (raw payload) and

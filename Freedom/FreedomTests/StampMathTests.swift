@@ -100,4 +100,42 @@ final class StampMathTests: XCTestCase {
         XCTAssertGreaterThan(cost, BigUInt(5) * BigUInt(10).power(15))
         XCTAssertLessThan(cost, BigUInt(7) * BigUInt(10).power(15))
     }
+
+    // MARK: - Dilute cost
+
+    /// Dilute from depth 21 → 22 doubles the slot count, so the
+    /// additional cost is exactly `2^21 × oldAmount` (since
+    /// `2^22 − 2^21 = 2^21`).
+    func testDiluteCostOneStepDoubling() {
+        let amount = BigUInt(2_903_040_001)
+        let cost = StampMath.diluteCostPlur(
+            oldDepth: 21, newDepth: 22, oldAmount: amount
+        )
+        XCTAssertEqual(cost, BigUInt(2_097_152) * amount)
+    }
+
+    /// Two-step dilute (21 → 23): `2^23 − 2^21 = 8M − 2M = 6M`.
+    func testDiluteCostTwoSteps() {
+        let amount = BigUInt(1_000)
+        let cost = StampMath.diluteCostPlur(
+            oldDepth: 21, newDepth: 23, oldAmount: amount
+        )
+        XCTAssertEqual(cost, (BigUInt(1) << 23) * amount - (BigUInt(1) << 21) * amount)
+        XCTAssertEqual(cost, BigUInt(6_291_456) * amount)
+    }
+
+    /// `newDepth ≤ oldDepth` → 0. Bee would reject; estimator surface
+    /// fails closed so callers don't display nonsense costs for an
+    /// invalid pick (though the UI also disables the row).
+    func testDiluteCostFailsClosedOnNonPositiveDelta() {
+        let amount = BigUInt(1_000)
+        XCTAssertEqual(
+            StampMath.diluteCostPlur(oldDepth: 22, newDepth: 22, oldAmount: amount),
+            0
+        )
+        XCTAssertEqual(
+            StampMath.diluteCostPlur(oldDepth: 22, newDepth: 21, oldAmount: amount),
+            0
+        )
+    }
 }
