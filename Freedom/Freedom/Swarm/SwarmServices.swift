@@ -20,6 +20,8 @@ struct SwarmServices {
     /// query to bee. One instance per app session; shared across all
     /// `BrowserTab`s so cross-tab same-origin reads work.
     let tagOwnership: TagOwnership
+    /// Shared across tabs so two-tab same-dapp updates serialize.
+    let feedWriteLock: SwarmFeedWriteLock
     /// Returns `nil` when bee is fully ready, or one of
     /// `SwarmRouter.ErrorPayload.Reason`'s node-side strings otherwise.
     /// Composed once in `FreedomApp.init` from the four observable

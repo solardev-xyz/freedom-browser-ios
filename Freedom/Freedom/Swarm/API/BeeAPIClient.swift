@@ -148,6 +148,37 @@ struct BeeAPIClient {
         return reference
     }
 
+    /// `POST /soc/{owner}/{identifier}?sig=<sig_hex>` — uploads a
+    /// Single Owner Chunk. Body is `span_8 || payload`. Bee verifies
+    /// SOC ownership by recovering the public key from the signature
+    /// + the chunk's content-addressed digest. Returns the SOC's
+    /// reference + the upload tag UID. Same `Swarm-Pin` /
+    /// `Swarm-Deferred-Upload` headers as the publish path so chunks
+    /// don't GC and bee returns the tag immediately.
+    func postSOC(
+        owner: String, identifier: String, sig: String,
+        body: Data, batchID: String
+    ) async throws -> (reference: String, tagUid: Int?) {
+        let (data, responseHeaders) = try await postBytes(
+            "/soc/\(owner)/\(identifier)",
+            body: body,
+            contentType: "application/octet-stream",
+            headers: [
+                "Swarm-Postage-Batch-Id": batchID,
+                "Swarm-Pin": "true",
+                "Swarm-Deferred-Upload": "true",
+            ],
+            query: ["sig": sig]
+        )
+        guard let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let reference = dict["reference"] as? String,
+              !reference.isEmpty else {
+            throw Error.malformedResponse
+        }
+        let tagUid = responseHeaders["swarm-tag"].flatMap { Int($0) }
+        return (reference, tagUid)
+    }
+
     /// `POST` with a binary body — `swarm_publishData` (raw payload) and
     /// `swarm_publishFiles` (tar collection). Caller supplies
     /// `Content-Type` plus any bee-specific headers

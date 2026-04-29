@@ -205,7 +205,7 @@ final class SwarmRouter {
         let ownerHex: String
 
         if let topic = topicString {
-            guard Self.isValidTopicHex(topic) else {
+            guard SwarmRef.isHex(topic, length: 64) else {
                 throw RouterError.invalidParams(
                     reason: ErrorPayload.Reason.invalidTopic,
                     message: "topic must be a 64-character hex string."
@@ -285,10 +285,6 @@ final class SwarmRouter {
             dict["nextIndex"] = Int(next)
         }
         return dict
-    }
-
-    private static func isValidTopicHex(_ s: String) -> Bool {
-        s.count == 64 && s.allSatisfy(\.isHexDigit)
     }
 
     /// Returns lowercased 40-char hex, no `0x` prefix. `nil` for any

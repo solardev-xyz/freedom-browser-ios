@@ -118,6 +118,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         case "swarm_createFeed":
             await handleCreateFeed(id: id, origin: origin, params: params)
             return
+        case "swarm_updateFeed":
+            await handleUpdateFeed(id: id, origin: origin, params: params)
+            return
         default:
             break
         }
@@ -175,6 +178,25 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                 message: "Connect first — \(origin.displayString) isn't authorized.",
                 reason: SwarmRouter.ErrorPayload.Reason.notConnected
             )
+            return false
+        }
+        return true
+    }
+
+    /// Routes through the router's `capabilities` (same vocabulary as
+    /// `swarm_getCapabilities`) so dapps see the same `reason` strings
+    /// across the feature-detect read and the write-time error. Replies
+    /// `4900 nodeUnavailable` and returns `false` if not ready.
+    private func requireCanPublish(id: Int, origin: OriginIdentity) -> Bool {
+        let caps = router.capabilities(origin: origin)
+        guard caps.canPublish else {
+            // `capabilities` always sets a reason on `false`; fallback
+            // covers a future invariant break without going silent.
+            let reason = caps.reason ?? SwarmRouter.ErrorPayload.Reason.nodeNotReady
+            replyError(id: id,
+                       code: SwarmRouter.ErrorPayload.Code.nodeUnavailable,
+                       message: "Node not ready: \(reason)",
+                       reason: reason)
             return false
         }
         return true
@@ -258,20 +280,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                               message: "\(error)")
         }
 
-        // Capability gate. We've already verified `isConnected`, so any
-        // reason returned here is node-side (mode/sync/stamps). Routes
-        // through the router's same `capabilities` check that backs
-        // `swarm_getCapabilities` — keeps the vocabulary aligned.
-        let caps = router.capabilities(origin: origin)
-        if !caps.canPublish {
-            // `capabilities` always sets a reason on `false`; the
-            // fallback covers a future invariant break without going
-            // silent.
-            let reason = caps.reason ?? Reason.nodeNotReady
-            return replyError(id: id, code: Code.nodeUnavailable,
-                              message: "Node not ready: \(reason)",
-                              reason: reason)
-        }
+        guard requireCanPublish(id: id, origin: origin) else { return }
 
         guard let batch = StampService.selectBestBatch(
             forBytes: parsed.data.count,
@@ -400,13 +409,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                               message: "\(error)")
         }
 
-        let caps = router.capabilities(origin: origin)
-        if !caps.canPublish {
-            let reason = caps.reason ?? Reason.nodeNotReady
-            return replyError(id: id, code: Code.nodeUnavailable,
-                              message: "Node not ready: \(reason)",
-                              reason: reason)
-        }
+        guard requireCanPublish(id: id, origin: origin) else { return }
 
         guard let batch = StampService.selectBestBatch(
             forBytes: parsed.totalBytes,
@@ -707,13 +710,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             ))
         }
 
-        let caps = router.capabilities(origin: origin)
-        if !caps.canPublish {
-            let reason = caps.reason ?? Reason.nodeNotReady
-            return replyError(id: id, code: Code.nodeUnavailable,
-                              message: "Node not ready: \(reason)",
-                              reason: reason)
-        }
+        guard requireCanPublish(id: id, origin: origin) else { return }
 
         // First grant always shows the sheet so the user can pick the
         // identity mode; auto-approve only kicks in for subsequent
@@ -802,6 +799,118 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             "bzzUrl": "bzz://\(manifestRef)",
             "identityMode": identityMode,
         ]
+    }
+
+    // MARK: - swarm_updateFeed
+
+    /// SWIP §"swarm_updateFeed". Per-topic serialization via
+    /// `feedWriteLock` so two concurrent updates to the same feed
+    /// can't both resolve the same "next" index — the second waits
+    /// for the first to publish before reading.
+    private func handleUpdateFeed(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        let Reason = SwarmRouter.ErrorPayload.Reason.self
+
+        guard assertEligibleAndFree(id: id, origin: origin),
+              requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        guard let feedId = params["feedId"] as? String,
+              SwarmRouter.isValidFeedName(feedId) else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "feedId must be 1-64 chars, no '/', no control chars.",
+                              reason: Reason.invalidFeedName)
+        }
+        guard let reference = params["reference"] as? String,
+              SwarmRef.isHex(reference, length: 64) else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "reference must be a 64-character hex string.")
+        }
+
+        // Feed must exist locally — bee accepts any (owner, topic) but
+        // SWIP §"Behavior" requires the dapp's feed to be registered
+        // before update. Without a local record we have no manifest
+        // reference to surface back as `bzzUrl` either.
+        guard let record = services.feedStore.lookup(origin: origin.key, name: feedId) else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "Feed not found: \(feedId).",
+                              reason: Reason.feedNotFound)
+        }
+        guard let identity = services.feedStore.feedIdentity(origin: origin.key) else {
+            return replyError(id: id, code: Code.internalError,
+                              message: "Feed record without matching identity.")
+        }
+
+        guard requireCanPublish(id: id, origin: origin) else { return }
+
+        // updateFeed is never a first grant — identity was chosen at
+        // create-time, so auto-approve is eligible.
+        let decision: ApprovalRequest.Decision
+        if services.permissionStore.isAutoApproveFeeds(origin: origin.key) {
+            decision = .approved
+        } else {
+            decision = await parkAndAwait(
+                origin: origin,
+                kind: .swarmFeedAccess(SwarmFeedAccessDetails(
+                    feedName: feedId, isFirstGrant: false
+                ))
+            )
+        }
+        guard case .approved = decision else {
+            return replyError(id: id, code: Code.userRejected,
+                              message: "User rejected the request.")
+        }
+
+        let privateKey: Data
+        do {
+            privateKey = try identity.signingKey(via: services.vault)
+        } catch {
+            return replyError(id: id, code: Code.internalError,
+                              message: "Couldn't derive feed signing key: \(error)")
+        }
+
+        // 4 KB capacity matches `createFeed` — SOC body is small (40-byte payload).
+        guard let batch = StampService.selectBestBatch(
+            forBytes: 4096, in: services.currentStamps()
+        ) else {
+            return replyError(id: id, code: Code.nodeUnavailable,
+                              message: "No usable stamp.",
+                              reason: Reason.noUsableStamps)
+        }
+
+        let topicHex = record.topic
+        let ownerHex = record.owner
+        do {
+            let result = try await services.feedWriteLock.withLock(topicHex: topicHex) { [services] in
+                try await services.feedService.updateFeed(
+                    ownerHex: ownerHex, topicHex: topicHex,
+                    contentReference: reference,
+                    privateKey: privateKey,
+                    batchID: batch.batchID
+                )
+            }
+            services.feedStore.updateReference(
+                origin: origin.key, name: feedId, reference: reference
+            )
+            services.permissionStore.touchLastUsed(origin: origin.key)
+            if let tagUid = result.tagUid {
+                services.tagOwnership.record(tag: tagUid, origin: origin.key)
+            }
+            reply(id: id, result: [
+                "feedId": feedId,
+                "reference": reference,
+                "bzzUrl": "bzz://\(record.manifestReference)",
+                "index": Int(result.index),
+            ])
+        } catch SwarmFeedService.FeedServiceError.unreachable {
+            replyError(id: id, code: Code.nodeUnavailable,
+                       message: "Bee unreachable.",
+                       reason: Reason.nodeStopped)
+        } catch {
+            replyError(id: id, code: Code.internalError,
+                       message: "updateFeed failed: \(error)")
+        }
     }
 
     // MARK: - Reply path
