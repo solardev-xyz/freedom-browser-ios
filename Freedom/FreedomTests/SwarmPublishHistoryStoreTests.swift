@@ -16,11 +16,10 @@ final class SwarmPublishHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.entries().count, 0)
     }
 
-    func testRecordInsertsUploadingRow() throws {
-        let id = store.record(
+    func testRecordInsertsUploadingRow() {
+        let row = store.record(
             kind: .data, name: "hello.txt", origin: "https://app.eth", bytesSize: 1234
         )
-        let row = try XCTUnwrap(store.entry(id: id))
         XCTAssertEqual(row.kind, .data)
         XCTAssertEqual(row.name, "hello.txt")
         XCTAssertEqual(row.origin, "https://app.eth")
@@ -31,11 +30,10 @@ final class SwarmPublishHistoryStoreTests: XCTestCase {
         XCTAssertNil(row.errorMessage)
     }
 
-    func testCompletePopulatesReferenceAndFinalStatus() throws {
-        let id = store.record(kind: .files, name: "site", origin: "https://app.eth")
+    func testCompletePopulatesReferenceAndFinalStatus() {
+        let row = store.record(kind: .files, name: "site", origin: "https://app.eth")
         let ref = String(repeating: "a", count: 64)
-        store.complete(id: id, reference: ref, tagUid: 42, batchId: "batch-xyz")
-        let row = try XCTUnwrap(store.entry(id: id))
+        store.complete(row, reference: ref, tagUid: 42, batchId: "batch-xyz")
         XCTAssertEqual(row.status, .completed)
         XCTAssertEqual(row.reference, ref)
         XCTAssertEqual(row.tagUid, 42)
@@ -45,24 +43,13 @@ final class SwarmPublishHistoryStoreTests: XCTestCase {
         XCTAssertNil(row.errorMessage)
     }
 
-    func testFailRecordsErrorMessage() throws {
-        let id = store.record(kind: .feedEntry, name: "posts", origin: "https://app.eth")
-        store.fail(id: id, errorMessage: "no usable stamps")
-        let row = try XCTUnwrap(store.entry(id: id))
+    func testFailRecordsErrorMessage() {
+        let row = store.record(kind: .feedEntry, name: "posts", origin: "https://app.eth")
+        store.fail(row, errorMessage: "no usable stamps")
         XCTAssertEqual(row.status, .failed)
         XCTAssertEqual(row.errorMessage, "no usable stamps")
         XCTAssertNotNil(row.completedAt)
         XCTAssertNil(row.reference)
-    }
-
-    func testCompleteOnUnknownIdIsNoOp() {
-        store.complete(id: UUID(), reference: String(repeating: "a", count: 64))
-        XCTAssertEqual(store.entries().count, 0)
-    }
-
-    func testFailOnUnknownIdIsNoOp() {
-        store.fail(id: UUID(), errorMessage: "x")
-        XCTAssertEqual(store.entries().count, 0)
     }
 
     func testEntriesSortedNewestFirst() throws {
@@ -84,23 +71,22 @@ final class SwarmPublishHistoryStoreTests: XCTestCase {
         XCTAssertEqual(names, ["new", "old"])
     }
 
-    func testSweepOrphansFlipsUploadingToFailed() throws {
+    func testSweepOrphansFlipsUploadingToFailed() {
         let interrupted = store.record(kind: .data, name: "a", origin: "https://a.eth")
         let alreadyDone = store.record(kind: .data, name: "b", origin: "https://a.eth")
-        store.complete(id: alreadyDone, reference: String(repeating: "b", count: 64))
+        store.complete(alreadyDone, reference: String(repeating: "b", count: 64))
         let alreadyFailed = store.record(kind: .data, name: "c", origin: "https://a.eth")
-        store.fail(id: alreadyFailed, errorMessage: "x")
+        store.fail(alreadyFailed, errorMessage: "x")
 
         store.sweepOrphans()
 
-        let interruptedRow = try XCTUnwrap(store.entry(id: interrupted))
-        XCTAssertEqual(interruptedRow.status, .failed)
-        XCTAssertEqual(interruptedRow.errorMessage, "Interrupted by app exit")
-        XCTAssertNotNil(interruptedRow.completedAt)
+        XCTAssertEqual(interrupted.status, .failed)
+        XCTAssertEqual(interrupted.errorMessage, "Interrupted by app exit")
+        XCTAssertNotNil(interrupted.completedAt)
 
         // Settled rows are untouched.
-        XCTAssertEqual(try XCTUnwrap(store.entry(id: alreadyDone)).status, .completed)
-        XCTAssertEqual(try XCTUnwrap(store.entry(id: alreadyFailed)).errorMessage, "x")
+        XCTAssertEqual(alreadyDone.status, .completed)
+        XCTAssertEqual(alreadyFailed.errorMessage, "x")
     }
 
     func testSweepOrphansOnEmptyStoreIsNoOp() {
@@ -110,12 +96,12 @@ final class SwarmPublishHistoryStoreTests: XCTestCase {
 
     func testDeleteRemovesSingleRow() {
         let keep = store.record(kind: .data, name: "keep", origin: "https://a.eth")
-        let drop = store.record(kind: .data, name: "drop", origin: "https://a.eth")
-        store.delete(id: drop)
+        _ = store.record(kind: .data, name: "drop", origin: "https://a.eth")
+        let dropId = store.entries().first { $0.name == "drop" }!.id
+        store.delete(id: dropId)
         let names = store.entries().map(\.name)
         XCTAssertEqual(names, ["keep"])
-        XCTAssertNotNil(store.entry(id: keep))
-        XCTAssertNil(store.entry(id: drop))
+        XCTAssertNotNil(store.entry(id: keep.id))
     }
 
     func testClearAllRemovesEverything() {
@@ -127,8 +113,7 @@ final class SwarmPublishHistoryStoreTests: XCTestCase {
     }
 
     func testBzzUrlNilUntilReferenceSet() {
-        let id = store.record(kind: .data, name: "x", origin: "https://a.eth")
-        let row = store.entry(id: id)
-        XCTAssertNil(row?.bzzUrl)
+        let row = store.record(kind: .data, name: "x", origin: "https://a.eth")
+        XCTAssertNil(row.bzzUrl)
     }
 }

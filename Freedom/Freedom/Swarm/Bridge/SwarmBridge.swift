@@ -345,6 +345,10 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             replyError(id: id, code: Code.userRejected,
                        message: "User rejected the request.")
         case .approved:
+            let historyRow = services.publishHistoryStore.record(
+                kind: .data, name: parsed.name, origin: origin.key,
+                bytesSize: parsed.data.count
+            )
             do {
                 let result = try await services.publishService.publishData(
                     parsed.data,
@@ -353,15 +357,21 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                     batchID: batch.batchID
                 )
                 recordPublishSuccess(tagUid: result.tagUid, origin: origin)
+                services.publishHistoryStore.complete(
+                    historyRow, reference: result.reference,
+                    tagUid: result.tagUid, batchId: batch.batchID
+                )
                 reply(id: id, result: [
                     "reference": result.reference,
                     "bzzUrl": "bzz://\(result.reference)",
                 ])
             } catch SwarmPublishService.PublishError.unreachable {
+                services.publishHistoryStore.fail(historyRow, errorMessage: "Bee unreachable.")
                 replyError(id: id, code: Code.nodeUnavailable,
                            message: "Bee unreachable.",
                            reason: Reason.nodeStopped)
             } catch {
+                services.publishHistoryStore.fail(historyRow, errorMessage: "Publish failed: \(error)")
                 replyError(id: id, code: Code.internalError,
                            message: "Publish failed: \(error)")
             }
@@ -490,6 +500,14 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             replyError(id: id, code: Code.userRejected,
                        message: "User rejected the request.")
         case .approved:
+            // `indexDocument` reads best as the row label; first path is
+            // a usable fallback for tree uploads that don't designate
+            // one. UI never has to render an unnamed row.
+            let historyName = parsed.indexDocument ?? parsed.entries.first?.path
+            let historyRow = services.publishHistoryStore.record(
+                kind: .files, name: historyName, origin: origin.key,
+                bytesSize: parsed.totalBytes
+            )
             do {
                 let result = try await services.publishService.publishFiles(
                     tarBytes,
@@ -497,16 +515,22 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                     batchID: batch.batchID
                 )
                 recordPublishSuccess(tagUid: result.tagUid, origin: origin)
+                services.publishHistoryStore.complete(
+                    historyRow, reference: result.reference,
+                    tagUid: result.tagUid, batchId: batch.batchID
+                )
                 reply(id: id, result: [
                     "reference": result.reference,
                     "bzzUrl": "bzz://\(result.reference)",
                     "tagUid": result.tagUid as Any? ?? NSNull(),
                 ])
             } catch SwarmPublishService.PublishError.unreachable {
+                services.publishHistoryStore.fail(historyRow, errorMessage: "Bee unreachable.")
                 replyError(id: id, code: Code.nodeUnavailable,
                            message: "Bee unreachable.",
                            reason: Reason.nodeStopped)
             } catch {
+                services.publishHistoryStore.fail(historyRow, errorMessage: "Publish failed: \(error)")
                 replyError(id: id, code: Code.internalError,
                            message: "Publish failed: \(error)")
             }
@@ -797,6 +821,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                               reason: Reason.noUsableStamps)
         }
 
+        let historyRow = services.publishHistoryStore.record(
+            kind: .feedCreate, name: name, origin: origin.key
+        )
         do {
             let result = try await services.feedService.createFeed(
                 ownerHex: ownerHex, topicHex: topicHex, batchID: batch.batchID
@@ -807,16 +834,22 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                 manifestReference: result.manifestReference
             )
             services.permissionStore.touchLastUsed(origin: origin.key)
+            services.publishHistoryStore.complete(
+                historyRow, reference: result.manifestReference,
+                batchId: batch.batchID
+            )
             reply(id: id, result: Self.createFeedResult(
                 feedId: name, owner: ownerHex, topic: topicHex,
                 manifestRef: result.manifestReference,
                 identityMode: identity.identityMode.rawValue
             ))
         } catch SwarmFeedService.FeedServiceError.unreachable {
+            services.publishHistoryStore.fail(historyRow, errorMessage: "Bee unreachable.")
             replyError(id: id, code: Code.nodeUnavailable,
                        message: "Bee unreachable.",
                        reason: Reason.nodeStopped)
         } catch {
+            services.publishHistoryStore.fail(historyRow, errorMessage: "createFeed failed: \(error)")
             replyError(id: id, code: Code.internalError,
                        message: "createFeed failed: \(error)")
         }
@@ -916,6 +949,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
 
         let topicHex = record.topic
         let ownerHex = record.owner
+        let historyRow = services.publishHistoryStore.record(
+            kind: .feedUpdate, name: feedId, origin: origin.key
+        )
         do {
             let result = try await services.feedWriteLock.withLock(topicHex: topicHex) { [services] in
                 try await services.feedService.updateFeed(
@@ -932,6 +968,10 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             if let tagUid = result.tagUid {
                 services.tagOwnership.record(tag: tagUid, origin: origin.key)
             }
+            services.publishHistoryStore.complete(
+                historyRow, reference: reference,
+                tagUid: result.tagUid, batchId: batch.batchID
+            )
             reply(id: id, result: [
                 "feedId": feedId,
                 "reference": reference,
@@ -939,10 +979,12 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                 "index": Int(result.index),
             ])
         } catch SwarmFeedService.FeedServiceError.unreachable {
+            services.publishHistoryStore.fail(historyRow, errorMessage: "Bee unreachable.")
             replyError(id: id, code: Code.nodeUnavailable,
                        message: "Bee unreachable.",
                        reason: Reason.nodeStopped)
         } catch {
+            services.publishHistoryStore.fail(historyRow, errorMessage: "updateFeed failed: \(error)")
             replyError(id: id, code: Code.internalError,
                        message: "updateFeed failed: \(error)")
         }
@@ -1040,6 +1082,10 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
 
         let topicHex = record.topic
         let ownerHex = record.owner
+        let historyRow = services.publishHistoryStore.record(
+            kind: .feedEntry, name: name, origin: origin.key,
+            bytesSize: payload.count
+        )
         do {
             let result = try await services.feedWriteLock.withLock(topicHex: topicHex) { [services] in
                 try await services.feedService.writeFeedEntry(
@@ -1054,16 +1100,25 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             if let tagUid = result.tagUid {
                 services.tagOwnership.record(tag: tagUid, origin: origin.key)
             }
+            services.publishHistoryStore.complete(
+                historyRow, reference: result.socReference,
+                tagUid: result.tagUid, batchId: batch.batchID
+            )
             reply(id: id, result: ["index": Int(result.index)])
         } catch SwarmFeedService.FeedServiceError.indexAlreadyExists(let index) {
+            services.publishHistoryStore.fail(
+                historyRow, errorMessage: "Entry already exists at index \(index)."
+            )
             replyError(id: id, code: Code.invalidParams,
                        message: "Entry already exists at index \(index).",
                        reason: Reason.indexAlreadyExists)
         } catch SwarmFeedService.FeedServiceError.unreachable {
+            services.publishHistoryStore.fail(historyRow, errorMessage: "Bee unreachable.")
             replyError(id: id, code: Code.nodeUnavailable,
                        message: "Bee unreachable.",
                        reason: Reason.nodeStopped)
         } catch {
+            services.publishHistoryStore.fail(historyRow, errorMessage: "writeFeedEntry failed: \(error)")
             replyError(id: id, code: Code.internalError,
                        message: "writeFeedEntry failed: \(error)")
         }

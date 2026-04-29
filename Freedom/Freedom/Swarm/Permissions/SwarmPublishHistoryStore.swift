@@ -38,33 +38,35 @@ final class SwarmPublishHistoryStore {
         return try? context.fetch(descriptor).first
     }
 
-    /// Inserts a new `uploading` row and returns the assigned id. The
-    /// caller stashes that id for the matching `complete`/`fail` call.
+    /// Inserts a new `uploading` row and returns it for the caller to
+    /// hand back to `complete`/`fail`. Direct-row API (rather than a
+    /// UUID round-trip) avoids a `FetchDescriptor` per finalize on every
+    /// publish; safe because the store is `@MainActor` and the row
+    /// reference never crosses actors.
     @discardableResult
     func record(
         kind: SwarmPublishKind,
         name: String?,
         origin: String,
         bytesSize: Int? = nil
-    ) -> UUID {
+    ) -> SwarmPublishHistoryRecord {
         let record = SwarmPublishHistoryRecord(
             kind: kind, name: name, origin: origin, bytesSize: bytesSize
         )
         context.insert(record)
         save()
-        return record.id
+        return record
     }
 
     /// Final-state success update. `reference` is the 64-char hex
     /// returned by bee (manifest reference for publishes / new manifest
     /// for `updateFeed` / SOC address for `writeFeedEntry`).
     func complete(
-        id: UUID,
+        _ row: SwarmPublishHistoryRecord,
         reference: String,
         tagUid: Int? = nil,
         batchId: String? = nil
     ) {
-        guard let row = entry(id: id) else { return }
         row.status = .completed
         row.reference = reference
         row.tagUid = tagUid
@@ -73,8 +75,7 @@ final class SwarmPublishHistoryStore {
         save()
     }
 
-    func fail(id: UUID, errorMessage: String) {
-        guard let row = entry(id: id) else { return }
+    func fail(_ row: SwarmPublishHistoryRecord, errorMessage: String) {
         row.status = .failed
         row.errorMessage = errorMessage
         row.completedAt = .now
