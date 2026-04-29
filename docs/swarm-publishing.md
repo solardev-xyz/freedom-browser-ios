@@ -224,7 +224,8 @@ Freedom/
         ├── PublishStepRow.swift         ✅ checklist row component
         ├── StampsView.swift             ✅ list + empty state
         ├── StampPurchaseView.swift      ✅ preset chips + cost + buy
-        ├── StampExtendView.swift        🚧 deferred — extend duration / size
+        ├── StampDetailView.swift        ✅ per-batch detail; pushes StampExtendView
+        ├── StampExtendView.swift        ✅ two-tab (Duration / Size) extend form
         ├── SwarmConnectSheet.swift      ✅ (WP4) approval for swarm_requestAccess.
         │                                    Plain sheet — no account derivation, no chain.
         ├── SwarmPublishSheet.swift      ✅ (WP5) approval for publishData / publishFiles
@@ -548,16 +549,21 @@ Presets ([`StampService.swift`](../Freedom/Freedom/Swarm/Stamps/StampService.swi
 - Small project — 1 GB / 30 days *(default)*
 - Standard — 5 GB / 30 days
 
-### 7.4 Extension flows — 🚧 deferred
+### 7.4 Extension flows
 
-Originally part of WP3, deferred in the actual ship. Cheap presets last 7-30 days; users won't hit expiry for weeks/months and the UI would compete for attention with the WP4-6 publishing payoff. Pick this back up when usage signals a need (or when a real user's batch gets close to expiry).
+Shipped in the polish branch (`feature/swarm-polish`) once feed-write was settled. Service surface in `StampService.extend{Duration,Size}`; UI in `StampDetailView` + `StampExtendView`.
 
-When we do implement, the shape is straightforward — endpoints already exist:
+- **Extend duration**: `PATCH /stamps/topup/{batchId}/{amount}` — adds amount to the existing batch. `additionalAmount` is derived from the user's preset days (+7 / +30 / +90) at `/chainstate.currentPrice` via `StampMath.amountForDuration`; cost = `2^depth × additionalAmount`. UI tab: "Duration".
+- **Extend size**: `PATCH /stamps/dilute/{batchId}/{depth}` — bumps depth. **Bee semantic gotcha**: depth is the *absolute* new depth, not a delta. UI presets ("1 GB / 5 GB / 25 GB") compute the depth target via `StampMath.depthForSize`. Bee charges the chequebook `(2^newDepth − 2^oldDepth) × oldAmount` automatically — caller doesn't pass an amount. UI tab: "Size".
 
-- **Extend duration**: `PATCH /stamps/topup/{batchId}/{amount}` — adds amount to the existing batch. Cost = `2^depth × additionalAmount`. Presets: +7d, +30d, +90d.
-- **Extend size**: `PATCH /stamps/dilute/{batchId}/{depth}` — bumps depth. **Bee semantic gotcha**: depth is the *absolute* new depth, not a delta. UI presets ("1 GB → 5 GB → 25 GB") compute the depth target via `StampMath.depthForSize`.
+Cost preview uses the same `StampMath` helpers as the buy flow plus a new `StampMath.diluteCostPlur(oldDepth:newDepth:oldAmount:)` for the size case — golden vectors in `StampMathTests`.
 
-`StampMath.costPlur(depth:amount:)` already gives us cost client-side, same as the buy flow — no new math needed. New file would be `StampExtendView.swift` with two tabs.
+State machine lives on `StampService.extendState`, independent of `BuyState` so a concurrent buy + extend don't share one slot (bee accepts both endpoints in parallel against different batches). After every successful PATCH, `topUpChequebookIfBelowFloor` runs (same fire-and-forget shape as the buy flow — extends consume xBZZ from the chequebook just like buys, so the floor needs to be maintained).
+
+What's deliberately left out of v1:
+
+- **Custom inputs** (free-form days, free-form depth). Presets-only — covers the common case; falls back to "buy a new batch" for power users with bespoke needs.
+- **Proactive expiry warnings / low-balance banners**. The bare extend flow ships first; a "stamp expires in 3 days" surface (probably via a flag on `StampService` and an address-bar reader) is a separate follow-up.
 
 ### 7.5 UI
 
@@ -704,7 +710,7 @@ Originally six WPs, one PR each. WP1–3 shipped on `feature/swarm-publishing`. 
   Replaced the planned `/health` 1s + `/readiness` 2s + `/stamps` 5s + Gnosis chain-head poll with a single localhost `/chainstate` query (returns `{block, chainTip}` directly, available throughout the syncing window). Adaptive polling 3 s / 30 s. `.deployingChequebook` → `.startingUp`. `walletRPC` dependency dropped from `BeeReadiness`. See §6.5 for the full state-machine update.
 
 - **WP3 ✅ — Stamp management** (`d9df664`).
-  New: `BeeAPIClient`, `StampService`, `PostageBatch`, `StampMath` (replicates bee-js's depth/amount/cost math; bee has no `/stamps/cost` endpoint), `StampsView`, `StampPurchaseView`, `StampMathTests`. Stamps surface lives under the node sheet (`StampsView`), not "Wallet → Storage" as originally planned. Stamp extend (`StampExtendView`) deferred (§7.4).
+  New: `BeeAPIClient`, `StampService`, `PostageBatch`, `StampMath` (replicates bee-js's depth/amount/cost math; bee has no `/stamps/cost` endpoint), `StampsView`, `StampPurchaseView`, `StampMathTests`. Stamps surface lives under the node sheet (`StampsView`), not "Wallet → Storage" as originally planned. Stamp extend (`StampDetailView` + `StampExtendView`) shipped on the polish branch — see §7.4.
 
 - **(feat) ✅ — Node sheet wallet/chequebook + diagnostic logs** (`9481787`).
   `BeeWalletInfo` polls `/wallet` + `/chequebook/balance` every 30 s. Replaced the bare wallet card with structured "Node wallet" (xDAI / xBZZ / shortened address with tap-to-copy) and "Chequebook" (xBZZ / shortened address) cards. The inline log preview moved to a separate `NodeLogView` reachable via a tertiary "View logs" link.
@@ -791,44 +797,21 @@ Resolved during WP6:
 - ~~**SOC byte-format pinning**~~ — the SOC primitives (`feedIdentifier`, BMT-padded `makeCAC`, `socAddress`, signing message) shipped at WP6.1 with golden-vector tests against bee-js. Future iOS-side keccak / BMT drift can't slip past these.
 - ~~**Feed-write retry on transient errors**~~ — surfacing chosen. Dapps see the error and retry with their own backoff; service-layer retry would fight the per-topic write lock.
 
+Resolved during the polish branch (`feature/swarm-polish`):
+
+- ~~**Wallet-doc updates**~~ — cross-references added at `568879f`; §1.1, §5.1, §9 of `wallet-architecture.md` now reflect the M6 surface.
+- ~~**Stamp size estimate helper**~~ — `StampService.estimatedBytes(forFeedWrite:)` shipped at `21fae32`; collapses the three different formulas into one.
+- ~~**Shared `save()` helper across SwiftData stores**~~ — `ModelContext.saveLogging(_:to:)` extension shipped at `120833f`; eight stores collapsed to a single line each.
+- ~~**Test fixture: shared `inMemoryContainer(for:)` helper**~~ — shipped at `b94dcb9`; replaces the boilerplate across five test files.
+- ~~**Bridge-handler unit tests**~~ — fixture at `c8f77cd` (#7.1), per-handler matrix at `39e7a2b` (#7.2). 55 tests across all 7 interactive handlers; fixture exposes `setNextDecision(_:sideEffect:)` so tests model "sheet writes a row before resolving" without leaking fixture internals.
+- ~~**Stamp extension flows (§7.4)**~~ — service surface at `7a7892c` (`PATCH /stamps/topup` + `PATCH /stamps/dilute`, `StampMath.diluteCostPlur`, `StampService.extend{Duration,Size}`); UI at `3934e15` (`StampDetailView` + `StampExtendView` two-tab form).
+
 Still open:
 
 - **USTAR-vs-SWIP path-length divergence**. SWIP draft proposes 256-char `path`; iOS / desktop both enforce USTAR's 100-byte limit. Worth raising on the SWIP draft so the spec aligns with reality, or carrying PAX-extension support so paths up to 256 actually work.
 - **Stamp price USD estimate**. UI shows xBZZ only. Add a USD/EUR conversion when there's user-facing pricing demand.
-- **Wallet-doc updates**. After WP1 shipped, `wallet-architecture.md` §5.1 should mark `m/44'/60'/0'/0/1` as "surfaced" and add the publisher-key row at `m/44'/73406'/{i}'/0/0` (added at WP6.1). Cross-reference this doc.
 - **Top-up flows for node wallet + chequebook**. Currently the only deposit path is the funder (one-tx) and the auto-top-up (post-stamp-buy). Real management surface (top-up node wallet from main wallet; manual top-up of chequebook from node wallet) deferred until users hit balance floors in practice.
 - **`BeePasswordTests` re-enablement**. Currently `XCTSkipIf`'d because a test wipe of the production Keychain entry triggers `FreedomApp`'s legacy migration on next launch. Proper fix: parameterize `BeePassword` to use a `.test` Keychain account and remove the skip.
-- **Stamp size estimate helper**. Four sites currently use three different formulas (`parsed.data.count`, `max(payload.count, 4096)`, literal `4096`). A `StampService.estimatedBytes(forFeedWrite:)` style helper would centralize the "feed writes always cost at least one chunk" rule. Flagged at WP6.4 /simplify; deferred so the WP6.4 commit didn't grow.
-- **Shared `save()` helper across SwiftData stores**. Eight stores (`FaviconStore`, `BookmarkStore`, `HistoryStore`, `TabStore`, `SwarmFeedStore`, `SwarmPermissionStore`, `AutoApproveStore`, `PermissionStore`) repeat the identical `try save() / log on error` 5-line shape. A `ModelContext.saveLogging(category:)` extension would collapse the duplication. Flagged at WP6.1 /simplify; predates the WP and deferred to a focused cleanup commit.
-- **Test fixture: shared `inMemoryContainer(for:)` helper**. Five test files repeat the `ModelConfiguration(isStoredInMemoryOnly: true)` + `ModelContainer(for: ...)` boilerplate. Flagged at WP6.1 /simplify; deferred.
-- **Bridge-handler unit tests**. Interactive `SwarmBridge` handlers are smoke-only today; service-level layers (`SwarmFeedService`, `SwarmRouter`) are well-covered. Sketched scope below to make this resumable from cold.
-
-  **Approach**. Mirror `SwarmRouterTests`'s closure-injection pattern — drive the bridge via a test-only entry point that calls the private `dispatch(id:method:params:origin:)`. Capture replies via a stub `BridgeReplyChannel` (or a `recordedReplies: [(id, success?, errorDict?)]` collector injected in place of the real channel). Park-and-await flows resolve through a stub `pendingSwarmApproval` writer that auto-resolves to a configurable `Decision` after each `parkAndAwait` returns control to MainActor.
-
-  **Fixture shape**. A `SwarmBridgeTestFixture` that constructs:
-    - In-memory `ModelContainer(for: SwarmPermission.self, SwarmFeedRecord.self, SwarmFeedIdentity.self, DappPermission.self)` via `inMemoryContainer(for:)`.
-    - Stub `SwarmServices` with closure-stubbed `SwarmFeedService` / `SwarmPublishService` / `BeeAPIClient` and real-but-empty `SwarmPermissionStore` / `SwarmFeedStore` / `TagOwnership` / `SwarmFeedWriteLock`.
-    - A `Vault` initialized from a fixed test mnemonic so `signingKey(via:)` can derive deterministic publisher keys.
-    - The reply channel returns a `[String: Any]` dict per call; the test asserts on `code` / `message` / `data.reason`.
-    - A `decide(_:)` injection point so park-and-await tests can return `.approved` / `.denied` after the sheet would have shown.
-
-  **Per-handler matrix** (each row = one test):
-    - `handleRequestAccess`: ineligible-origin / concurrent-pending / already-connected (no sheet, touch-last-used) / new-grant approved / new-grant denied.
-    - `handlePublishData`: not-connected / invalid `data` / invalid `contentType` / payload exceeds `maxDataBytes` / caps fail (no usable stamps / ultra-light / not-ready) / denied / approved-via-sheet / approved-via-auto-approve / bee unreachable.
-    - `handlePublishFiles`: same connection + caps + approval matrix as `publishData`, plus files-array specifics — empty array / `maxFileCount` exceeded / duplicate paths / invalid `path` shapes (leading slash, backslash, control chars, dots, > 100 bytes UTF-8) / `indexDocument` not in files.
-    - `handleGetUploadStatus`: ineligible-origin / invalid tagUid (non-int, negative) / tag-not-owned / bee 404 (forget tag) / bee unreachable / happy path (return all 6 progress fields) / happy path with `done == true` (forget tag).
-    - `handleCreateFeed`: not-connected / invalid name (empty, > 64 chars, contains `/`, control char) / idempotent re-create (no sheet, return existing) / orphan record (record without identity → -32603) / first-grant denied / first-grant approved (app-scoped → identity persisted with allocated index, bee call, record persisted) / first-grant approved (bee-wallet → identity persisted with `nil` index) / subsequent-grant auto-approve / vault locked / bee unreachable.
-    - `handleUpdateFeed`: not-connected / invalid `feedId` / invalid `reference` (not 64-hex) / feed-not-found (no record) / orphan record (record without identity) / caps fail / auto-approve skips sheet / denied / approved happy path (per-topic lock taken, `updateReference` + `touchLastUsed` + `tagOwnership.record` on tag) / bee unreachable / `feedService.indexAlreadyExists` is unreachable here (auto-index always).
-    - `handleWriteFeedEntry`: not-connected / invalid name / empty `data` / non-base64 `data` / negative explicit `index` / feed-not-found / orphan record / caps fail / auto-approve / denied / approved happy path (per-topic lock, `tagOwnership.record`) / explicit-index collision → `-32602` with `data.reason: "index_already_exists"` / bee unreachable.
-
-  **What NOT to test** (covered elsewhere, would just duplicate):
-    - SOC byte composition (covered by `SwarmSOCTests`).
-    - EIP-191 signing semantics (covered by `FeedSignerTests`).
-    - Capability-string vocabulary (covered by `SwarmCapabilitiesTests`).
-    - Feed-name / hex / topic validation rules (covered by `SwarmRouterTests`).
-    - Per-topic write-lock serialization (covered by `SwarmFeedWriteLockTests`).
-    - `BridgeReplyChannel` itself (one-line forwards over `JSONSerialization` + `evaluateJavaScript`; if the channel is wrong every existing smoke would have failed).
-
-  **Estimated size**: ~150 LoC fixture + ~30-50 LoC per handler × 7 = ~400-500 LoC of tests. Single commit if the fixture works on first try; possibly two commits (fixture + matrix). Flagged at WP6.2 and re-flagged at WP6.4 /simplify; deferred until the WP6 surface stopped moving.
+- **Proactive stamp-expiry / low-balance warnings**. Bare extend flow shipped (§7.4); a "stamp expires in N days" surface (probably a `StampService` flag plus an address-bar reader) and a "chequebook below floor" banner are the next layer. Defer until a real user hits expiry — current ~30-day presets give months of headroom.
 - **Vault-locked-after-unlock race UX**. User unlocks at the sheet, backgrounds the app long enough for auto-lock, foregrounds and taps Allow → bridge handler hits `Vault.Error.notUnlocked` and surfaces `-32603 internalError`. Real but rare; would benefit from a more specific error (e.g. `4001 user_rejected` with a re-prompt suggestion, or a new `4100` reason `vault-locked`). Flagged at WP6.2 /simplify; deferred.
 - **Bee `/feeds/{owner}/{topic}?index=N` at-or-before semantics**. Caught at WP6.4 smoke; iOS now uses `/chunks/{socAddress}` for explicit-index reads and probes. Worth raising upstream on bee that the feeds-endpoint behavior is surprising (most other implementations route the same way bee-js does — through the chunks endpoint — but the feeds endpoint suggests it should work for explicit indices).
