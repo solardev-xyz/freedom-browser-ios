@@ -15,8 +15,7 @@ final class AutoApproveStoreTests: XCTestCase {
     private let approve = "0x095ea7b3"
 
     override func setUp() async throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        container = try ModelContainer(for: AutoApproveRule.self, configurations: config)
+        container = try inMemoryContainer(for: AutoApproveRule.self)
         store = AutoApproveStore(context: container.mainContext)
     }
 

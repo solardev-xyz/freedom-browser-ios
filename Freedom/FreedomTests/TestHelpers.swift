@@ -1,6 +1,16 @@
 import Foundation
+import SwiftData
 import web3
 @testable import Freedom
+
+/// Builds a `ModelContainer` backed by an ephemeral in-memory store for
+/// per-test isolation. Replaces the `ModelConfiguration(isStoredInMemoryOnly:
+/// true)` + `ModelContainer(for:configurations:)` boilerplate spread across
+/// the SwiftData-backed store tests.
+func inMemoryContainer(for models: any PersistentModel.Type...) throws -> ModelContainer {
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(for: Schema(models), configurations: config)
+}
 
 final class MutableClock {
     var now: Date

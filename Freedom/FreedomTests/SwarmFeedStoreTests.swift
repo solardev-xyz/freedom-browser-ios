@@ -8,10 +8,8 @@ final class SwarmFeedStoreTests: XCTestCase {
     private var store: SwarmFeedStore!
 
     override func setUp() async throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        container = try ModelContainer(
-            for: SwarmFeedRecord.self, SwarmFeedIdentity.self,
-            configurations: config
+        container = try inMemoryContainer(
+            for: SwarmFeedRecord.self, SwarmFeedIdentity.self
         )
         store = SwarmFeedStore(context: container.mainContext)
     }

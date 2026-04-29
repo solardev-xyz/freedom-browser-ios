@@ -8,8 +8,7 @@ final class SwarmPermissionStoreTests: XCTestCase {
     private var store: SwarmPermissionStore!
 
     override func setUp() async throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        container = try ModelContainer(for: SwarmPermission.self, configurations: config)
+        container = try inMemoryContainer(for: SwarmPermission.self)
         store = SwarmPermissionStore(context: container.mainContext)
     }
 

@@ -8,8 +8,7 @@ final class PermissionStoreTests: XCTestCase {
     private var store: PermissionStore!
 
     override func setUp() async throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        container = try ModelContainer(for: DappPermission.self, configurations: config)
+        container = try inMemoryContainer(for: DappPermission.self)
         store = PermissionStore(context: container.mainContext)
     }
 

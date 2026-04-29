@@ -8,8 +8,7 @@ final class RPCRouterTests: XCTestCase {
     private var permissionStore: PermissionStore!
 
     override func setUp() async throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        permissionContainer = try ModelContainer(for: DappPermission.self, configurations: config)
+        permissionContainer = try inMemoryContainer(for: DappPermission.self)
         permissionStore = PermissionStore(context: permissionContainer.mainContext)
     }
 
