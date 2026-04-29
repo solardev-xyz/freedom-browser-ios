@@ -73,27 +73,26 @@ final class SwarmFeedStore {
 
     /// First-write-wins. SWIP §8.6 makes mode immutable — subsequent
     /// calls for the same origin are no-ops, even with different args.
+    /// For `appScoped`, the publisher index is computed at insert
+    /// time as `max(existing index) + 1` — keeping the allocation in
+    /// the same transaction as the insert prevents two concurrent
+    /// approval flows from different origins racing to the same
+    /// index. Rows are never deleted, so max-derivation is stable.
     func setFeedIdentity(
-        origin: String,
-        identityMode: SwarmFeedIdentityMode,
-        publisherKeyIndex: Int?
+        origin: String, identityMode: SwarmFeedIdentityMode
     ) {
         if feedIdentity(origin: origin) != nil { return }
         let identity = SwarmFeedIdentity(
             origin: origin,
             identityMode: identityMode,
-            publisherKeyIndex: publisherKeyIndex
+            publisherKeyIndex: identityMode == .appScoped
+                ? computeNextPublisherKeyIndex() : nil
         )
         context.insert(identity)
         save()
     }
 
-    /// Monotonically-increasing publisher key index for the next
-    /// `appScoped` origin. Derived as `max(existing index) + 1` —
-    /// `SwarmFeedIdentity` rows are never deleted, so max-derivation
-    /// never re-allocates a previously-used index. Caller persists the
-    /// returned index via `setFeedIdentity` in the same transaction.
-    func nextPublisherKeyIndex() -> Int {
+    private func computeNextPublisherKeyIndex() -> Int {
         let descriptor = FetchDescriptor<SwarmFeedIdentity>()
         let rows = (try? context.fetch(descriptor)) ?? []
         let max = rows.compactMap(\.publisherKeyIndex).max() ?? -1

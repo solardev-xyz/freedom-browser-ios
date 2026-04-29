@@ -85,24 +85,13 @@ struct SwarmPublishSheet: View {
     }
 
     private var autoApproveToggle: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(
-                "Auto-approve future publishes from this site",
-                isOn: $grantAutoApprove
-            )
-            .font(.callout)
-            .tint(.accentColor)
-            Text(
-                "Skips this sheet for subsequent uploads from "
+        ApprovalAutoApproveCard(
+            label: "Auto-approve future publishes from this site",
+            caption: "Skips this sheet for subsequent uploads from "
                 + approval.origin.displayString
-                + ". You can revoke this from the connected-sites list later."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .padding()
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+                + ". You can revoke this from the connected-sites list later.",
+            isOn: $grantAutoApprove
+        )
     }
 
     private func approve() {

@@ -53,6 +53,30 @@ struct ApprovalUnlockStrip: View {
     }
 }
 
+/// Toggle + caption card for the auto-approve opt-in across approval
+/// sheets. Single source of truth for the visual styling so a future
+/// tweak lands once.
+@MainActor
+struct ApprovalAutoApproveCard: View {
+    let label: String
+    let caption: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(label, isOn: $isOn)
+                .font(.callout)
+                .tint(.accentColor)
+            Text(caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
 /// `caption — value` row for approval-sheet detail cards. Shared between
 /// the typed-data, send-tx, and chain-switch sheets.
 @MainActor

@@ -104,6 +104,8 @@ struct FreedomApp: App {
                 feedStore: feedStore,
                 bee: swarmBee,
                 publishService: SwarmPublishService.live(bee: swarmBee),
+                feedService: SwarmFeedService.live(bee: swarmBee),
+                vault: vault,
                 tagOwnership: TagOwnership(),
                 nodeFailureReason: nodeFailureReason,
                 currentStamps: { stamps.stamps }

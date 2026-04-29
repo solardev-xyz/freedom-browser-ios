@@ -1,16 +1,19 @@
 import Foundation
 
 /// Bundle of swarm collaborators threaded `FreedomApp → TabStore →
-/// BrowserTab → SwarmBridge`. Mirrors `WalletServices`'s shape — adding
-/// a new swarm dependency at WP5/WP6 (`SwarmPublishService`,
-/// `SwarmFeedService`) becomes a one-field addition here instead of an
-/// N-place plumbing change.
+/// BrowserTab → SwarmBridge`. Mirrors `WalletServices`'s shape —
+/// adding a new collaborator is a one-field addition here instead of
+/// an N-place plumbing change.
 @MainActor
 struct SwarmServices {
     let permissionStore: SwarmPermissionStore
     let feedStore: SwarmFeedStore
     let bee: BeeAPIClient
     let publishService: SwarmPublishService
+    let feedService: SwarmFeedService
+    /// Needed for HD-key derivation on feed-write paths — bridge
+    /// resolves the publisher key via `SwarmFeedIdentity.signingKey(via:)`.
+    let vault: Vault
     /// Tag ownership map for `swarm_getUploadStatus`'s cross-origin
     /// defense — bridge records the `(tagUid, origin)` after every
     /// successful publish, looks it up before forwarding the status

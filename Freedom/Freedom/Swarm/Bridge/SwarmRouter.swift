@@ -299,7 +299,10 @@ final class SwarmRouter {
         return Hex.stripped(prefixed).lowercased()
     }
 
-    private static func isValidFeedName(_ name: String) -> Bool {
+    /// SWIP §"swarm_createFeed" name rules — 1-64 chars, no `/`, no
+    /// control. Internal so `SwarmBridge.handleCreateFeed` shares the
+    /// same check `readFeedEntry` does without duplicating it.
+    static func isValidFeedName(_ name: String) -> Bool {
         guard !name.isEmpty, name.count <= 64, !name.contains("/") else { return false }
         return name.unicodeScalars.allSatisfy { $0.value >= 32 }
     }

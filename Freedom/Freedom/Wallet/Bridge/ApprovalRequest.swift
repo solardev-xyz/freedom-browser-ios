@@ -38,6 +38,11 @@ struct ApprovalRequest: Identifiable {
         /// node. Auto-approve toggle on the sheet writes back to
         /// `SwarmPermissionStore.autoApprovePublish`.
         case swarmPublish(SwarmPublishDetails)
+        /// Per-call approval for feed-write access. The first grant
+        /// for an origin includes the identity-mode picker and
+        /// persists the choice on approve; subsequent grants only
+        /// surface the auto-approve toggle (mode is locked).
+        case swarmFeedAccess(SwarmFeedAccessDetails)
     }
 
     enum Decision {
@@ -109,6 +114,17 @@ struct AutoApproveOffer: Equatable {
 struct SwitchChainDetails {
     let from: Chain
     let to: Chain
+}
+
+/// Per-call metadata for feed-write approvals. The sheet writes the
+/// picked identity mode + auto-approve flag to the relevant stores
+/// via `@Environment` before resolving the continuation.
+struct SwarmFeedAccessDetails: Equatable {
+    /// Already-validated against `SwarmRouter.isValidFeedName`.
+    let feedName: String
+    /// `true` iff no `SwarmFeedIdentity` row exists for this origin —
+    /// drives the identity-mode picker's visibility.
+    let isFirstGrant: Bool
 }
 
 /// Per-call metadata for `swarm_publishData` and `swarm_publishFiles`.

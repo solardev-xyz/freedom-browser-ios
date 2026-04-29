@@ -111,20 +111,41 @@ struct BeeAPIClient {
         }
     }
 
-    /// `POST` with no body, used for both path-encoded operations
-    /// (`/stamps/{amount}/{depth}`) and query-encoded ones
-    /// (`/chequebook/deposit?amount=...`). Bee's chain-tx endpoints
-    /// block on confirmation, which can take ~30s to several minutes —
-    /// caller passes a generous timeout.
+    /// `POST` with no body, used for path-encoded operations
+    /// (`/stamps/{amount}/{depth}`), query-encoded ones
+    /// (`/chequebook/deposit?amount=...`), and header-encoded ones
+    /// (`/feeds/{owner}/{topic}` with `Swarm-Postage-Batch-Id`). Bee's
+    /// chain-tx endpoints block on confirmation, which can take ~30s
+    /// to several minutes — caller passes a generous timeout.
     func postJSON(
         _ path: String,
+        headers: [String: String] = [:],
         query: [String: String] = [:],
         timeout: TimeInterval = 300
     ) async throws -> [String: Any] {
         let (data, _) = try await sendData(
-            path: path, query: query, method: "POST", timeout: timeout
+            path: path, query: query, method: "POST",
+            headers: headers, timeout: timeout
         )
         return try Self.parseDict(data)
+    }
+
+    /// `POST /feeds/{owner}/{topic}` — creates a feed manifest. Returns
+    /// the 64-char hex reference of the manifest chunk; bee derives
+    /// `bzz://<reference>/` as the stable feed URL. SWIP §"swarm_createFeed"
+    /// — idempotent at the bee level (re-creating with the same
+    /// `(owner, topic)` returns the existing reference).
+    func createFeedManifest(
+        owner: String, topic: String, batchID: String
+    ) async throws -> String {
+        let dict = try await postJSON(
+            "/feeds/\(owner)/\(topic)",
+            headers: ["Swarm-Postage-Batch-Id": batchID, "Swarm-Pin": "true"]
+        )
+        guard let reference = dict["reference"] as? String, !reference.isEmpty else {
+            throw Error.malformedResponse
+        }
+        return reference
     }
 
     /// `POST` with a binary body — `swarm_publishData` (raw payload) and

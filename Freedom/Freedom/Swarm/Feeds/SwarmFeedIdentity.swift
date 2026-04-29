@@ -39,3 +39,32 @@ final class SwarmFeedIdentity {
         self.grantedAt = grantedAt
     }
 }
+
+enum SwarmFeedIdentityError: Swift.Error, Equatable {
+    /// `appScoped` row stored without an allocated index — only
+    /// reachable via direct SwiftData mutation; `setFeedIdentity`
+    /// always allocates one for app-scoped origins.
+    case missingPublisherIndex
+}
+
+extension SwarmFeedIdentity {
+    /// Resolves the secp256k1 private key bytes bee will recover for
+    /// this origin's feed signatures. Throws `Vault.Error.notUnlocked`
+    /// if the vault was locked between the sheet's unlock-strip and
+    /// the bridge handler's call (rare but possible — auto-lock
+    /// during a backgrounded sheet).
+    @MainActor
+    func signingKey(via vault: Vault) throws -> Data {
+        switch identityMode {
+        case .appScoped:
+            guard let index = publisherKeyIndex else {
+                throw SwarmFeedIdentityError.missingPublisherIndex
+            }
+            return try vault.signingKey(
+                at: .publisherKey(originIndex: index)
+            ).privateKey
+        case .beeWallet:
+            return try vault.signingKey(at: .beeWallet).privateKey
+        }
+    }
+}

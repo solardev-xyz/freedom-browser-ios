@@ -1,4 +1,5 @@
 import Foundation
+import web3
 import WebKit
 
 /// Per-`BrowserTab` `window.swarm` bridge. Origin identity is derived
@@ -113,6 +114,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             return
         case "swarm_getUploadStatus":
             await handleGetUploadStatus(id: id, origin: origin, params: params)
+            return
+        case "swarm_createFeed":
+            await handleCreateFeed(id: id, origin: origin, params: params)
             return
         default:
             break
@@ -662,6 +666,142 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             "progress": tag.progressPercent,
             "done": tag.isDone,
         ])
+    }
+
+    // MARK: - swarm_createFeed
+
+    /// SWIP §"swarm_createFeed". On a first grant the sheet writes the
+    /// `SwarmFeedIdentity` row before resuming, so the bridge can read
+    /// the chosen mode + allocated publisher index back without parking
+    /// any extra state.
+    private func handleCreateFeed(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        let Reason = SwarmRouter.ErrorPayload.Reason.self
+
+        guard assertEligibleAndFree(id: id, origin: origin),
+              requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        guard let name = params["name"] as? String,
+              SwarmRouter.isValidFeedName(name) else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "name must be 1-64 chars, no '/', no control chars.",
+                              reason: Reason.invalidFeedName)
+        }
+
+        // SWIP-required idempotency. By invariant a feed record can
+        // only exist if the identity was set during the original
+        // create — a missing identity here is a true invariant break,
+        // surface it loudly rather than papering over with a default.
+        if let existing = services.feedStore.lookup(origin: origin.key, name: name) {
+            guard let identity = services.feedStore.feedIdentity(origin: origin.key) else {
+                return replyError(id: id, code: Code.internalError,
+                                  message: "Feed record without matching identity.")
+            }
+            services.permissionStore.touchLastUsed(origin: origin.key)
+            return reply(id: id, result: Self.createFeedResult(
+                feedId: existing.name, owner: existing.owner,
+                topic: existing.topic, manifestRef: existing.manifestReference,
+                identityMode: identity.identityMode.rawValue
+            ))
+        }
+
+        let caps = router.capabilities(origin: origin)
+        if !caps.canPublish {
+            let reason = caps.reason ?? Reason.nodeNotReady
+            return replyError(id: id, code: Code.nodeUnavailable,
+                              message: "Node not ready: \(reason)",
+                              reason: reason)
+        }
+
+        // First grant always shows the sheet so the user can pick the
+        // identity mode; auto-approve only kicks in for subsequent
+        // grants once the mode is locked.
+        let isFirstGrant = services.feedStore.feedIdentity(origin: origin.key) == nil
+        let decision: ApprovalRequest.Decision
+        if !isFirstGrant && services.permissionStore.isAutoApproveFeeds(origin: origin.key) {
+            decision = .approved
+        } else {
+            decision = await parkAndAwait(
+                origin: origin,
+                kind: .swarmFeedAccess(SwarmFeedAccessDetails(
+                    feedName: name, isFirstGrant: isFirstGrant
+                ))
+            )
+        }
+        guard case .approved = decision else {
+            return replyError(id: id, code: Code.userRejected,
+                              message: "User rejected the request.")
+        }
+
+        // The sheet's approve() writes SwarmFeedIdentity before
+        // resolving — a missing row here means a future code path
+        // bypassed that contract; surface loudly.
+        guard let identity = services.feedStore.feedIdentity(origin: origin.key) else {
+            return replyError(id: id, code: Code.internalError,
+                              message: "Feed identity missing after approval.")
+        }
+
+        let ownerHex: String
+        do {
+            let privateKey = try identity.signingKey(via: services.vault)
+            ownerHex = try FeedSigner.ownerAddressBytes(privateKey: privateKey)
+                .web3.hexString.web3.noHexPrefix
+        } catch {
+            return replyError(id: id, code: Code.internalError,
+                              message: "Couldn't derive feed signing key: \(error)")
+        }
+
+        let topicHex = FeedTopic.derive(origin: origin.key, name: name)
+
+        // Manifest is a single small chunk; 4 KB capacity fits with
+        // headroom. Matches desktop's createFeed estimate.
+        guard let batch = StampService.selectBestBatch(
+            forBytes: 4096, in: services.currentStamps()
+        ) else {
+            return replyError(id: id, code: Code.nodeUnavailable,
+                              message: "No usable stamp.",
+                              reason: Reason.noUsableStamps)
+        }
+
+        do {
+            let result = try await services.feedService.createFeed(
+                ownerHex: ownerHex, topicHex: topicHex, batchID: batch.batchID
+            )
+            services.feedStore.upsert(
+                origin: origin.key, name: name,
+                topic: topicHex, owner: ownerHex,
+                manifestReference: result.manifestReference
+            )
+            services.permissionStore.touchLastUsed(origin: origin.key)
+            reply(id: id, result: Self.createFeedResult(
+                feedId: name, owner: ownerHex, topic: topicHex,
+                manifestRef: result.manifestReference,
+                identityMode: identity.identityMode.rawValue
+            ))
+        } catch SwarmFeedService.FeedServiceError.unreachable {
+            replyError(id: id, code: Code.nodeUnavailable,
+                       message: "Bee unreachable.",
+                       reason: Reason.nodeStopped)
+        } catch {
+            replyError(id: id, code: Code.internalError,
+                       message: "createFeed failed: \(error)")
+        }
+    }
+
+    private static func createFeedResult(
+        feedId: String, owner: String, topic: String,
+        manifestRef: String, identityMode: String
+    ) -> [String: Any] {
+        [
+            "feedId": feedId,
+            "owner": owner,
+            "topic": topic,
+            "manifestReference": manifestRef,
+            "bzzUrl": "bzz://\(manifestRef)",
+            "identityMode": identityMode,
+        ]
     }
 
     // MARK: - Reply path

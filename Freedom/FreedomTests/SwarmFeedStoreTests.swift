@@ -142,7 +142,7 @@ final class SwarmFeedStoreTests: XCTestCase {
     func testFeedIdentityRoundtrip() throws {
         XCTAssertNil(store.feedIdentity(origin: "foo.eth"))
         store.setFeedIdentity(
-            origin: "foo.eth", identityMode: .appScoped, publisherKeyIndex: 0
+            origin: "foo.eth", identityMode: .appScoped
         )
         let identity = try XCTUnwrap(store.feedIdentity(origin: "foo.eth"))
         XCTAssertEqual(identity.identityMode, .appScoped)
@@ -151,13 +151,13 @@ final class SwarmFeedStoreTests: XCTestCase {
 
     func testFeedIdentityIsImmutableAfterFirstSet() throws {
         store.setFeedIdentity(
-            origin: "foo.eth", identityMode: .appScoped, publisherKeyIndex: 0
+            origin: "foo.eth", identityMode: .appScoped
         )
         // Per SWIP §8.6, identity mode is immutable per origin once
         // chosen — flipping it would orphan existing feeds. Subsequent
         // calls must be no-ops.
         store.setFeedIdentity(
-            origin: "foo.eth", identityMode: .beeWallet, publisherKeyIndex: nil
+            origin: "foo.eth", identityMode: .beeWallet
         )
         let identity = try XCTUnwrap(store.feedIdentity(origin: "foo.eth"))
         XCTAssertEqual(identity.identityMode, .appScoped)
@@ -165,59 +165,39 @@ final class SwarmFeedStoreTests: XCTestCase {
     }
 
     func testFeedIdentityScopedPerOrigin() throws {
-        store.setFeedIdentity(
-            origin: "foo.eth", identityMode: .appScoped, publisherKeyIndex: 0
-        )
-        store.setFeedIdentity(
-            origin: "bar.eth", identityMode: .beeWallet, publisherKeyIndex: nil
-        )
+        store.setFeedIdentity(origin: "foo.eth", identityMode: .appScoped)
+        store.setFeedIdentity(origin: "bar.eth", identityMode: .beeWallet)
         XCTAssertEqual(store.feedIdentity(origin: "foo.eth")?.identityMode, .appScoped)
         XCTAssertEqual(store.feedIdentity(origin: "bar.eth")?.identityMode, .beeWallet)
         XCTAssertNil(store.feedIdentity(origin: "bar.eth")?.publisherKeyIndex)
     }
 
-    // MARK: - nextPublisherKeyIndex
+    // MARK: - publisher index allocation (insert-time)
 
-    func testNextPublisherKeyIndexEmptyStoreYieldsZero() {
-        XCTAssertEqual(store.nextPublisherKeyIndex(), 0)
+    func testFirstAppScopedOriginGetsIndexZero() throws {
+        store.setFeedIdentity(origin: "a.eth", identityMode: .appScoped)
+        let identity = try XCTUnwrap(store.feedIdentity(origin: "a.eth"))
+        XCTAssertEqual(identity.publisherKeyIndex, 0)
     }
 
-    func testNextPublisherKeyIndexMonotonicAcrossAppScopedOrigins() {
-        XCTAssertEqual(store.nextPublisherKeyIndex(), 0)
-        store.setFeedIdentity(origin: "a.eth", identityMode: .appScoped,
-                              publisherKeyIndex: 0)
-        XCTAssertEqual(store.nextPublisherKeyIndex(), 1)
-        store.setFeedIdentity(origin: "b.eth", identityMode: .appScoped,
-                              publisherKeyIndex: 1)
-        XCTAssertEqual(store.nextPublisherKeyIndex(), 2)
-        store.setFeedIdentity(origin: "c.eth", identityMode: .appScoped,
-                              publisherKeyIndex: 2)
-        XCTAssertEqual(store.nextPublisherKeyIndex(), 3)
+    func testSubsequentAppScopedOriginsAreMonotonic() throws {
+        store.setFeedIdentity(origin: "a.eth", identityMode: .appScoped)
+        store.setFeedIdentity(origin: "b.eth", identityMode: .appScoped)
+        store.setFeedIdentity(origin: "c.eth", identityMode: .appScoped)
+        XCTAssertEqual(try XCTUnwrap(store.feedIdentity(origin: "a.eth")).publisherKeyIndex, 0)
+        XCTAssertEqual(try XCTUnwrap(store.feedIdentity(origin: "b.eth")).publisherKeyIndex, 1)
+        XCTAssertEqual(try XCTUnwrap(store.feedIdentity(origin: "c.eth")).publisherKeyIndex, 2)
     }
 
-    func testNextPublisherKeyIndexSkipsBeeWalletOrigins() {
-        // bee-wallet rows have publisherKeyIndex == nil and must not
-        // perturb the allocator's max+1.
-        store.setFeedIdentity(origin: "wallet.eth", identityMode: .beeWallet,
-                              publisherKeyIndex: nil)
-        XCTAssertEqual(store.nextPublisherKeyIndex(), 0)
-        store.setFeedIdentity(origin: "a.eth", identityMode: .appScoped,
-                              publisherKeyIndex: 0)
-        XCTAssertEqual(store.nextPublisherKeyIndex(), 1)
-        store.setFeedIdentity(origin: "wallet2.eth", identityMode: .beeWallet,
-                              publisherKeyIndex: nil)
-        XCTAssertEqual(store.nextPublisherKeyIndex(), 1)
-    }
-
-    func testNextPublisherKeyIndexRespectsExistingMaxIndex() {
-        // Multi-origin user re-launching the app continues from the
-        // existing max, not restart at 0.
-        for i in 0...5 {
-            store.setFeedIdentity(origin: "origin\(i).eth",
-                                  identityMode: .appScoped,
-                                  publisherKeyIndex: i)
-        }
-        XCTAssertEqual(store.nextPublisherKeyIndex(), 6)
+    func testBeeWalletOriginsDontConsumeIndices() throws {
+        store.setFeedIdentity(origin: "wallet.eth", identityMode: .beeWallet)
+        // Next app-scoped still starts at 0 — bee-wallet rows have
+        // nil publisherKeyIndex and don't perturb max+1.
+        store.setFeedIdentity(origin: "a.eth", identityMode: .appScoped)
+        XCTAssertEqual(try XCTUnwrap(store.feedIdentity(origin: "a.eth")).publisherKeyIndex, 0)
+        store.setFeedIdentity(origin: "wallet2.eth", identityMode: .beeWallet)
+        store.setFeedIdentity(origin: "b.eth", identityMode: .appScoped)
+        XCTAssertEqual(try XCTUnwrap(store.feedIdentity(origin: "b.eth")).publisherKeyIndex, 1)
     }
 
     func testListIsSortedByCreatedAt() throws {
