@@ -671,7 +671,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
 
         let tag: BeeAPIClient.TagResponse
         do {
-            tag = try await services.bee.getTag(uid: tagUid)
+            tag = try await services.getTag(tagUid)
         } catch BeeAPIClient.Error.notFound {
             // Bee evicted the tag — drop our record so the next call
             // takes the unauthorized path on the in-memory check

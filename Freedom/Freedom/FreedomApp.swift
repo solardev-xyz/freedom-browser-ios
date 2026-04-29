@@ -109,7 +109,8 @@ struct FreedomApp: App {
                 tagOwnership: TagOwnership(),
                 feedWriteLock: SwarmFeedWriteLock(),
                 nodeFailureReason: nodeFailureReason,
-                currentStamps: { stamps.stamps }
+                currentStamps: { stamps.stamps },
+                getTag: { try await swarmBee.getTag(uid: $0) }
             )
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,

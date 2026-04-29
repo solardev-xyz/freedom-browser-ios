@@ -42,9 +42,18 @@ final class SwarmBridgeStubs {
     var uploadBytes: SwarmFeedService.UploadBytes?
     var getChunk: SwarmFeedService.GetChunk?
     var publishUpload: SwarmPublishService.Upload?
+    var getTag: ((Int) async throws -> BeeAPIClient.TagResponse)?
     var routerReadFeed: ((String, String, UInt64?) async throws -> SwarmRouter.FeedRead)?
 
-    var pendingDecisions: [ApprovalRequest.Decision] = []
+    /// Tuple stand-in for `(decision, optional side-effect)` so the
+    /// fixture can model the production "sheet writes a row before
+    /// resolving" contract (see `setNextDecision(_:sideEffect:)`).
+    struct QueuedDecision {
+        let decision: ApprovalRequest.Decision
+        let sideEffect: (@MainActor (ApprovalRequest) -> Void)?
+    }
+
+    var pendingDecisions: [QueuedDecision] = []
 }
 
 /// Drives `SwarmBridge.dispatch(...)` end-to-end without WebKit. Real
@@ -154,7 +163,16 @@ final class SwarmBridgeTestFixture {
             tagOwnership: tagOwnership,
             feedWriteLock: feedWriteLock,
             nodeFailureReason: { [stubs] in stubs.nodeReason },
-            currentStamps: { [stubs] in stubs.stamps }
+            currentStamps: { [stubs] in stubs.stamps },
+            getTag: { [stubs] uid in
+                guard let stub = stubs.getTag else {
+                    XCTFail("getTag unexpectedly called")
+                    return BeeAPIClient.TagResponse(
+                        uid: 0, split: 0, seen: 0, stored: 0, sent: 0, synced: 0
+                    )
+                }
+                return try await stub(uid)
+            }
         )
 
         let router = SwarmRouter(
@@ -182,14 +200,17 @@ final class SwarmBridgeTestFixture {
         // continuation before we resume it — `parkAndAwait` is mid-
         // `withCheckedContinuation` when `pendingSwarmApproval` is set.
         host.onParked = { [stubs] request in
-            let decision: ApprovalRequest.Decision
+            let queued: SwarmBridgeStubs.QueuedDecision
             if stubs.pendingDecisions.isEmpty {
                 XCTFail("approval parked but no decision queued for \(request.kind)")
-                decision = .denied
+                queued = .init(decision: .denied, sideEffect: nil)
             } else {
-                decision = stubs.pendingDecisions.removeFirst()
+                queued = stubs.pendingDecisions.removeFirst()
             }
-            Task { @MainActor in request.decide(decision) }
+            Task { @MainActor in
+                queued.sideEffect?(request)
+                request.decide(queued.decision)
+            }
         }
     }
 
@@ -201,9 +222,16 @@ final class SwarmBridgeTestFixture {
     }
 
     /// Decisions resolve in FIFO order — one per park. Tests queue
-    /// before calling a handler that would park.
-    func setNextDecision(_ decision: ApprovalRequest.Decision) {
-        stubs.pendingDecisions.append(decision)
+    /// before calling a handler that would park. `sideEffect` runs
+    /// immediately before `request.decide(decision)` and models the
+    /// production "sheet writes a row before resolving" contract
+    /// (e.g. `SwarmFeedAccessSheet` setting `SwarmFeedIdentity` on
+    /// approve).
+    func setNextDecision(
+        _ decision: ApprovalRequest.Decision,
+        sideEffect: (@MainActor (ApprovalRequest) -> Void)? = nil
+    ) {
+        stubs.pendingDecisions.append(.init(decision: decision, sideEffect: sideEffect))
     }
 
     func dispatch(

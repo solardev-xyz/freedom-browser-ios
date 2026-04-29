@@ -35,4 +35,8 @@ struct SwarmServices {
     /// `StampService` reference) keeps the bridge's surface narrow —
     /// it only needs to read stamps, not poll or buy them.
     let currentStamps: @MainActor () -> [PostageBatch]
+    /// Tag-status fetch for `swarm_getUploadStatus`. Closure-extracted
+    /// so unit tests can stub without `URLSession`/`URLProtocol`
+    /// mocking — same pattern as `currentStamps` / `nodeFailureReason`.
+    let getTag: @MainActor (Int) async throws -> BeeAPIClient.TagResponse
 }
