@@ -121,6 +121,9 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         case "swarm_updateFeed":
             await handleUpdateFeed(id: id, origin: origin, params: params)
             return
+        case "swarm_writeFeedEntry":
+            await handleWriteFeedEntry(id: id, origin: origin, params: params)
+            return
         default:
             break
         }
@@ -911,6 +914,149 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             replyError(id: id, code: Code.internalError,
                        message: "updateFeed failed: \(error)")
         }
+    }
+
+    // MARK: - swarm_writeFeedEntry
+
+    /// SWIP §"swarm_writeFeedEntry" — journal pattern. Same gates as
+    /// `handleUpdateFeed`; payload semantics differ (caller-supplied
+    /// bytes rather than a 32-byte content reference) and the index
+    /// can be auto-incremented or explicitly supplied (with overwrite
+    /// protection at the SOC layer).
+    private func handleWriteFeedEntry(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        let Reason = SwarmRouter.ErrorPayload.Reason.self
+
+        guard assertEligibleAndFree(id: id, origin: origin),
+              requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        guard let name = params["name"] as? String,
+              SwarmRouter.isValidFeedName(name) else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "name must be 1-64 chars, no '/', no control chars.",
+                              reason: Reason.invalidFeedName)
+        }
+
+        let payload: Data
+        do {
+            payload = try Self.parseWriteFeedEntryData(params)
+        } catch let SwarmRouter.RouterError.invalidParams(reason, message) {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: message, reason: reason)
+        } catch {
+            return replyError(id: id, code: Code.internalError,
+                              message: "\(error)")
+        }
+
+        let explicitIndex: UInt64?
+        switch params["index"] {
+        case nil, is NSNull:
+            explicitIndex = nil
+        case let int as Int where int >= 0:
+            explicitIndex = UInt64(int)
+        default:
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "index must be a non-negative integer.")
+        }
+
+        guard let record = services.feedStore.lookup(origin: origin.key, name: name) else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "Feed not found: \(name).",
+                              reason: Reason.feedNotFound)
+        }
+        guard let identity = services.feedStore.feedIdentity(origin: origin.key) else {
+            return replyError(id: id, code: Code.internalError,
+                              message: "Feed record without matching identity.")
+        }
+
+        guard requireCanPublish(id: id, origin: origin) else { return }
+
+        let decision: ApprovalRequest.Decision
+        if services.permissionStore.isAutoApproveFeeds(origin: origin.key) {
+            decision = .approved
+        } else {
+            decision = await parkAndAwait(
+                origin: origin,
+                kind: .swarmFeedAccess(SwarmFeedAccessDetails(
+                    feedName: name, isFirstGrant: false
+                ))
+            )
+        }
+        guard case .approved = decision else {
+            return replyError(id: id, code: Code.userRejected,
+                              message: "User rejected the request.")
+        }
+
+        let privateKey: Data
+        do {
+            privateKey = try identity.signingKey(via: services.vault)
+        } catch {
+            return replyError(id: id, code: Code.internalError,
+                              message: "Couldn't derive feed signing key: \(error)")
+        }
+
+        // Stamp size estimate covers both paths: <= 4 KB direct write
+        // = one chunk; > 4 KB wrap = root + tree, so we charge against
+        // the full payload size + headroom for the SOC envelope.
+        let estimatedBytes = max(payload.count, SwarmSOC.maxChunkPayloadSize)
+        guard let batch = StampService.selectBestBatch(
+            forBytes: estimatedBytes, in: services.currentStamps()
+        ) else {
+            return replyError(id: id, code: Code.nodeUnavailable,
+                              message: "No usable stamp.",
+                              reason: Reason.noUsableStamps)
+        }
+
+        let topicHex = record.topic
+        let ownerHex = record.owner
+        do {
+            let result = try await services.feedWriteLock.withLock(topicHex: topicHex) { [services] in
+                try await services.feedService.writeFeedEntry(
+                    ownerHex: ownerHex, topicHex: topicHex,
+                    payload: payload,
+                    explicitIndex: explicitIndex,
+                    privateKey: privateKey,
+                    batchID: batch.batchID
+                )
+            }
+            services.permissionStore.touchLastUsed(origin: origin.key)
+            if let tagUid = result.tagUid {
+                services.tagOwnership.record(tag: tagUid, origin: origin.key)
+            }
+            reply(id: id, result: ["index": Int(result.index)])
+        } catch SwarmFeedService.FeedServiceError.indexAlreadyExists(let index) {
+            replyError(id: id, code: Code.invalidParams,
+                       message: "Entry already exists at index \(index).",
+                       reason: Reason.indexAlreadyExists)
+        } catch SwarmFeedService.FeedServiceError.unreachable {
+            replyError(id: id, code: Code.nodeUnavailable,
+                       message: "Bee unreachable.",
+                       reason: Reason.nodeStopped)
+        } catch {
+            replyError(id: id, code: Code.internalError,
+                       message: "writeFeedEntry failed: \(error)")
+        }
+    }
+
+    /// JS preload always base64-encodes `data` (strings are UTF-8'd
+    /// then base64'd; binary is base64'd directly). Native side decodes
+    /// to opaque bytes — SOC payload is encoding-agnostic.
+    private static func parseWriteFeedEntryData(
+        _ params: [String: Any]
+    ) throws -> Data {
+        guard let str = params["data"] as? String, !str.isEmpty else {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil, message: "data must not be empty."
+            )
+        }
+        guard let bytes = Data(base64Encoded: str), !bytes.isEmpty else {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil, message: "data must be a base64-encoded string."
+            )
+        }
+        return bytes
     }
 
     // MARK: - Reply path

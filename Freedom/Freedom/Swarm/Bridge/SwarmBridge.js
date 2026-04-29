@@ -38,6 +38,10 @@
   // joined once at the end — also faster than `+=` concat on the
   // 50 MB upper bound where rope-rebalancing dominates.
   function __toBase64(input) {
+    // String passthrough is the SWIP `bytes: string` allowance for
+    // publishFiles — dapps can pre-encode binary themselves. Callers
+    // that want a string treated as utf-8 (writeFeedEntry's `data`)
+    // must `TextEncoder().encode(...)` first.
     if (typeof input === 'string') return input;
     var bytes;
     if (input instanceof Uint8Array) {
@@ -119,7 +123,24 @@
     getUploadStatus: function (params) { return makeRequest('swarm_getUploadStatus', params); },
     createFeed: function (params) { return makeRequest('swarm_createFeed', params); },
     updateFeed: function (params) { return makeRequest('swarm_updateFeed', params); },
-    writeFeedEntry: function (params) { return makeRequest('swarm_writeFeedEntry', params); },
+    writeFeedEntry: function (params) {
+      // Normalize `data` to base64 so the native side has one shape
+      // to decode regardless of whether the dapp passed a string,
+      // Uint8Array, or ArrayBuffer. Strings are UTF-8-encoded first
+      // so SOC payload bytes match what the dapp wrote (the SOC
+      // stores opaque bytes; bee doesn't care about encoding).
+      var normalized = params;
+      if (params && params.data !== undefined && params.data !== null) {
+        var encoded;
+        if (typeof params.data === 'string') {
+          encoded = __toBase64(new TextEncoder().encode(params.data));
+        } else {
+          encoded = __toBase64(params.data);
+        }
+        normalized = Object.assign({}, params, { data: encoded });
+      }
+      return makeRequest('swarm_writeFeedEntry', normalized);
+    },
     readFeedEntry: function (params) { return makeRequest('swarm_readFeedEntry', params); },
     listFeeds: function () { return makeRequest('swarm_listFeeds'); },
 

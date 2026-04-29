@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import UIKit
+import web3
 import WebKit
 
 @MainActor
@@ -141,9 +142,23 @@ final class BrowserTab {
                 swarm.feedStore.lookup(origin: origin, name: name)?.owner
             },
             readFeed: { owner, topic, index in
+                // Bee's `/feeds/{owner}/{topic}?index=N` does
+                // epoch-based "at-or-before" lookup — wrong semantics
+                // for SWIP `swarm_readFeedEntry` which needs exact
+                // index match. For explicit-index reads, fetch the
+                // SOC directly via `/chunks/{socAddress}` (exact)
+                // and strip the envelope. Latest reads (no index)
+                // stay on `/feeds/...` which correctly returns the
+                // current + next-index headers.
                 do {
+                    if let index {
+                        return try await fetchFeedSOC(
+                            owner: owner, topic: topic, index: index,
+                            bee: swarm.bee
+                        )
+                    }
                     let result = try await swarm.bee.getFeedPayload(
-                        owner: owner, topic: topic, index: index
+                        owner: owner, topic: topic, index: nil
                     )
                     return SwarmRouter.FeedRead(
                         payload: result.payload,
@@ -421,4 +436,58 @@ enum ENSErrorFormatting {
             return "ENS resolution failed: \(error.localizedDescription)"
         }
     }
+}
+
+/// Fetches a feed entry at an exact index by computing the SOC address
+/// from `(owner, topic, index)` and reading `/chunks/{socAddress}` —
+/// bypassing bee's `/feeds/...?index` epoch-search semantics. The
+/// returned chunk's first 105 bytes are the SOC envelope (identifier
+/// 32 || sig 65 || span 8); the SOC's payload follows.
+///
+/// For entries written via the > 4 KB wrap path, the SOC's payload is
+/// a BMT-tree root rather than the original bytes. The wrapping is
+/// detectable via the SOC's span: if span > 4096, we re-resolve the
+/// payload through `/bytes/{cacAddress}` (which bee walks the tree
+/// for) to get the dapp's original bytes back.
+@MainActor
+private func fetchFeedSOC(
+    owner: String, topic: String, index: UInt64, bee: BeeAPIClient
+) async throws -> SwarmRouter.FeedRead {
+    guard let topicBytes = Data(hex: topic), topicBytes.count == 32,
+          let ownerBytes = Data(hex: owner), ownerBytes.count == 20 else {
+        throw SwarmRouter.FeedReadError.notFound
+    }
+    let identifier = SwarmSOC.feedIdentifier(topic: topicBytes, index: index)
+    let socAddressHex = SwarmSOC.socAddress(
+        identifier: identifier, ownerAddress: ownerBytes
+    ).web3.hexString.web3.noHexPrefix
+    let chunkBytes = try await bee.getChunk(reference: socAddressHex)
+    guard chunkBytes.count >= SwarmSOC.socEnvelopeSize else {
+        throw SwarmRouter.FeedReadError.notFound
+    }
+
+    // SOC layout: identifier(32) || signature(65) || span(8) || payload.
+    let spanStart = SwarmSOC.socEnvelopeSize - 8
+    let span = chunkBytes.subdata(in: spanStart..<SwarmSOC.socEnvelopeSize)
+    let socPayload = chunkBytes.subdata(in: SwarmSOC.socEnvelopeSize..<chunkBytes.count)
+    let originalLength = span.withUnsafeBytes { $0.load(as: UInt64.self) }
+    // (iOS is LE-native and bee writes span LE, so a direct load gives
+    // the right value — `UInt64(littleEndian:)` is intent-doc only.)
+
+    let payload: Data
+    if originalLength > UInt64(SwarmSOC.maxChunkPayloadSize) {
+        // Wrapped: the SOC payload is a BMT root, not the dapp's bytes.
+        // Re-fetch via /bytes/{cacAddress} so bee walks the tree.
+        do {
+            let cac = try SwarmSOC.makeCAC(span: span, payload: socPayload)
+            payload = try await bee.downloadBytes(
+                reference: cac.address.web3.hexString.web3.noHexPrefix
+            )
+        } catch {
+            throw SwarmRouter.FeedReadError.notFound
+        }
+    } else {
+        payload = socPayload
+    }
+    return SwarmRouter.FeedRead(payload: payload, index: index, nextIndex: nil)
 }

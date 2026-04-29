@@ -47,16 +47,29 @@ enum SwarmSOC {
         let address: Data
     }
 
-    /// Build a CAC for an in-line payload. Throws on empty or > 4096 —
-    /// the wrap-via-`/bytes` path for larger payloads lands in WP6.4
-    /// and will compose its own CAC from a (span, root-reference) pair
-    /// fetched from bee.
+    /// Build a CAC for an in-line payload. Throws on empty or > 4096
+    /// — the wrap-via-`/bytes` path for larger payloads composes via
+    /// `makeCAC(span:payload:)` over the root chunk bee returns from
+    /// `/chunks/{ref}`.
     static func makeCAC(payload: Data) throws -> CAC {
         guard !payload.isEmpty else { throw Error.payloadEmpty }
         guard payload.count <= maxChunkPayloadSize else { throw Error.payloadTooLarge }
         let span = spanBytes(payloadLength: payload.count)
         let root = bmtRoot(payload: payload)
         let address = (span + root).web3.keccak256
+        return CAC(span: span, payload: payload, address: address)
+    }
+
+    /// Build a CAC from an externally-supplied `(span, payload)` pair —
+    /// used by the > 4096-byte wrap path. Bee's `GET /chunks/{ref}`
+    /// returns `span_8 || encoded-payload` for the root chunk; we
+    /// split + rebuild the CAC so the SOC envelope wraps that root.
+    /// Same address formula as `makeCAC(payload:)`.
+    static func makeCAC(span: Data, payload: Data) throws -> CAC {
+        precondition(span.count == 8, "span must be 8 bytes")
+        guard !payload.isEmpty else { throw Error.payloadEmpty }
+        guard payload.count <= maxChunkPayloadSize else { throw Error.payloadTooLarge }
+        let address = (span + bmtRoot(payload: payload)).web3.keccak256
         return CAC(span: span, payload: payload, address: address)
     }
 
@@ -73,6 +86,12 @@ enum SwarmSOC {
     static func socBody(cac: CAC) -> Data {
         cac.span + cac.payload
     }
+
+    /// Bytes the SOC envelope occupies: `identifier(32) || signature(65)
+    /// || span(8)`. Bee's `/chunks/{socAddress}` returns this envelope
+    /// followed by the payload; readers strip the first 105 bytes to
+    /// get the payload back.
+    static let socEnvelopeSize = 32 + 65 + 8
 
     /// Raw 64 bytes signed for SOC ownership: `identifier || cac.address`.
     /// `FeedSigner` wraps this with the EIP-191 `\x19Ethereum Signed

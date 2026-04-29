@@ -148,6 +148,54 @@ struct BeeAPIClient {
         return reference
     }
 
+    /// `POST /bytes` — uploads raw bytes (any size; bee fans out into a
+    /// BMT tree internally). Returns the 64-char hex reference of the
+    /// root chunk. Used by the `swarm_writeFeedEntry` wrap path for
+    /// payloads > 4 KB: upload, fetch the root chunk via `getChunk`,
+    /// wrap the resulting CAC into the SOC envelope.
+    func uploadBytes(_ payload: Data, batchID: String) async throws -> String {
+        let (data, _) = try await postBytes(
+            "/bytes",
+            body: payload,
+            contentType: "application/octet-stream",
+            headers: [
+                "Swarm-Postage-Batch-Id": batchID,
+                "Swarm-Pin": "true",
+                "Swarm-Deferred-Upload": "true",
+            ]
+        )
+        guard let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let reference = dict["reference"] as? String,
+              !reference.isEmpty else {
+            throw Error.malformedResponse
+        }
+        return reference
+    }
+
+    /// `GET /chunks/{reference}` — fetches the raw chunk bytes
+    /// (`span_8 || payload`). For the wrap path: split + rebuild the
+    /// CAC so the SOC envelope wraps that root chunk.
+    func getChunk(reference: String) async throws -> Data {
+        let (data, _) = try await sendData(
+            path: "/chunks/\(reference)",
+            method: "GET", timeout: 60
+        )
+        return data
+    }
+
+    /// `GET /bytes/{reference}` — bee walks the BMT tree from the
+    /// root reference and returns the original byte stream. Used by
+    /// `swarm_readFeedEntry` for entries written via the > 4 KB wrap
+    /// path: the SOC stores tree references, not the original bytes,
+    /// so reads have to re-resolve through this endpoint.
+    func downloadBytes(reference: String) async throws -> Data {
+        let (data, _) = try await sendData(
+            path: "/bytes/\(reference)",
+            method: "GET", timeout: 60
+        )
+        return data
+    }
+
     /// `POST /soc/{owner}/{identifier}?sig=<sig_hex>` — uploads a
     /// Single Owner Chunk. Body is `span_8 || payload`. Bee verifies
     /// SOC ownership by recovering the public key from the signature
