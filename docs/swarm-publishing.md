@@ -1,8 +1,8 @@
-# Swarm Publishing Architecture (M6 — draft)
+# Swarm Publishing Architecture (M6)
 
-A sketch of the Swarm publishing surface for the iOS Freedom Browser: identity injection from the user's BIP-39 seed into the embedded Bee node, ultralight↔light upgrade, postage-stamp purchase + management, and the `window.swarm` provider for dapps. Parallel in spirit to the desktop browser's publishing surface (`/Users/florian/Git/freedom-dev/freedom-browser/src/main/swarm/` + `src/main/identity/`) but native throughout — no bee-js port, no Electron IPC, no JS-side key handling. This document is a starting point to iterate on, not a committed plan.
+The Swarm publishing surface for the iOS Freedom Browser: identity injection from the user's BIP-39 seed into the embedded Bee node, ultralight↔light upgrade, postage-stamp purchase + management, and the `window.swarm` provider for dapps. Parallel in spirit to the desktop browser's publishing surface (`/Users/florian/Git/freedom-dev/freedom-browser/src/main/swarm/` + `src/main/identity/`) but native throughout — no bee-js port, no Electron IPC, no JS-side key handling.
 
-> **Status (2026-04-28)**: WP1–5 shipped on `feature/swarm-publishing-{window.swarm}` — bee identity injection, light-mode upgrade + one-tx funding, stamp management, `window.swarm` read-only surface (`getCapabilities` / `requestAccess` / `readFeedEntry` / `listFeeds`), and the full publish surface (`publishData` / `publishFiles` / `getUploadStatus`). WP6 (feed-write: `createFeed` / `updateFeed` / `writeFeedEntry`) is the only remaining work-package. Several deviations from the original plan along the way — module layout (§4), readiness state model (§6.5), the buy state machine (§7.3), the bridge-vs-router split (§8.3), and the USTAR-100-byte path limit vs the SWIP's 256-char proposal (§9 WP5.3) all settled during implementation. See §9 for the actual commit trail.
+> **Status (2026-04-29)**: M6 shipped end-to-end on `feature/swarm-publishing-{window.swarm}-{feeds}`. The full 10-method `window.swarm` SWIP surface lives — bee identity injection, light-mode upgrade + one-tx funding, stamp management, the read-only surface (`getCapabilities` / `requestAccess` / `readFeedEntry` / `listFeeds`), the publish surface (`publishData` / `publishFiles` / `getUploadStatus`), and the feed-write surface (`createFeed` / `updateFeed` / `writeFeedEntry`) including the > 4 KB wrap path. Notable deviations from the original plan settled during implementation — module layout (§4), readiness state model (§6.5), the buy state machine (§7.3), the bridge-vs-router split (§8.3), the USTAR-100-byte path limit vs the SWIP's 256-char proposal (§9 WP5.3), the `BridgeReplyChannel` extraction (§9 WP6.0), insert-time publisher index allocation (§9 WP6.1), and the bee-at-or-before-lookup gotcha caught at WP6.4 smoke (§9 WP6.4). See §9 for the commit trail.
 
 > **Reading order**: read after [`wallet-architecture.md`](./wallet-architecture.md) — this assumes the BIP-39 vault, HD-derivation, and approval-sheet patterns from M5 are already in your head, and reuses them throughout. Cross-reference [`architecture.md`](./architecture.md) §3-5 for the SwarmKit / bee-lite-java pipeline (the embedded Bee node is the substrate every section here builds on). The desktop browser is the reference implementation — the SWIP draft `/Users/florian/Git/freedom-dev/SWIPs/SWIPs/swip-draft_provider_api.md` is the wire-format spec.
 
@@ -85,7 +85,7 @@ Actual shape (post-WP3) alongside the existing `Wallet/` tree under `Freedom/Fre
 ```
 Freedom/
 ├── Wallet/                              ✅ (M5, see wallet-architecture.md)
-│   ├── Vault/HDKey.swift                ✅ publisherKey(originIndex:) deferred to WP6
+│   ├── Vault/HDKey.swift                ✅ incl. publisherKey(originIndex:)
 │   └── Transactions/TransactionService.swift
 │                                        ✅ Used as-is by funder via direct
 │                                            (to, value, data) tuple — no
@@ -175,10 +175,41 @@ Freedom/
     │   └── TagOwnership.swift           ✅ session-scoped [tagUid: origin] for the
     │                                       SWIP cross-origin defense in
     │                                       swarm_getUploadStatus
-    ├── Feeds/                           (WP6)
-    │   ├── SwarmFeedService.swift       create/update/write/read with per-topic actor
-    │   ├── FeedTopic.swift              keccak256(origin + "/" + name)
-    │   └── PublisherKeyAllocator.swift  manages nextPublisherKeyIndex
+    ├── Feeds/                           ✅ (WP6)
+    │   ├── SwarmFeedIdentity.swift      ✅ @Model: per-origin signing identity
+    │   │                                    (mode + publisher key index). Lives
+    │   │                                    separately from SwarmPermission so
+    │   │                                    feed identity survives revocation
+    │   │                                    (SWIP §"Disconnection"). Carries
+    │   │                                    signingKey(via:) — the helper the
+    │   │                                    bridge calls to derive the EIP-191
+    │   │                                    signing key from the vault.
+    │   ├── SwarmFeedService.swift       ✅ closure-injected create/update/write
+    │   │                                    with the SOC sign-and-upload helper
+    │   │                                    factored out for reuse across
+    │   │                                    update + write paths
+    │   ├── SwarmFeedWriteLock.swift     ✅ Task-chain per-topic serialization
+    │   │                                    (SWIP §"Write serialization");
+    │   │                                    failures don't poison the chain
+    │   ├── SwarmSOC.swift               ✅ pure SOC primitives — feedIdentifier,
+    │   │                                    BMT root, CAC + makeCAC variants
+    │   │                                    for direct + wrap-path payloads,
+    │   │                                    socAddress, signingMessage. Pinned
+    │   │                                    against bee-js fixtures.
+    │   ├── FeedSigner.swift             ✅ EIP-191 signing seam (recovery-
+    │   │                                    equivalent to bee-js — different
+    │   │                                    deterministic-k nonce, same
+    │   │                                    public-key recovery)
+    │   ├── (no PublisherKeyAllocator)   folded into SwarmFeedStore as
+    │   │                                    nextPublisherKeyIndex() during
+    │   │                                    WP6.1 /simplify; allocation moved
+    │   │                                    inside setFeedIdentity at insert
+    │   │                                    time so concurrent first-grant
+    │   │                                    flows from different origins can't
+    │   │                                    race to the same index
+    │   └── (no FeedTopic.swift)         FeedTopic.swift lives in Bridge/
+    │                                    alongside the router that uses it
+    │                                    rather than the original plan's Feeds/
     └── UI/
         ├── NodeHomeView.swift           ✅ status + node wallet + chequebook
         │                                    + stamps row + log link. Hosts the
@@ -202,7 +233,14 @@ Freedom/
         │                                    files mode shows count / size / index /
         │                                    paths preview, data mode shows
         │                                    size / content-type / optional name.
-        └── SwarmFeedAccessSheet.swift   (WP6)
+        └── SwarmFeedAccessSheet.swift   ✅ (WP6.2) approval for createFeed /
+                                             updateFeed / writeFeedEntry. First
+                                             grant for an origin shows the
+                                             identity-mode picker (segmented:
+                                             app-scoped vs bee-wallet); the
+                                             choice is immutable per SWIP §8.6.
+                                             Subsequent grants surface only the
+                                             auto-approve toggle.
 ```
 
 Nothing here imports anything outside `Wallet/` and `SwarmKit` except what's already in `architecture.md`'s graph.
@@ -698,10 +736,29 @@ Originally six WPs, one PR each. WP1–3 shipped on `feature/swarm-publishing`. 
 - **WP5.4 ✅ — `swarm_getUploadStatus` + tag ownership** (`91b0b51`).
   `TagOwnership` is the in-memory `tagUid → origin` map the SWIP requires for cross-origin defense. The bridge records on every successful publish, looks up before forwarding any status query to bee, and forgets on `done == true` (or bee 404 — saves a future round-trip). Session-scoped: bee may evict its own tags too per SWIP §"Persistence", so dropping ours on app restart matches what the dapp would see anyway. `BeeAPIClient.getTag(uid:)` returns a typed `TagResponse` with `progressPercent` and `isDone` as computed properties — the percent clamps at 100 (bee can briefly report `sent > split` if it counts retries, observed at 12/6 in smoke). The bridge handler conflates "tag never ours" / "we forgot the tag" / "bee evicted the tag" into a single 4100 unauthorized to match desktop's behavior. 7 `TagOwnershipTests` on the data structure.
 
-### Not started
+### Shipped (`feature/swarm-publishing-{window.swarm}-{feeds}`)
 
-- **WP6 — Feed path**.
-  Methods 7-10: `createFeed`, `updateFeed`, `writeFeedEntry`. (`readFeedEntry` shipped at WP4.) New: `SwarmFeedRecord` + `SwarmFeedStore`, `SwarmFeedService`, `FeedTopic`, `PublisherKeyAllocator`, `SwarmFeedAccessSheet`. Extend `ApprovalRequest.Kind` with `.swarmFeedAccess`. Per-origin `autoApproveFeeds` toggle. Add `HDKey.Path.publisherKey(originIndex:)`. Tests: topic byte-identity vs desktop, per-topic write actor serialization, allocator monotonicity, identity mode immutability. ~700-900 LoC.
+- **WP6.0 ✅ — Shared `BridgeReplyChannel`** (`44fabf8`).
+  Pure refactor; flagged twice in earlier `/simplify` reviews. `EthereumBridge` and `SwarmBridge` each carried near-duplicate `reply / evaluateResponse / emit / jsonLiteral` (~40 LoC). Folded into `BridgeReplyChannel(jsGlobal:webView:)` in `Wallet/Bridge/` (next to `OriginIdentity`'s cross-cutting precedent). The two bridges produce different error envelopes (Swarm carries optional `data.reason`; Ethereum doesn't), so the channel takes a pre-built dict for errors and only owns JSON encoding + `evaluateJavaScript`. SwarmBridge keeps its `replyError(id:code:message:reason:)` sugar — translation over `ErrorPayload`, not transport.
+
+- **WP6.1 ✅ — Feed-write foundation**, four commits.
+  - `73b7aaa` — Cross-platform `FeedTopic` byte-identity test pinned against bee-js's `Topic.fromString`. 8 fixtures across canonical inputs, 1-char and 64-char name boundaries, multi-byte UTF-8 in both origin and name. Closes the §11 byte-identity tracker.
+  - `ceee1fb` — `SwarmSOC` primitives. `feedIdentifier`, `makeCAC` over arbitrary payloads, BMT root via 128-leaf log2 reduction, `socAddress`, `signingMessage`. Pinned against captured bee-js fixtures: 15 feed-identifier vectors, 7 CAC vectors covering 1/32/33/64/4095/4096-byte payload-size axes, 4 SOC address vectors against the test owner `0x19e7e3...ff2a` (derived from `0x11..11` test key). The original `SwarmSOC.makeCAC(span:payload:)` was YAGNI'd; re-added at WP6.4 for the wrap path.
+  - `ddb6ee7` — `FeedSigner`. The plan budgeted for raw recoverable secp256k1 signing; the actual implementation rides on `EthereumAccount.signMessage(message:)` (web3.swift, EIP-191) once the caller pre-hashes the 64-byte SOC signing message to 32 bytes — bee-js does the same prefix-then-sign with `\n32`. Cross-platform parity is at the **public-key recovery level**, not the byte level: bee-js uses cafe-utility's custom `keccak256(keccak256(priv) || hash)` deterministic-k while libsecp256k1 uses RFC6979-HMAC-SHA256, so the 65-byte signature bytes differ but both recover to the same address (which is bee's actual verification contract).
+  - `350aaf9` — Per-origin feed identity persistence. New `SwarmFeedIdentity` `@Model` with typed `SwarmFeedIdentityMode` enum. Lives separately from `SwarmPermission` because SWIP §"Disconnection" requires identity to survive revoke (`SwarmPermission.revoke` deletes the row; `SwarmFeedIdentity` rows are never deleted). `identityMode` field moved off `SwarmPermission` (where it sat unused since WP4.1). The original `PublisherKeyAllocator` separate type was folded into `SwarmFeedStore.nextPublisherKeyIndex()` during /simplify — the standalone type held no observable state, and the allocation was moved inside `setFeedIdentity` at insert time so two concurrent first-grant flows from different origins can't race to the same index.
+
+- **WP6.2 ✅ — `swarm_createFeed`** (`fad723e`).
+  First interactive feed-write method. The createFeed path doesn't actually sign anything (bee accepts any owner address for `POST /feeds/{owner}/{topic}` — manifest creation is unsigned), so the WP6.1 SOC primitives stay dormant here; what matters is the bridge handler + sheet. The sheet shows the identity-mode picker (segmented, app-scoped pre-selected) on first grant only; subsequent grants for the same origin skip the picker (mode is locked per SWIP §8.6) and just surface the auto-approve toggle. Idempotency at the SWIP level: re-creating the same `(origin, name)` returns existing metadata without bee or sheet. `ApprovalRequest.Kind.swarmFeedAccess(SwarmFeedAccessDetails)` extension wires the new sheet into ContentView's swarm-approval dispatch. `SwarmFeedIdentity.signingKey(via:)` instance method extracted during /simplify so WP6.3-6.4 reuse the same derivation. Shared `ApprovalAutoApproveCard` view extracted from publish + feed-access sheets (publish + feedAccess were near-byte-identical before the refactor; ApproveTxSheet has its own variant, deferred).
+
+- **WP6.3 ✅ — `swarm_updateFeed`** (`cbedec0`).
+  First feed-write that actually signs. Adds `SwarmFeedWriteLock` (Task-chain per-topic; failures don't poison the queue, matches desktop's `withWriteLock`), `BeeAPIClient.postSOC`, and `SwarmFeedService.updateFeed`. SOC payload format `timestamp_8BE || contentReference_32` (40 bytes) matches bee-js's `updateFeedWithReference`. Index resolution: latest-update read provides `feedIndexNext`; fallback to `feedIndex + 1` if absent; bee 404 → empty feed → start at 0. The `signAndUploadSOC` private helper extracted during /simplify (takes a CAC instead of a payload) so WP6.4's writeFeedEntry reuses the same SOC-envelope-and-upload sequence. `requireCanPublish(id:origin:)` shared helper replaces 4 identical capability gates across publish + create + update handlers. `BeeAPIClient.FeedReadResult` reused (dropped `SwarmFeedService.FeedRead` duplicate). `SwarmRef.isHex(_:length:)` reused for `reference` validation (dropped `isValid64HexReference` reimplementation). 5 `SwarmFeedWriteLockTests` cover serialize / parallelize-different-topics / fail-doesn't-poison; 11 `SwarmFeedServiceTests` cover the service surface across both methods.
+
+- **WP6.4 ✅ — `swarm_writeFeedEntry` + journal pattern** (`ee954ee`).
+  Final SWIP feed method. Direct path for ≤ 4 KB payloads (CAC over the bytes); wrap path for > 4 KB (payload uploaded via `/bytes`, root chunk fetched via `/chunks/{ref}`, wrapped into the SOC envelope — matches bee-js's `updateFeedWithPayload`'s > 4096 branch). Explicit-index overwrite protection via `assertIndexAvailable`: the SWIP guarantee. JS preload normalizes `data` to base64 (strings UTF-8'd then base64'd, binary base64'd directly) so the native side has one shape. `index_already_exists` maps to `-32602` with structured `data.reason`. `UpdateFeedResult` and `WriteFeedEntryResult` unified as typealiases over `FeedWriteResult`.
+  
+  **Two bee-API quirks caught at WP6.4 smoke** (originally WP4.4 bugs masked by lack of sparse-index reads):
+  1. Bee's `/feeds/{owner}/{topic}?index=N` does **epoch-based "at-or-before" lookup**, not exact-match. Both the write-side overwrite probe and the read-side explicit-index path needed switching to `/chunks/{socAddress}` (which is exact). Without this, the probe falsely flagged every sparse-index write as a collision; the read returned the latest at-or-before entry instead of the requested index.
+  2. **Wrap-path read-back**: when a SOC payload exceeds 4 KB, the SOC stores a BMT-tree root, not the original bytes. The read-side `fetchFeedSOC` detects this via the SOC's span field (> 4096) and re-fetches through `/bytes/{cacAddress}` so bee walks the tree and returns the original byte stream. Without this, dapps writing > 4 KB entries got 64 bytes of tree references back instead of their actual data.
 
 ## 10. Out of scope (don't propose without re-discussing)
 
@@ -727,13 +784,23 @@ Resolved during WP1–5:
 - ~~**Manifest format for `swarm_publishFiles`**~~ — confirmed at WP5.3 by reading bee-js's `utils/tar.js`: bee's `POST /bzz` with `Content-Type: application/x-tar` + `Swarm-Collection: true` accepts a USTAR archive. Hand-rolled the encoder line-for-line off bee-js. No PAX extensions — 100-byte path field, multi-byte UTF-8 paths rejected on byte count.
 - ~~**`Swarm-Pin` + `Swarm-Deferred-Upload` headers on publish**~~ — discovered at WP5.3 by reading desktop's `bee.uploadFile(... { pin: true, deferred: true })`. Both lift to all publish paths in iOS. Without `pin` bee may GC chunks; without `deferred` bee blocks until sync and the response may not carry a `swarm-tag`.
 
+Resolved during WP6:
+
+- ~~**`BridgeReplyChannel` refactor**~~ — extracted at WP6.0 (`44fabf8`) before the feed-write reply path landed. Both bridges now route success / error / event emission through `BridgeReplyChannel(jsGlobal:webView:)`.
+- ~~**Cross-platform `FeedTopic` byte-identity test**~~ — pinned at WP6.1 (`73b7aaa`) against bee-js's `Topic.fromString` with 8 fixtures spanning canonical inputs, length boundaries, and multi-byte UTF-8.
+- ~~**SOC byte-format pinning**~~ — the SOC primitives (`feedIdentifier`, BMT-padded `makeCAC`, `socAddress`, signing message) shipped at WP6.1 with golden-vector tests against bee-js. Future iOS-side keccak / BMT drift can't slip past these.
+- ~~**Feed-write retry on transient errors**~~ — surfacing chosen. Dapps see the error and retry with their own backoff; service-layer retry would fight the per-topic write lock.
+
 Still open:
 
-- **`BridgeReplyChannel` refactor**. `SwarmBridge` and `EthereumBridge` both carry near-duplicate `reply / evaluateResponse / emit / jsonLiteral`. Flagged during WP4.3's `/simplify` and re-flagged during WP5 — would benefit from being a focused refactor commit before WP6 adds a third reply path.
 - **USTAR-vs-SWIP path-length divergence**. SWIP draft proposes 256-char `path`; iOS / desktop both enforce USTAR's 100-byte limit. Worth raising on the SWIP draft so the spec aligns with reality, or carrying PAX-extension support so paths up to 256 actually work.
 - **Stamp price USD estimate**. UI shows xBZZ only. Add a USD/EUR conversion when there's user-facing pricing demand.
-- **Feed-write retry on transient errors**. WP6 — explicit retry vs. surface failure to dapp? Lean toward surfacing; dapps can retry with their own backoff.
-- **Wallet-doc updates**. After WP1 shipped, `wallet-architecture.md` §5.1 should mark `m/44'/60'/0'/0/1` as "surfaced" and add the publisher-key row when WP6 lands. Cross-reference this doc.
+- **Wallet-doc updates**. After WP1 shipped, `wallet-architecture.md` §5.1 should mark `m/44'/60'/0'/0/1` as "surfaced" and add the publisher-key row at `m/44'/73406'/{i}'/0/0` (added at WP6.1). Cross-reference this doc.
 - **Top-up flows for node wallet + chequebook**. Currently the only deposit path is the funder (one-tx) and the auto-top-up (post-stamp-buy). Real management surface (top-up node wallet from main wallet; manual top-up of chequebook from node wallet) deferred until users hit balance floors in practice.
 - **`BeePasswordTests` re-enablement**. Currently `XCTSkipIf`'d because a test wipe of the production Keychain entry triggers `FreedomApp`'s legacy migration on next launch. Proper fix: parameterize `BeePassword` to use a `.test` Keychain account and remove the skip.
-- **Cross-platform `FeedTopic` byte-identity test**. WP6 — pin a captured desktop fixture (`(origin, name) → 32-byte topic`) so the iOS keccak chain can't drift from desktop's bee-js without breaking a unit test. Premature to fabricate one at WP4.
+- **Stamp size estimate helper**. Four sites currently use three different formulas (`parsed.data.count`, `max(payload.count, 4096)`, literal `4096`). A `StampService.estimatedBytes(forFeedWrite:)` style helper would centralize the "feed writes always cost at least one chunk" rule. Flagged at WP6.4 /simplify; deferred so the WP6.4 commit didn't grow.
+- **Shared `save()` helper across SwiftData stores**. Eight stores (`FaviconStore`, `BookmarkStore`, `HistoryStore`, `TabStore`, `SwarmFeedStore`, `SwarmPermissionStore`, `AutoApproveStore`, `PermissionStore`) repeat the identical `try save() / log on error` 5-line shape. A `ModelContext.saveLogging(category:)` extension would collapse the duplication. Flagged at WP6.1 /simplify; predates the WP and deferred to a focused cleanup commit.
+- **Test fixture: shared `inMemoryContainer(for:)` helper**. Five test files repeat the `ModelConfiguration(isStoredInMemoryOnly: true)` + `ModelContainer(for: ...)` boilerplate. Flagged at WP6.1 /simplify; deferred.
+- **Bridge-handler unit tests**. The interactive handlers (`handleRequestAccess`, `handlePublishData/Files`, `handleCreateFeed`, `handleUpdateFeed`, `handleWriteFeedEntry`) are covered only by smoke. A closure-injected dispatch fixture would unit-test the gates / approval flow / error-mapping matrix. Flagged at WP6.2 and re-flagged at WP6.4; deferred.
+- **Vault-locked-after-unlock race UX**. User unlocks at the sheet, backgrounds the app long enough for auto-lock, foregrounds and taps Allow → bridge handler hits `Vault.Error.notUnlocked` and surfaces `-32603 internalError`. Real but rare; would benefit from a more specific error (e.g. `4001 user_rejected` with a re-prompt suggestion, or a new `4100` reason `vault-locked`). Flagged at WP6.2 /simplify; deferred.
+- **Bee `/feeds/{owner}/{topic}?index=N` at-or-before semantics**. Caught at WP6.4 smoke; iOS now uses `/chunks/{socAddress}` for explicit-index reads and probes. Worth raising upstream on bee that the feeds-endpoint behavior is surprising (most other implementations route the same way bee-js does — through the chunks endpoint — but the feeds endpoint suggests it should work for explicit indices).
