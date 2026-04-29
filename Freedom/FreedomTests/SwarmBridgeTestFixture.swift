@@ -70,6 +70,7 @@ final class SwarmBridgeTestFixture {
     let container: ModelContainer
     let permissionStore: SwarmPermissionStore
     let feedStore: SwarmFeedStore
+    let publishHistoryStore: SwarmPublishHistoryStore
     let tagOwnership: TagOwnership
     let feedWriteLock: SwarmFeedWriteLock
     let vault: Vault
@@ -92,13 +93,16 @@ final class SwarmBridgeTestFixture {
             for: SwarmPermission.self,
             SwarmFeedRecord.self,
             SwarmFeedIdentity.self,
+            SwarmPublishHistoryRecord.self,
             DappPermission.self
         )
         self.container = container
         let permissionStore = SwarmPermissionStore(context: container.mainContext)
         let feedStore = SwarmFeedStore(context: container.mainContext)
+        let publishHistoryStore = SwarmPublishHistoryStore(context: container.mainContext)
         self.permissionStore = permissionStore
         self.feedStore = feedStore
+        self.publishHistoryStore = publishHistoryStore
         self.tagOwnership = TagOwnership()
         self.feedWriteLock = SwarmFeedWriteLock()
 
@@ -112,6 +116,7 @@ final class SwarmBridgeTestFixture {
         let services = SwarmServices(
             permissionStore: permissionStore,
             feedStore: feedStore,
+            publishHistoryStore: publishHistoryStore,
             bee: BeeAPIClient(),
             publishService: SwarmPublishService(upload: { [stubs] path, body, ct, h, q in
                 guard let stub = stubs.publishUpload else {

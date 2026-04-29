@@ -8,6 +8,11 @@ import Foundation
 struct SwarmServices {
     let permissionStore: SwarmPermissionStore
     let feedStore: SwarmFeedStore
+    /// Append-only log of every `window.swarm` publish/feed-write so the
+    /// user can later browse what they uploaded and copy references back
+    /// out. Bridge handlers do a two-step write (record on entry,
+    /// complete/fail on bee response) — see `SwarmPublishHistoryStore`.
+    let publishHistoryStore: SwarmPublishHistoryStore
     let bee: BeeAPIClient
     let publishService: SwarmPublishService
     let feedService: SwarmFeedService

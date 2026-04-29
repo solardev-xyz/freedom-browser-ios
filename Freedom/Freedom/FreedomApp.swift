@@ -23,6 +23,7 @@ struct FreedomApp: App {
     @State private var beeWalletInfo: BeeWalletInfo
     @State private var swarmPermissionStore: SwarmPermissionStore
     @State private var swarmFeedStore: SwarmFeedStore
+    @State private var swarmPublishHistoryStore: SwarmPublishHistoryStore
     private let modelContainer: ModelContainer
 
     init() {
@@ -30,7 +31,8 @@ struct FreedomApp: App {
             let container = try ModelContainer(
                 for: TabRecord.self, HistoryEntry.self, Bookmark.self, Favicon.self,
                 DappPermission.self, AutoApproveRule.self,
-                SwarmPermission.self, SwarmFeedRecord.self, SwarmFeedIdentity.self
+                SwarmPermission.self, SwarmFeedRecord.self, SwarmFeedIdentity.self,
+                SwarmPublishHistoryRecord.self
             )
             self.modelContainer = container
             let history = HistoryStore(context: container.mainContext)
@@ -78,8 +80,10 @@ struct FreedomApp: App {
             self._beeWalletInfo = State(wrappedValue: walletInfo)
             let swarmPermissions = SwarmPermissionStore(context: container.mainContext)
             let feedStore = SwarmFeedStore(context: container.mainContext)
+            let publishHistory = SwarmPublishHistoryStore(context: container.mainContext)
             self._swarmPermissionStore = State(wrappedValue: swarmPermissions)
             self._swarmFeedStore = State(wrappedValue: feedStore)
+            self._swarmPublishHistoryStore = State(wrappedValue: publishHistory)
             // Composed once; closure reads the four observables live so a
             // mode flip / sync tick / stamp purchase is reflected on the
             // next swarm_getCapabilities without rebuilding anything.
@@ -102,6 +106,7 @@ struct FreedomApp: App {
             let swarmServices = SwarmServices(
                 permissionStore: swarmPermissions,
                 feedStore: feedStore,
+                publishHistoryStore: publishHistory,
                 bee: swarmBee,
                 publishService: SwarmPublishService.live(bee: swarmBee),
                 feedService: SwarmFeedService.live(bee: swarmBee),
@@ -152,11 +157,17 @@ struct FreedomApp: App {
                 .environment(beeWalletInfo)
                 .environment(swarmPermissionStore)
                 .environment(swarmFeedStore)
+                .environment(swarmPublishHistoryStore)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
                 .task { beeReadiness.start() }
                 .task { stampService.start() }
                 .task { beeWalletInfo.start() }
+                // Process-killed-mid-publish rows have no in-memory state
+                // to resume from; flip them to `failed` once on cold start.
+                // Off the init critical path — fetch is unbounded and
+                // shouldn't block first frame on a power user's history.
+                .task { swarmPublishHistoryStore.sweepOrphans() }
         }
     }
 
