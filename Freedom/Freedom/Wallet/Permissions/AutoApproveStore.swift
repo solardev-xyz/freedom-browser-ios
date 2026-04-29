@@ -41,11 +41,5 @@ final class AutoApproveStore {
         keys.contains(AutoApproveRule.makeKey(offer: offer))
     }
 
-    private func save() {
-        do {
-            try context.save()
-        } catch {
-            log.error("AutoApproveRule save failed: \(String(describing: error), privacy: .public)")
-        }
-    }
+    private func save() { context.saveLogging("AutoApproveRule", to: log) }
 }

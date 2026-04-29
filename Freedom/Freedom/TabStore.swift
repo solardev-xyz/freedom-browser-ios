@@ -172,11 +172,5 @@ final class TabStore {
         }
     }
 
-    private func save() {
-        do {
-            try context.save()
-        } catch {
-            log.error("TabRecord save failed: \(String(describing: error), privacy: .public)")
-        }
-    }
+    private func save() { context.saveLogging("TabRecord", to: log) }
 }

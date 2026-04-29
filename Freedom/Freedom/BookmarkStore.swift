@@ -37,11 +37,5 @@ final class BookmarkStore {
         return all.first { $0.url == url }
     }
 
-    private func save() {
-        do {
-            try context.save()
-        } catch {
-            log.error("Bookmark save failed: \(String(describing: error), privacy: .public)")
-        }
-    }
+    private func save() { context.saveLogging("Bookmark", to: log) }
 }

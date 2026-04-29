@@ -122,11 +122,5 @@ final class FaviconStore {
         }
     }
 
-    private func save() {
-        do {
-            try context.save()
-        } catch {
-            log.error("Favicon save failed: \(String(describing: error), privacy: .public)")
-        }
-    }
+    private func save() { context.saveLogging("Favicon", to: log) }
 }

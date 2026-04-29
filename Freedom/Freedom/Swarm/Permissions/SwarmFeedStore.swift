@@ -99,11 +99,5 @@ final class SwarmFeedStore {
         return max + 1
     }
 
-    private func save() {
-        do {
-            try context.save()
-        } catch {
-            log.error("SwarmFeedStore save failed: \(String(describing: error), privacy: .public)")
-        }
-    }
+    private func save() { context.saveLogging("SwarmFeedStore", to: log) }
 }

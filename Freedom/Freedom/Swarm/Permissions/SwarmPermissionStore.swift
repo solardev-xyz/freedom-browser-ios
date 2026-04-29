@@ -103,11 +103,5 @@ final class SwarmPermissionStore {
         return try? context.fetch(descriptor).first
     }
 
-    private func save() {
-        do {
-            try context.save()
-        } catch {
-            log.error("SwarmPermission save failed: \(String(describing: error), privacy: .public)")
-        }
-    }
+    private func save() { context.saveLogging("SwarmPermission", to: log) }
 }

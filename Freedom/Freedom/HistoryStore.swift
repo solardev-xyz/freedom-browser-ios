@@ -55,11 +55,5 @@ final class HistoryStore {
         }
     }
 
-    private func save() {
-        do {
-            try context.save()
-        } catch {
-            log.error("History save failed: \(String(describing: error), privacy: .public)")
-        }
-    }
+    private func save() { context.saveLogging("History", to: log) }
 }

@@ -72,12 +72,6 @@ final class PermissionStore {
         return try? context.fetch(descriptor).first
     }
 
-    private func save() {
-        do {
-            try context.save()
-        } catch {
-            log.error("DappPermission save failed: \(String(describing: error), privacy: .public)")
-        }
-    }
+    private func save() { context.saveLogging("DappPermission", to: log) }
 }
 
