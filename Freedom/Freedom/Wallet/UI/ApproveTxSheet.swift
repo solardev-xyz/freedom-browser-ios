@@ -44,6 +44,20 @@ struct ApproveTxSheet: View {
                     }
                 }
             }
+            // Sheet was opened only because the vault was locked at
+            // request time (the bridge's auto-approve fast-path requires
+            // an unlocked vault). Once the user unlocks, honor the
+            // existing auto-approve rule and dismiss with .approved
+            // instead of re-asking — re-asking defeats the "always
+            // approve …" promise the user already opted into.
+            .task(id: vault.state) {
+                guard vault.state == .unlocked,
+                      let offer = details.autoApproveOffer,
+                      autoApproveStore.matches(offer)
+                else { return }
+                approval.decide(.approved)
+                dismiss()
+            }
         }
     }
 

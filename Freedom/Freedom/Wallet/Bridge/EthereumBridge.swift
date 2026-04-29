@@ -317,7 +317,12 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
             data: decoded.data,
             chainID: chain.id
         )
-        if let offer, autoApproveStore.matches(offer) {
+        // Auto-approve must skip the sheet only when the vault is also
+        // unlocked — the sheet bakes in `ApprovalUnlockStrip` and silently
+        // firing `transactionService.send(...)` on a locked vault would
+        // throw `notUnlocked` and surface as a generic broadcast error
+        // instead of giving the user a chance to unlock.
+        if let offer, autoApproveStore.matches(offer), vault.state == .unlocked {
             return await broadcastAutoApproved(
                 id: id, origin: origin, decoded: decoded, chain: chain
             )
