@@ -13,7 +13,7 @@ final class SwarmPublishHistoryStoreTests: XCTestCase {
     }
 
     func testEmptyStoreYieldsNoEntries() {
-        XCTAssertEqual(store.entries().count, 0)
+        XCTAssertEqual(store.entries.count, 0)
     }
 
     func testRecordInsertsUploadingRow() {
@@ -52,22 +52,18 @@ final class SwarmPublishHistoryStoreTests: XCTestCase {
         XCTAssertNil(row.reference)
     }
 
-    func testEntriesSortedNewestFirst() throws {
-        let context = container.mainContext
-        let oldRow = SwarmPublishHistoryRecord(
-            kind: .data, name: "old", origin: "https://a.eth",
-            startedAt: Date(timeIntervalSince1970: 100)
-        )
-        let newRow = SwarmPublishHistoryRecord(
-            kind: .data, name: "new", origin: "https://a.eth",
-            startedAt: Date(timeIntervalSince1970: 200)
-        )
-        // Insert in reverse to confirm sort, not insertion order.
-        context.insert(oldRow)
-        context.insert(newRow)
-        try context.save()
+    func testEntriesSortedNewestFirst() {
+        // Insert in reverse-startedAt order via direct property tweak so
+        // the assertion confirms the sort, not the insertion order.
+        let oldRow = store.record(kind: .data, name: "old", origin: "https://a.eth")
+        oldRow.startedAt = Date(timeIntervalSince1970: 100)
+        let newRow = store.record(kind: .data, name: "new", origin: "https://a.eth")
+        newRow.startedAt = Date(timeIntervalSince1970: 200)
+        // Refresh-after-mutation contract — re-record any row to bump the
+        // cache. Cleanest exposure of "sort runs at refresh time".
+        store.complete(oldRow, reference: String(repeating: "a", count: 64))
 
-        let names = store.entries().map(\.name)
+        let names = store.entries.map(\.name)
         XCTAssertEqual(names, ["new", "old"])
     }
 
@@ -91,15 +87,15 @@ final class SwarmPublishHistoryStoreTests: XCTestCase {
 
     func testSweepOrphansOnEmptyStoreIsNoOp() {
         store.sweepOrphans()
-        XCTAssertEqual(store.entries().count, 0)
+        XCTAssertEqual(store.entries.count, 0)
     }
 
     func testDeleteRemovesSingleRow() {
         let keep = store.record(kind: .data, name: "keep", origin: "https://a.eth")
         _ = store.record(kind: .data, name: "drop", origin: "https://a.eth")
-        let dropId = store.entries().first { $0.name == "drop" }!.id
+        let dropId = store.entries.first { $0.name == "drop" }!.id
         store.delete(id: dropId)
-        let names = store.entries().map(\.name)
+        let names = store.entries.map(\.name)
         XCTAssertEqual(names, ["keep"])
         XCTAssertNotNil(store.entry(id: keep.id))
     }
@@ -109,7 +105,7 @@ final class SwarmPublishHistoryStoreTests: XCTestCase {
         _ = store.record(kind: .files, name: "b", origin: "https://a.eth")
         _ = store.record(kind: .feedCreate, name: "c", origin: "https://a.eth")
         store.clearAll()
-        XCTAssertEqual(store.entries().count, 0)
+        XCTAssertEqual(store.entries.count, 0)
     }
 
     func testBzzUrlNilUntilReferenceSet() {

@@ -71,7 +71,7 @@ final class SwarmBridgeHistoryTests: XCTestCase {
             params: ["data": "hi", "contentType": "text/plain", "name": "greet.txt"],
             origin: connectedOrigin
         )
-        let entries = fixture.publishHistoryStore.entries()
+        let entries = fixture.publishHistoryStore.entries
         XCTAssertEqual(entries.count, 1)
         let row = try XCTUnwrap(entries.first)
         XCTAssertEqual(row.kind, .data)
@@ -100,7 +100,7 @@ final class SwarmBridgeHistoryTests: XCTestCase {
             params: ["data": "hi", "contentType": "text/plain"],
             origin: connectedOrigin
         )
-        XCTAssertEqual(fixture.publishHistoryStore.entries().count, 0)
+        XCTAssertEqual(fixture.publishHistoryStore.entries.count, 0)
     }
 
     func testPublishDataBeeUnreachableRecordsFailedHistoryRow() async throws {
@@ -115,7 +115,7 @@ final class SwarmBridgeHistoryTests: XCTestCase {
             params: ["data": "hi", "contentType": "text/plain"],
             origin: connectedOrigin
         )
-        let entries = fixture.publishHistoryStore.entries()
+        let entries = fixture.publishHistoryStore.entries
         XCTAssertEqual(entries.count, 1)
         let row = try XCTUnwrap(entries.first)
         XCTAssertEqual(row.kind, .data)
@@ -145,7 +145,7 @@ final class SwarmBridgeHistoryTests: XCTestCase {
             ],
             origin: connectedOrigin
         )
-        let entries = fixture.publishHistoryStore.entries()
+        let entries = fixture.publishHistoryStore.entries
         XCTAssertEqual(entries.count, 1)
         let row = try XCTUnwrap(entries.first)
         XCTAssertEqual(row.kind, .files)
@@ -173,7 +173,7 @@ final class SwarmBridgeHistoryTests: XCTestCase {
             params: ["name": "posts"],
             origin: connectedOrigin
         )
-        let entries = fixture.publishHistoryStore.entries()
+        let entries = fixture.publishHistoryStore.entries
         XCTAssertEqual(entries.count, 1)
         let row = try XCTUnwrap(entries.first)
         XCTAssertEqual(row.kind, .feedCreate)
@@ -194,7 +194,7 @@ final class SwarmBridgeHistoryTests: XCTestCase {
             params: ["name": "existing"],
             origin: connectedOrigin
         )
-        XCTAssertEqual(fixture.publishHistoryStore.entries().count, 0)
+        XCTAssertEqual(fixture.publishHistoryStore.entries.count, 0)
     }
 
     // MARK: - swarm_updateFeed
@@ -214,7 +214,7 @@ final class SwarmBridgeHistoryTests: XCTestCase {
             params: ["feedId": "posts", "reference": testContentRef],
             origin: connectedOrigin
         )
-        let entries = fixture.publishHistoryStore.entries()
+        let entries = fixture.publishHistoryStore.entries
         XCTAssertEqual(entries.count, 1)
         let row = try XCTUnwrap(entries.first)
         XCTAssertEqual(row.kind, .feedUpdate)
@@ -243,7 +243,7 @@ final class SwarmBridgeHistoryTests: XCTestCase {
             params: ["name": "log", "data": b64("entry")],
             origin: connectedOrigin
         )
-        let entries = fixture.publishHistoryStore.entries()
+        let entries = fixture.publishHistoryStore.entries
         XCTAssertEqual(entries.count, 1)
         let row = try XCTUnwrap(entries.first)
         XCTAssertEqual(row.kind, .feedEntry)
@@ -271,7 +271,7 @@ final class SwarmBridgeHistoryTests: XCTestCase {
             ],
             origin: connectedOrigin
         )
-        let entries = fixture.publishHistoryStore.entries()
+        let entries = fixture.publishHistoryStore.entries
         XCTAssertEqual(entries.count, 1)
         let row = try XCTUnwrap(entries.first)
         XCTAssertEqual(row.kind, .feedEntry)

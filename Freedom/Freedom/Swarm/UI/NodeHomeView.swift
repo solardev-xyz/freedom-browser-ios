@@ -14,6 +14,7 @@ struct NodeHomeView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(StampService.self) private var stampService
     @Environment(BeeWalletInfo.self) private var beeWallet
+    @Environment(SwarmPublishHistoryStore.self) private var publishHistoryStore
 
     var body: some View {
         ScrollView {
@@ -39,6 +40,7 @@ struct NodeHomeView: View {
                 // never see a half-disabled "stamps" row.
                 if settings.hasCompletedPublishSetup {
                     stampsRow
+                    publishHistoryRow
                 }
                 logsLink
             }
@@ -49,27 +51,13 @@ struct NodeHomeView: View {
     /// Pushes onto the existing NodeSheet NavigationStack — no second
     /// modal layer.
     private var publishSetupCTA: some View {
-        NavigationLink {
+        NavRowCard(
+            icon: "sparkles", title: "Setup Swarm publishing",
+            subtitle: "Upgrade your node to start publishing",
+            background: Color.accentColor.opacity(0.12)
+        ) {
             PublishSetupView()
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "sparkles").font(.title3)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Setup Swarm publishing").font(.callout).fontWeight(.semibold)
-                    Text("Upgrade your node to start publishing")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding()
-            .frame(maxWidth: .infinity)
-            .background(Color.accentColor.opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
         }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Cards
@@ -138,31 +126,15 @@ struct NodeHomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    /// Pushes onto the existing NodeSheet NavigationStack, same shape
-    /// as `publishSetupCTA`. `StampsView` itself decides whether to
-    /// show the empty state or the batch list.
+    /// `StampsView` itself decides whether to show the empty state or
+    /// the batch list — the row's job is just navigation + count copy.
     private var stampsRow: some View {
-        NavigationLink {
+        NavRowCard(
+            icon: "shippingbox.fill", title: "Storage stamps",
+            subtitle: stampsRowSubtitle
+        ) {
             StampsView()
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "shippingbox.fill").font(.title3)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Storage stamps").font(.callout).fontWeight(.semibold)
-                    Text(stampsRowSubtitle)
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding()
-            .frame(maxWidth: .infinity)
-            .background(Color(.secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
         }
-        .buttonStyle(.plain)
     }
 
     private var stampsRowSubtitle: String {
@@ -170,6 +142,21 @@ struct NodeHomeView: View {
         if count == 0 { return "Buy a stamp to start publishing" }
         let usable = stampService.stamps.filter(\.usable).count
         return "\(count) batch\(count == 1 ? "" : "es") · \(usable) usable"
+    }
+
+    private var publishHistoryRow: some View {
+        NavRowCard(
+            icon: "tray.full", title: "Publish history",
+            subtitle: publishHistoryRowSubtitle
+        ) {
+            SwarmPublishHistoryView()
+        }
+    }
+
+    private var publishHistoryRowSubtitle: String {
+        let count = publishHistoryStore.entries.count
+        if count == 0 { return "Nothing published yet" }
+        return "\(count) entr\(count == 1 ? "y" : "ies")"
     }
 
     /// Diagnostic surface — tertiary text at the bottom of the sheet so
@@ -267,6 +254,40 @@ struct NodeHomeView: View {
                 Text("—").font(.callout).foregroundStyle(.tertiary)
             }
         }
+    }
+}
+
+/// Icon + title/subtitle + chevron card pushing onto the existing
+/// NodeSheet NavigationStack. Three callers (`publishSetupCTA`,
+/// `stampsRow`, `publishHistoryRow`) had identical chrome differing
+/// only in copy + background tint.
+@MainActor
+private struct NavRowCard<Destination: View>: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    var background: Color = Color(.secondarySystemBackground)
+    @ViewBuilder let destination: () -> Destination
+
+    var body: some View {
+        NavigationLink(destination: destination) {
+            HStack(spacing: 12) {
+                Image(systemName: icon).font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.callout).fontWeight(.semibold)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity)
+            .background(background)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
     }
 }
 
