@@ -15,10 +15,8 @@ Two audiences, same engine:
 
 The desktop browser's "wallet" is really a **full identity surface**: user Ethereum wallet, Bee wallet (xBZZ, chequebook, postage-stamp funding), Swarm publisher identities, per-origin Swarm-permissions, etc. See `src/renderer/lib/wallet-ui.js` and `src/main/identity/derivation.js`.
 
-**v1 iOS scope is the Ethereum wallet only.** Out of scope for v1:
+**v1 iOS scope is the Ethereum wallet plus the Swarm-publishing surface** (which depends on the wallet's seed for the bee-node identity and per-origin publisher keys — see [`swarm-publishing.md`](./swarm-publishing.md)). Bee-wallet UI (xBZZ / chequebook), per-origin Swarm permissions, and the `window.swarm` provider all shipped in M6. Out of scope for v1:
 
-- Bee-wallet / xBZZ / chequebook UI (iOS runs a Bee light node via `SwarmKit` but the Bee wallet is managed inside the node, not surfaced in user UI).
-- Publisher identities and Swarm permissions (no on-device publishing yet).
 - Hardware-wallet connectors, WalletConnect-as-client, NFT galleries, token-price feeds, swap/bridge UI.
 - Multi-account UI (single-account v1, but derivation paths are reserved for future expansion — see §5.1).
 
@@ -134,7 +132,7 @@ Nothing here imports anything outside `Wallet/` except `EthereumRPCPool` (for `e
   | Main user wallet | `m/44'/60'/0'/0/0` | **surfaced in UI** |
   | Bee wallet (node) | `m/44'/60'/0'/0/1` | **drives the embedded Bee node identity** (M6/WP1 — see [`swarm-publishing.md`](./swarm-publishing.md) §5) |
   | Additional user wallets | `m/44'/60'/{i}'/0/0`, `i ≥ 1` | reserved for multi-account (§11) |
-  | Per-origin Swarm publisher keys | `m/44'/73406'/{originIndex}'/0/0` | factory shipped in M6/WP1, allocated at first feed grant (M6/WP6) |
+  | Per-origin Swarm publisher keys | `m/44'/73406'/{originIndex}'/0/0` | **drives per-origin feed signing** when the dapp picks `app-scoped` mode at the first feed grant (M6/WP6.2 — see [`swarm-publishing.md`](./swarm-publishing.md) §8.6). Factory shipped at M6/WP1; `originIndex` allocated by `SwarmFeedStore.nextPublisherKeyIndex()` at insert time |
 
   Keeping this layout identical to desktop means **the same mnemonic produces the same addresses on iOS and desktop** — the whole reason to align schemes. `HDKey.swift` exposes all four namespaces as named constants (`mainUser`, `beeWallet`, `userAccount(_:)`, `publisherKey(originIndex:)`) so nothing ever writes `m/44'/60'/0'/0/1` as a "user account 2" by accident.
 
@@ -315,7 +313,7 @@ Three sheets, shared visual language:
 ## 9. Integration with existing pieces
 
 - **`BrowserTab`** (pending, M5.4): will gain `walletBridge: EthereumBridge`. Wired up at tab construction, listens on the tab's `WKUserContentController`. The bridge derives `OriginIdentity` from `BrowserTab.displayURL` at message-receive time (§6.1).
-- **`FreedomApp`** ✅ constructs + injects `Vault`, `ChainRegistry`, `TransactionService` (which owns `NonceTracker` + `GasOracle` internally). `WalletRPC` is exposed lazily via `ChainRegistry.walletRPC`. `PermissionStore` lands in M5.4 alongside the bridge. Auto-lock on app background fires `vault.lock()` from `ContentView`'s scenePhase observer. `TODO: Keychain in M4` at `FreedomApp.swift:72` (Swarm bootnode password) is unrelated rot, still open.
+- **`FreedomApp`** ✅ constructs + injects `Vault`, `ChainRegistry`, `TransactionService` (which owns `NonceTracker` + `GasOracle` internally). `WalletRPC` is exposed lazily via `ChainRegistry.walletRPC`. `PermissionStore` lands in M5.4 alongside the bridge. Auto-lock on app background fires `vault.lock()` from `ContentView`'s scenePhase observer. The hardcoded `"freedom-default"` Bee-keystore password (a TODO carried since M4) was replaced with a random per-install Keychain-backed value at M6/WP1 — see [`swarm-publishing.md`](./swarm-publishing.md) §5.3.
 - **`SettingsStore`**: not extended yet. `WalletDefaults.activeChainID` ( `@AppStorage`) covers the one persisted wallet preference in v1; `walletIdleLockMinutes` + `walletRequireBiometric` are M5.7.
 - **`ContentView`** ✅ adds a `creditcard.fill` toolbar button that presents `WalletSheet`. `Info.plist` declares `NSFaceIDUsageDescription` so iOS permits Face ID instead of silently falling back to passcode.
 
