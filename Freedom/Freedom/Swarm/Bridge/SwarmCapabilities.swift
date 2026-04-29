@@ -19,11 +19,19 @@ struct SwarmCapabilities: Equatable {
         let maxDataBytes: Int
         let maxFilesBytes: Int
         let maxFileCount: Int
+        /// Per-`files[].path` UTF-8-byte cap. The dominant tar
+        /// implementations (this app, desktop Freedom, bee-js) use
+        /// USTAR's 100-byte `name` field with no PAX extensions —
+        /// advertising it lets dapps adapt rather than discover via
+        /// silent rejection. Surfaces the limit pre-emptively; SWIP
+        /// edit lands in parallel.
+        let maxPathBytes: Int
 
         static let defaults = Limits(
             maxDataBytes: 10 * 1024 * 1024,
             maxFilesBytes: 50 * 1024 * 1024,
-            maxFileCount: 100
+            maxFileCount: 100,
+            maxPathBytes: 100
         )
     }
 
@@ -36,6 +44,7 @@ struct SwarmCapabilities: Equatable {
                 "maxDataBytes": limits.maxDataBytes,
                 "maxFilesBytes": limits.maxFilesBytes,
                 "maxFileCount": limits.maxFileCount,
+                "maxPathBytes": limits.maxPathBytes,
             ],
         ]
     }

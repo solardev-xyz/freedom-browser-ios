@@ -588,22 +588,24 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
 
     /// SWIP §"Path validation rules" — applies before tar-build so the
     /// bridge can return `-32602` with a clear message instead of bee
-    /// rejecting the upload mid-stream. The 100-char cap matches USTAR
-    /// (no PAX); SWIP allows up to 256, tracked as a divergence.
+    /// rejecting the upload mid-stream. The byte cap reads from
+    /// `Limits.defaults.maxPathBytes` so the `swarm_getCapabilities`
+    /// reply and the validator stay in lockstep.
     private static func validateVirtualPath(_ path: String, index: Int) throws {
         if path.isEmpty {
             throw SwarmRouter.RouterError.invalidParams(
                 reason: nil, message: "files[\(index)].path is empty."
             )
         }
-        // USTAR's 100 is a *byte* limit on the header field; multi-byte
-        // UTF-8 chars count toward it. `String.count` (Characters) would
-        // miss the difference and let through paths that silently
+        // The cap is a *byte* limit on the USTAR header field; multi-
+        // byte UTF-8 chars count toward it. `String.count` (Characters)
+        // would miss the difference and let through paths that silently
         // truncate inside `TarBuilder.header`.
-        if path.utf8.count > 100 {
+        let maxPathBytes = SwarmCapabilities.Limits.defaults.maxPathBytes
+        if path.utf8.count > maxPathBytes {
             throw SwarmRouter.RouterError.invalidParams(
                 reason: nil,
-                message: "files[\(index)].path exceeds 100-byte USTAR limit."
+                message: "files[\(index)].path exceeds \(maxPathBytes)-byte limit."
             )
         }
         if path.contains("\\") {
@@ -1081,6 +1083,16 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         guard let bytes = Data(base64Encoded: str), !bytes.isEmpty else {
             throw SwarmRouter.RouterError.invalidParams(
                 reason: nil, message: "data must be a base64-encoded string."
+            )
+        }
+        // Same `maxDataBytes` cap as `swarm_publishData` — `writeFeedEntry`
+        // wraps > 4 KB payloads via `/bytes`, so the dapp-visible limit
+        // is the advertised one, not the SOC's internal 4 KB.
+        let maxBytes = SwarmCapabilities.Limits.defaults.maxDataBytes
+        if bytes.count > maxBytes {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: SwarmRouter.ErrorPayload.Reason.payloadTooLarge,
+                message: "Payload exceeds \(maxBytes) bytes."
             )
         }
         return bytes

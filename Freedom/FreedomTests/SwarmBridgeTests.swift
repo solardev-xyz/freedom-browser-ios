@@ -782,6 +782,21 @@ final class SwarmBridgeTests: XCTestCase {
         try assertSingleError(code: -32602)
     }
 
+    func testWriteFeedEntryPayloadTooLargeReturnsPayloadTooLarge() async throws {
+        connect()
+        // maxDataBytes is 10 MiB; build a base64-encoded payload whose
+        // decoded size clearly exceeds it. Mirrors the publishData
+        // payload-too-large test.
+        let oversized = Data(repeating: 0x61, count: 11 * 1024 * 1024)
+            .base64EncodedString()
+        await fixture.dispatch(
+            method: "swarm_writeFeedEntry",
+            params: ["name": "posts", "data": oversized],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: -32602, reason: Reason.payloadTooLarge)
+    }
+
     func testWriteFeedEntryNegativeIndexReturnsInvalidParams() async throws {
         connect()
         await fixture.dispatch(

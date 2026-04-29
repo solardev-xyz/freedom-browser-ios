@@ -7,6 +7,7 @@ final class SwarmCapabilitiesTests: XCTestCase {
         XCTAssertEqual(limits.maxDataBytes, 10 * 1024 * 1024)
         XCTAssertEqual(limits.maxFilesBytes, 50 * 1024 * 1024)
         XCTAssertEqual(limits.maxFileCount, 100)
+        XCTAssertEqual(limits.maxPathBytes, 100)
     }
 
     func testJSONShapeWhenCanPublishTrue() {
@@ -19,6 +20,7 @@ final class SwarmCapabilitiesTests: XCTestCase {
         XCTAssertEqual(limits?["maxDataBytes"] as? Int, 10 * 1024 * 1024)
         XCTAssertEqual(limits?["maxFilesBytes"] as? Int, 50 * 1024 * 1024)
         XCTAssertEqual(limits?["maxFileCount"] as? Int, 100)
+        XCTAssertEqual(limits?["maxPathBytes"] as? Int, 100)
     }
 
     func testJSONShapeWhenReasonPresent() {
