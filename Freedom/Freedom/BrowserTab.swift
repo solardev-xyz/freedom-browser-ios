@@ -36,6 +36,12 @@ final class BrowserTab {
     /// near the top of the page (which also catches fresh navigations,
     /// since contentOffset jumps to 0 on every WebKit commit).
     var chromeIsCompact: Bool = false
+    /// Color extracted from the page's `<meta name="theme-color">` (when
+    /// present + parseable as hex). Drives the top-safe-area background
+    /// behind the webview so a page like Apple's nav-bar-orange or
+    /// GitHub's near-black extends seamlessly into the status bar
+    /// region. `nil` falls back to the system background color.
+    var themeColor: UIColor?
     private(set) var hasNavigated: Bool = false
 
     /// Pseudo-URL for the originating ENS name when the page was loaded
@@ -406,6 +412,42 @@ final class BrowserTab {
     /// from tiny accidental drags.
     private static let chromeCompactDeltaThreshold: CGFloat = 10
 
+    /// Reads the page's `<meta name="theme-color">` after navigation
+    /// commits and stores the parsed `UIColor` for the top-safe-area
+    /// background. Honors media-conditional tags — pages can ship
+    /// separate light/dark colors via
+    /// `<meta name="theme-color" content="..." media="(prefers-color-scheme: dark)">`
+    /// and we pick the first whose media query matches; falls back to
+    /// the no-`media` tag. Hex-only parser; non-hex values
+    /// (rgb/hsl/named) are silently ignored so we fall back to nil.
+    fileprivate func extractThemeColor() {
+        let js = """
+        (function() {
+            var metas = document.querySelectorAll('meta[name="theme-color"]');
+            var fallback = null;
+            for (var i = 0; i < metas.length; i++) {
+                var media = metas[i].getAttribute('media');
+                if (!media) {
+                    fallback = metas[i].content;
+                } else if (window.matchMedia(media).matches) {
+                    return metas[i].content;
+                }
+            }
+            return fallback;
+        })()
+        """
+        webView.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self else { return }
+            let color = (result as? String).flatMap(UIColor.init(hex:))
+            // KVO/JS callback arrives on main; set the @Observable
+            // property directly. assumeIsolated mirrors the surrounding
+            // observer style.
+            MainActor.assumeIsolated {
+                if self.themeColor != color { self.themeColor = color }
+            }
+        }
+    }
+
     private func handleScroll(scrollView: UIScrollView) {
         let y = scrollView.contentOffset.y
         // Near the top — always expanded. Catches both fresh-load and
@@ -433,8 +475,12 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         // Fresh EIP-6963 UUID + idempotent swarm preload per page session.
+        // Theme color is per-page; clear so the chrome shows the system
+        // background color while loading rather than carrying the
+        // previous page's brand color into a fresh navigation.
         MainActor.assumeIsolated {
             owner?.reinstallPreloads()
+            owner?.themeColor = nil
         }
     }
 
@@ -445,6 +491,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // pattern as the KVO observers in BrowserTab.
         MainActor.assumeIsolated {
             owner?.onNavigationFinish?(url, title)
+            owner?.extractThemeColor()
         }
     }
 }

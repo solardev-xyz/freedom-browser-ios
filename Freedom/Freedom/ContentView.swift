@@ -75,8 +75,19 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
+            // Top-safe-area background only when the page declares a
+            // `<meta name="theme-color">`. Otherwise transparent, so
+            // the webview (which then ignores the top safe area too)
+            // renders right up to the screen edge — Safari's model.
+            topSafeAreaBackground
+                .ignoresSafeArea()
+            // Webview content flows under the floating bottom pill bar
+            // (Safari-style); WKWebView's automatic content insets keep
+            // the user able to scroll content past the bar. Top edge:
+            // respected when there's a theme-color (so it doesn't paint
+            // over the colored status-bar region), ignored otherwise.
             webArea
-                .ignoresSafeArea(edges: .top)
+                .ignoresSafeArea(edges: webAreaIgnoredEdges)
             // Webview stays mounted under editingContent so WKWebView
             // state survives a quick edit.
             if isEditing {
@@ -363,6 +374,23 @@ struct ContentView: View {
 
     private func resetAddressTextToActiveURL() {
         addressText = activeURL?.absoluteString ?? ""
+    }
+
+    /// Top-safe-area background. The page's parsed
+    /// `<meta name="theme-color">` if it set one, otherwise transparent
+    /// — and the webview takes over the top edge in that case (see
+    /// `webAreaIgnoredEdges`).
+    private var topSafeAreaBackground: Color {
+        tabStore.activeTab?.themeColor.map(Color.init) ?? .clear
+    }
+
+    /// Webview ignores the bottom safe area always (so content flows
+    /// under the floating pill bar). Top is only ignored when the page
+    /// hasn't set a theme-color — when it has, we yield the top edge to
+    /// the colored background layer instead of painting page content
+    /// behind the status bar.
+    private var webAreaIgnoredEdges: Edge.Set {
+        tabStore.activeTab?.themeColor == nil ? [.top, .bottom] : .bottom
     }
 
     @ViewBuilder private var webArea: some View {
