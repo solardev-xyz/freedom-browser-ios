@@ -35,6 +35,10 @@ struct ContentView: View {
     @State private var isShowingWallet = false
     @State private var isShowingNode = false
     @FocusState private var addressFocused: Bool
+    /// Gates suggestions so they don't appear before the user actually
+    /// types in the prefilled URL (Safari behavior). Reset on every
+    /// focus entry; latched true on the first text change while focused.
+    @State private var userEditedText: Bool = false
 
     private var activeURL: URL? { tabStore.activeTab?.displayURL }
 
@@ -64,24 +68,32 @@ struct ContentView: View {
     }
 
     var body: some View {
-        webArea
-            .ignoresSafeArea(edges: .top)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
-                    if let banner {
-                        bannerRow(banner)
-                    }
-                    if !suggestions.isEmpty {
-                        HistorySuggestions(matches: suggestions) { suggestion in
-                            guard let classified = BrowserURL.classify(suggestion.url) else { return }
-                            navigate(to: classified)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 8)
-                    }
-                    pillBar
-                }
+        ZStack {
+            webArea
+                .ignoresSafeArea(edges: .top)
+            // Webview stays mounted under editingContent so WKWebView
+            // state survives a quick edit.
+            if addressFocused {
+                editingContent
+                    .transition(.opacity)
             }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                if let banner {
+                    bannerRow(banner)
+                }
+                pillBar
+            }
+            .frame(maxWidth: .infinity)
+            // Block stray taps in the chrome bar's transparent gaps from
+            // falling through to the editingContent (HomePage) below —
+            // otherwise tapping the cancel pill also "clicks" the bookmark
+            // card it happens to be sitting on top of.
+            .contentShape(Rectangle())
+            .onTapGesture { }
+        }
+        .animation(.snappy(duration: 0.25), value: addressFocused)
         .sheet(isPresented: $isShowingTabSwitcher) {
             TabSwitcher(isPresented: $isShowingTabSwitcher)
         }
@@ -139,9 +151,19 @@ struct ContentView: View {
             guard !addressFocused else { return }
             addressText = new?.absoluteString ?? ""
         }
+        .onChange(of: addressFocused) { _, focused in
+            // Reset on every entry so suggestions don't appear from the
+            // user's previous edit session before they've typed.
+            if focused { userEditedText = false }
+        }
+        .onChange(of: addressText) { _, _ in
+            // The displayURL→addressText sync above is gated on
+            // !addressFocused, so any focused-time write is user-driven.
+            if addressFocused { userEditedText = true }
+        }
         .onChange(of: tabStore.activeRecordID) { _, _ in
             addressFocused = false
-            addressText = activeURL?.absoluteString ?? ""
+            resetAddressTextToActiveURL()
             // Previous tab's banner is irrelevant to the new tab.
             banner = nil
         }
@@ -190,42 +212,88 @@ struct ContentView: View {
         let active = tabStore.activeTab
         return GlassChromeGroup(spacing: 8) {
             HStack(spacing: 8) {
-                NavPill(
-                    canGoBack: active?.canGoBack == true,
-                    canGoForward: active?.canGoForward == true,
-                    onBack: { tabStore.activeTab?.goBack() },
-                    onForward: { tabStore.activeTab?.goForward() }
-                )
+                if !addressFocused {
+                    NavPill(
+                        canGoBack: active?.canGoBack == true,
+                        canGoForward: active?.canGoForward == true,
+                        onBack: { tabStore.activeTab?.goBack() },
+                        onForward: { tabStore.activeTab?.goForward() }
+                    )
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                }
                 URLPill(
                     text: $addressText,
                     isFocused: $addressFocused,
                     trust: active?.currentTrust,
                     isLoading: active?.isLoading == true,
                     progress: active?.progress ?? 0,
-                    hasURL: active?.displayURL != nil,
+                    displayURL: active?.displayURL,
                     onSubmit: navigate,
                     onReload: { tabStore.activeTab?.reload() },
                     onStop: { tabStore.activeTab?.stop() }
                 )
                 .frame(maxWidth: .infinity)
-                MenuPill(
-                    nodeStatus: swarm.status,
-                    peerCount: swarm.peerCount,
-                    isURLBookmarked: isActiveURLBookmarked,
-                    canBookmark: activeURL != nil,
-                    shareURL: activeURL,
-                    onBookmarkToggle: toggleBookmark,
-                    onTabs: { isShowingTabSwitcher = true },
-                    onWallet: { isShowingWallet = true },
-                    onNode: { isShowingNode = true },
-                    onBookmarks: { isShowingBookmarks = true },
-                    onHistory: { isShowingHistory = true },
-                    onSettings: { isShowingSettings = true }
-                )
+                if addressFocused {
+                    cancelPill
+                        .transition(.opacity)
+                } else {
+                    MenuPill(
+                        nodeStatus: swarm.status,
+                        peerCount: swarm.peerCount,
+                        isURLBookmarked: isActiveURLBookmarked,
+                        canBookmark: activeURL != nil,
+                        shareURL: activeURL,
+                        onBookmarkToggle: toggleBookmark,
+                        onTabs: { isShowingTabSwitcher = true },
+                        onWallet: { isShowingWallet = true },
+                        onNode: { isShowingNode = true },
+                        onBookmarks: { isShowingBookmarks = true },
+                        onHistory: { isShowingHistory = true },
+                        onSettings: { isShowingSettings = true }
+                    )
+                    .transition(.opacity)
+                }
             }
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+    }
+
+    private var cancelPill: some View {
+        Button(action: cancelEdit) {
+            Image(systemName: "xmark")
+                .font(.system(size: 17, weight: .medium))
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .glassPill()
+    }
+
+    @ViewBuilder private var editingContent: some View {
+        if userEditedText {
+            // Sticky for the session: once the user types or clears the
+            // bar, HomePage doesn't return until cancel + re-tap (Safari).
+            HistorySuggestions(matches: suggestions) { suggestion in
+                guard let classified = BrowserURL.classify(suggestion.url) else { return }
+                navigate(to: classified)
+            }
+            .padding(.top, 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(Color(.systemBackground))
+        } else {
+            HomePage(onNavigate: navigate(to:))
+        }
+    }
+
+    /// Drops out of edit mode and restores the active tab's URL.
+    /// (Clearing the typed text is the in-pill ✕-circle, separate.)
+    private func cancelEdit() {
+        addressFocused = false
+        resetAddressTextToActiveURL()
+    }
+
+    private func resetAddressTextToActiveURL() {
+        addressText = activeURL?.absoluteString ?? ""
     }
 
     @ViewBuilder private var webArea: some View {
@@ -274,7 +342,7 @@ struct ContentView: View {
 
     private var suggestions: [HistorySuggestion] {
         let trimmed = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard addressFocused, !trimmed.isEmpty else { return [] }
+        guard addressFocused, userEditedText, !trimmed.isEmpty else { return [] }
         let lower = trimmed.lowercased()
         let bookmarkURLs = bookmarkedURLs
 
