@@ -237,7 +237,7 @@ struct ContentView: View {
                     CompactURLPill(
                         trust: active?.currentTrust,
                         displayURL: active?.displayURL,
-                        onTap: tapCompactToEdit
+                        onTap: expandFromCompact
                     )
                     .transition(.opacity)
                     .simultaneousGesture(swipeUpToTabs)
@@ -283,13 +283,11 @@ struct ContentView: View {
         .padding(.bottom, 8)
     }
 
-    /// Compact pill tap: re-expand the chrome AND focus in one
-    /// transaction. Both writes batch, so by the time the URLPill
-    /// re-renders with its TextField in tree, the focus binding has a
-    /// focusable view to bind to.
-    private func tapCompactToEdit() {
+    /// Compact pill tap: just restore full chrome (same effect as
+    /// scrolling up). User taps the now-full URL pill again to enter
+    /// edit mode — Safari's two-tap pattern from the compact state.
+    private func expandFromCompact() {
         tabStore.activeTab?.chromeIsCompact = false
-        addressFocused = true
     }
 
     /// Safari's pro-user gesture: upward swipe from the URL pill opens
