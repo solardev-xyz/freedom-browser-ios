@@ -10,7 +10,7 @@ struct ExploreEntry: Hashable {
         ExploreEntry(
             title: "Swarmit",
             subtitle: "Decentralized social feed on Swarm",
-            url: .bzz(URL(string: "bzz://c0b683a3be2593bc7e22d252a371bac921bf47d11c3f3c1680ee60e6b8ccfcc8")!)
+            url: .ens(name: "app.swarmit.eth")
         ),
     ]
 }

@@ -340,13 +340,36 @@ struct ContentView: View {
         if userEditedText {
             // Sticky for the session: once the user types or clears the
             // bar, HomePage doesn't return until cancel + re-tap (Safari).
-            HistorySuggestions(matches: suggestions) { suggestion in
-                guard let classified = BrowserURL.classify(suggestion.url) else { return }
-                navigate(to: classified)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Suggestions from Bookmarks · History · Tabs")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+                HistorySuggestions(matches: suggestions) { suggestion in
+                    guard let classified = BrowserURL.classify(suggestion.url) else { return }
+                    navigate(to: classified)
+                }
             }
-            .padding(.top, 8)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(Color(.systemBackground))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Bounded background — `.scaledToFill` is sized by this
+            // view's frame, not the ZStack's intrinsic size. Sibling
+            // layout would otherwise let the 3:2 image leak its
+            // dimensions into the enclosing layout and overflow the
+            // suggestions horizontally (same trap HomePage navigates
+            // around with the same `.background { Image … }` pattern).
+            .background {
+                Image("HomeHero")
+                    .resizable()
+                    .scaledToFill()
+                    .clipped()
+                    .overlay(Color.black.opacity(0.65))
+                    .ignoresSafeArea()
+            }
+            // Dim hero is dark — force light text colors so
+            // `.primary`/`.secondary` inside HistorySuggestions are
+            // legible regardless of the system color scheme.
+            .environment(\.colorScheme, .dark)
         } else {
             HomePage(onNavigate: navigate(to:))
         }
@@ -483,6 +506,19 @@ struct ContentView: View {
                 title: bookmark.displayTitle,
                 timestamp: bookmark.createdAt,
                 isBookmark: true
+            ))
+        }
+        // Then open-tab URLs the user hasn't visited via history yet.
+        for record in tabStore.records {
+            guard let url = record.url, !seen.contains(url) else { continue }
+            let title = record.title ?? url.absoluteString
+            guard matches(title: title, url: url) else { continue }
+            seen.insert(url)
+            items.append(HistorySuggestion(
+                url: url,
+                title: title,
+                timestamp: record.lastActiveAt,
+                isBookmark: bookmarkURLs.contains(url)
             ))
         }
 

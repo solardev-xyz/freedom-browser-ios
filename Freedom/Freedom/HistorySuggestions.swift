@@ -35,17 +35,15 @@ struct HistorySuggestions: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 if index < matches.count - 1 {
-                    Divider()
+                    Divider().opacity(0.3)
                 }
             }
         }
-        .background(Color(.secondarySystemBackground))
-        .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
     }
 }
