@@ -85,8 +85,11 @@ struct ContentView: View {
             // the user able to scroll content past the bar. Top edge:
             // respected when there's a theme-color (so it doesn't paint
             // over the colored status-bar region), ignored otherwise.
+            // The safe-area treatment is applied INSIDE `webArea`, only
+            // to the webview branch — HomePage's ScrollView wants to
+            // respect the top safe area (same as in edit-mode takeover)
+            // so its content doesn't sit behind the status bar.
             webArea
-                .ignoresSafeArea(edges: webAreaIgnoredEdges)
             // Webview stays mounted under editingContent so WKWebView
             // state survives a quick edit.
             if isEditing {
@@ -400,15 +403,18 @@ struct ContentView: View {
 
     @ViewBuilder private var webArea: some View {
         if let active = tabStore.activeTab, active.hasNavigated {
-            if let gate = active.pendingGate {
-                ENSInterstitial(gate: gate, tab: active)
-            } else {
-                // .id forces SwiftUI to recreate the representable when the
-                // active tab changes — otherwise it reuses the prior UIView
-                // (which is the *previous* tab's WKWebView) and we show the
-                // wrong page.
-                BrowserWebView(tab: active).id(active.recordID)
+            Group {
+                if let gate = active.pendingGate {
+                    ENSInterstitial(gate: gate, tab: active)
+                } else {
+                    // .id forces SwiftUI to recreate the representable when the
+                    // active tab changes — otherwise it reuses the prior UIView
+                    // (which is the *previous* tab's WKWebView) and we show the
+                    // wrong page.
+                    BrowserWebView(tab: active).id(active.recordID)
+                }
             }
+            .ignoresSafeArea(edges: webAreaIgnoredEdges)
         } else {
             HomePage(onNavigate: navigate(to:))
         }

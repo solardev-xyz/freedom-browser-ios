@@ -207,7 +207,7 @@ private struct LaunchCard: View {
                 Image(systemName: "chevron.right").foregroundStyle(.tertiary).font(.caption)
             }
             .padding()
-            .background(Color(.secondarySystemBackground))
+            .background(.thinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
