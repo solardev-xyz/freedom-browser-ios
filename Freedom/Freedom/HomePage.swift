@@ -46,6 +46,12 @@ struct HomePage: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        // No-op when no keyboard is up (e.g. fresh-tab home), but when
+        // HomePage is rendered inside ContentView's edit-mode takeover,
+        // scrolling drops the keyboard so the user can see the page.
+        // The chrome stays in edit form (driven by `isEditing`, not by
+        // focus) so the cancel pill remains reachable.
+        .scrollDismissesKeyboard(.immediately)
         // .background is explicitly bounded to the ScrollView's frame
         // (= viewport), so scaledToFill can't leak its 3:2 image into the
         // enclosing layout the way a ZStack sibling would. Image stays put

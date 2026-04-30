@@ -14,6 +14,11 @@ struct URLPill: View {
     let isLoading: Bool
     let progress: Double
     let displayURL: URL?
+    /// True while the chrome is in edit mode. Distinct from `isFocused`
+    /// because scroll-dismissing the keyboard drops focus but keeps the
+    /// edit-mode UI; alignment of the idle host label needs to follow
+    /// edit-mode (leading) vs idle (center) regardless of focus state.
+    let isEditing: Bool
     let onSubmit: () -> Void
     let onReload: () -> Void
     let onStop: () -> Void
@@ -47,6 +52,7 @@ struct URLPill: View {
                     if !isFocused {
                         Button { isFocused = true } label: {
                             idleLabel
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -108,12 +114,13 @@ struct URLPill: View {
     }
 
     @ViewBuilder private var idleLabel: some View {
+        let alignment: Alignment = isEditing ? .leading : .center
         if let url = displayURL {
             Text(url.hostOrAbsolute)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: alignment)
         } else {
             Text(Self.placeholder)
                 .foregroundStyle(.secondary)

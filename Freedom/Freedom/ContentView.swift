@@ -39,6 +39,12 @@ struct ContentView: View {
     /// types in the prefilled URL (Safari behavior). Reset on every
     /// focus entry; latched true on the first text change while focused.
     @State private var userEditedText: Bool = false
+    /// "Edit mode UI" is decoupled from `@FocusState`: scrolling the
+    /// start page dismisses the keyboard (via `.scrollDismissesKeyboard`)
+    /// but the edit-mode chrome (cancel button, expanded URL pill) stays
+    /// — Safari's behavior. Set true on focus entry, cleared only by
+    /// explicit `exitEditMode()` paths (cancel, navigate, tab switch).
+    @State private var isEditing: Bool = false
 
     private var activeURL: URL? { tabStore.activeTab?.displayURL }
 
@@ -73,7 +79,7 @@ struct ContentView: View {
                 .ignoresSafeArea(edges: .top)
             // Webview stays mounted under editingContent so WKWebView
             // state survives a quick edit.
-            if addressFocused {
+            if isEditing {
                 editingContent
                     .transition(.opacity)
             }
@@ -93,7 +99,7 @@ struct ContentView: View {
             .contentShape(Rectangle())
             .onTapGesture { }
         }
-        .animation(.snappy(duration: 0.25), value: addressFocused)
+        .animation(.snappy(duration: 0.25), value: isEditing)
         .animation(.snappy(duration: 0.25), value: tabStore.activeTab?.chromeIsCompact)
         .sheet(isPresented: $isShowingTabSwitcher) {
             TabSwitcher(isPresented: $isShowingTabSwitcher)
@@ -153,9 +159,17 @@ struct ContentView: View {
             addressText = new?.absoluteString ?? ""
         }
         .onChange(of: addressFocused) { _, focused in
-            // Reset on every entry so suggestions don't appear from the
-            // user's previous edit session before they've typed.
-            if focused { userEditedText = false }
+            // Focus arrives → enter edit mode. Focus loss alone doesn't
+            // exit edit mode (scrolling the start page dismisses the
+            // keyboard but keeps the chrome in edit-mode form).
+            if focused { isEditing = true }
+        }
+        .onChange(of: isEditing) { _, editing in
+            // Reset the user-typed gate on a fresh edit session — but
+            // only on the false→true transition, so re-focusing the URL
+            // pill after a scroll-dismiss doesn't wipe out userEditedText
+            // mid-session and bounce the user back to HomePage.
+            if editing { userEditedText = false }
         }
         .onChange(of: addressText) { _, _ in
             // The displayURL→addressText sync above is gated on
@@ -163,7 +177,7 @@ struct ContentView: View {
             if addressFocused { userEditedText = true }
         }
         .onChange(of: tabStore.activeRecordID) { _, _ in
-            addressFocused = false
+            exitEditMode()
             resetAddressTextToActiveURL()
             // Previous tab's banner is irrelevant to the new tab.
             banner = nil
@@ -213,7 +227,7 @@ struct ContentView: View {
     /// compact (a tap-to-edit while scrolled re-expands).
     private enum ChromeMode { case normal, editing, compact }
     private var chromeMode: ChromeMode {
-        if addressFocused { return .editing }
+        if isEditing { return .editing }
         if tabStore.activeTab?.chromeIsCompact == true { return .compact }
         return .normal
     }
@@ -250,6 +264,7 @@ struct ContentView: View {
                         isLoading: active?.isLoading == true,
                         progress: active?.progress ?? 0,
                         displayURL: active?.displayURL,
+                        isEditing: isEditing,
                         onSubmit: navigate,
                         onReload: { tabStore.activeTab?.reload() },
                         onStop: { tabStore.activeTab?.stop() }
@@ -332,8 +347,18 @@ struct ContentView: View {
     /// Drops out of edit mode and restores the active tab's URL.
     /// (Clearing the typed text is the in-pill ✕-circle, separate.)
     private func cancelEdit() {
-        addressFocused = false
+        exitEditMode()
         resetAddressTextToActiveURL()
+    }
+
+    /// The single explicit "leave edit mode" path — clears both the
+    /// chrome's edit-mode flag and the keyboard focus. Direct focus
+    /// loss alone (e.g. scroll-dismiss-keyboard) deliberately does not
+    /// exit edit mode; only callers that mean to leave the edit
+    /// surface entirely call this.
+    private func exitEditMode() {
+        isEditing = false
+        addressFocused = false
     }
 
     private func resetAddressTextToActiveURL() {
@@ -386,7 +411,7 @@ struct ContentView: View {
 
     private var suggestions: [HistorySuggestion] {
         let trimmed = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard addressFocused, userEditedText, !trimmed.isEmpty else { return [] }
+        guard isEditing, userEditedText, !trimmed.isEmpty else { return [] }
         let lower = trimmed.lowercased()
         let bookmarkURLs = bookmarkedURLs
 
@@ -454,7 +479,7 @@ struct ContentView: View {
 
     private func navigate(to browserURL: BrowserURL) {
         banner = nil
-        addressFocused = false
+        exitEditMode()
         addressText = browserURL.url.absoluteString
         tabStore.navigateActive(to: browserURL)
     }
