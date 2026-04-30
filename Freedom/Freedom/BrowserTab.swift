@@ -31,6 +31,11 @@ final class BrowserTab {
     var canGoBack: Bool = false
     var canGoForward: Bool = false
     var isLoading: Bool = false
+    /// True while the user is scrolling down the page — drives the
+    /// Safari-style chrome shrink. Resets to false on scroll-up and
+    /// near the top of the page (which also catches fresh navigations,
+    /// since contentOffset jumps to 0 on every WebKit commit).
+    var chromeIsCompact: Bool = false
     private(set) var hasNavigated: Bool = false
 
     /// Pseudo-URL for the originating ENS name when the page was loaded
@@ -88,6 +93,7 @@ final class BrowserTab {
     @ObservationIgnored private let ensResolver: ENSResolver
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
+    @ObservationIgnored private var lastScrollY: CGFloat = 0
     @ObservationIgnored private let navDelegate = NavDelegate()
     @ObservationIgnored private var activeResolveTask: Task<Void, Never>?
     @ObservationIgnored private let contentController: WKUserContentController
@@ -383,6 +389,42 @@ final class BrowserTab {
                 if !wv.isLoading { self.endRefreshing() }
             }
         })
+        observations.append(webView.scrollView.observe(\.contentOffset, options: .new) { [weak self] sv, _ in
+            MainActor.assumeIsolated {
+                self?.handleScroll(scrollView: sv)
+            }
+        })
+    }
+
+    /// Threshold below which the chrome stays expanded — covers
+    /// rubber-banding past the top edge plus a small dead zone so the
+    /// user doesn't bounce-shrink the chrome from the home position.
+    private static let chromeCompactTopThreshold: CGFloat = 8
+
+    /// Movement (in points) the user has to scroll in the current
+    /// direction before we toggle the chrome state. Avoids flapping
+    /// from tiny accidental drags.
+    private static let chromeCompactDeltaThreshold: CGFloat = 10
+
+    private func handleScroll(scrollView: UIScrollView) {
+        let y = scrollView.contentOffset.y
+        // Near the top — always expanded. Catches both fresh-load and
+        // pull-to-refresh / rubber-band overscroll.
+        if y < Self.chromeCompactTopThreshold {
+            if chromeIsCompact { chromeIsCompact = false }
+            lastScrollY = y
+            return
+        }
+        let delta = y - lastScrollY
+        if delta > Self.chromeCompactDeltaThreshold {
+            if !chromeIsCompact { chromeIsCompact = true }
+            lastScrollY = y
+        } else if delta < -Self.chromeCompactDeltaThreshold {
+            if chromeIsCompact { chromeIsCompact = false }
+            lastScrollY = y
+        }
+        // Within the dead zone — keep state, leave the anchor alone so
+        // small jitters don't slowly drift the threshold past us.
     }
 }
 

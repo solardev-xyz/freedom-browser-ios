@@ -18,7 +18,7 @@ struct URLPill: View {
     let onReload: () -> Void
     let onStop: () -> Void
 
-    private static let placeholder = "Search or enter address"
+    static let placeholder = "Search or enter address"
 
     var body: some View {
         HStack(spacing: 8) {

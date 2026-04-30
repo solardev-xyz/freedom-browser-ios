@@ -94,6 +94,7 @@ struct ContentView: View {
             .onTapGesture { }
         }
         .animation(.snappy(duration: 0.25), value: addressFocused)
+        .animation(.snappy(duration: 0.25), value: tabStore.activeTab?.chromeIsCompact)
         .sheet(isPresented: $isShowingTabSwitcher) {
             TabSwitcher(isPresented: $isShowingTabSwitcher)
         }
@@ -208,11 +209,21 @@ struct ContentView: View {
         }
     }
 
+    /// Three chrome states drive the pill bar layout. Editing wins over
+    /// compact (a tap-to-edit while scrolled re-expands).
+    private enum ChromeMode { case normal, editing, compact }
+    private var chromeMode: ChromeMode {
+        if addressFocused { return .editing }
+        if tabStore.activeTab?.chromeIsCompact == true { return .compact }
+        return .normal
+    }
+
     private var pillBar: some View {
         let active = tabStore.activeTab
+        let mode = chromeMode
         return GlassChromeGroup(spacing: 8) {
             HStack(spacing: 8) {
-                if !addressFocused {
+                if mode == .normal {
                     NavPill(
                         canGoBack: active?.canGoBack == true,
                         canGoForward: active?.canGoForward == true,
@@ -221,22 +232,33 @@ struct ContentView: View {
                     )
                     .transition(.move(edge: .leading).combined(with: .opacity))
                 }
-                URLPill(
-                    text: $addressText,
-                    isFocused: $addressFocused,
-                    trust: active?.currentTrust,
-                    isLoading: active?.isLoading == true,
-                    progress: active?.progress ?? 0,
-                    displayURL: active?.displayURL,
-                    onSubmit: navigate,
-                    onReload: { tabStore.activeTab?.reload() },
-                    onStop: { tabStore.activeTab?.stop() }
-                )
-                .frame(maxWidth: .infinity)
-                if addressFocused {
+                if mode == .compact {
+                    Spacer(minLength: 0)
+                    CompactURLPill(
+                        trust: active?.currentTrust,
+                        displayURL: active?.displayURL,
+                        onTap: tapCompactToEdit
+                    )
+                    .transition(.opacity)
+                    Spacer(minLength: 0)
+                } else {
+                    URLPill(
+                        text: $addressText,
+                        isFocused: $addressFocused,
+                        trust: active?.currentTrust,
+                        isLoading: active?.isLoading == true,
+                        progress: active?.progress ?? 0,
+                        displayURL: active?.displayURL,
+                        onSubmit: navigate,
+                        onReload: { tabStore.activeTab?.reload() },
+                        onStop: { tabStore.activeTab?.stop() }
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                if mode == .editing {
                     cancelPill
                         .transition(.opacity)
-                } else {
+                } else if mode == .normal {
                     MenuPill(
                         nodeStatus: swarm.status,
                         peerCount: swarm.peerCount,
@@ -251,12 +273,21 @@ struct ContentView: View {
                         onHistory: { isShowingHistory = true },
                         onSettings: { isShowingSettings = true }
                     )
-                    .transition(.opacity)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+    }
+
+    /// Compact pill tap: re-expand the chrome AND focus in one
+    /// transaction. Both writes batch, so by the time the URLPill
+    /// re-renders with its TextField in tree, the focus binding has a
+    /// focusable view to bind to.
+    private func tapCompactToEdit() {
+        tabStore.activeTab?.chromeIsCompact = false
+        addressFocused = true
     }
 
     private var cancelPill: some View {
