@@ -8,11 +8,10 @@ struct ContentView: View {
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(Vault.self) private var vault
     @Environment(BeeIdentityCoordinator.self) private var beeIdentity
-    @Environment(BeeReadiness.self) private var beeReadiness
     @Environment(\.scenePhase) private var scenePhase
 
-    // Drives the bookmark toolbar button's fill state — toggling a bookmark
-    // updates this query, which flips the icon immediately.
+    // Drives the menu's bookmark-toggle row (star fill + label text).
+    // Updating a bookmark flips this query, which flips the icon immediately.
     @Query private var allBookmarks: [Bookmark]
 
     // Capped history fetch for the address-bar autocomplete. 500 is plenty
@@ -65,24 +64,24 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            nodeStatusBar
-            addressBar
-            if let banner {
-                bannerRow(banner)
-            }
-            progressBar
-            webArea
-                .overlay(alignment: .top) {
+        webArea
+            .ignoresSafeArea(edges: .top)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    if let banner {
+                        bannerRow(banner)
+                    }
                     if !suggestions.isEmpty {
                         HistorySuggestions(matches: suggestions) { suggestion in
                             guard let classified = BrowserURL.classify(suggestion.url) else { return }
                             navigate(to: classified)
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
                     }
+                    pillBar
                 }
-            toolbar
-        }
+            }
         .sheet(isPresented: $isShowingTabSwitcher) {
             TabSwitcher(isPresented: $isShowingTabSwitcher)
         }
@@ -187,72 +186,46 @@ struct ContentView: View {
         }
     }
 
-    private var nodeStatusBar: some View {
-        HStack(spacing: 8) {
-            Circle().frame(width: 8, height: 8).foregroundStyle(swarm.status.color)
-            Text(swarm.status.rawValue).font(.caption).monospaced()
-            if beeIdentity.status == .swapping {
-                Text("· updating identity")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if let suffix = readinessSuffix {
-                Text("· \(suffix)")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text("\(swarm.peerCount) peers")
-                .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(Color(.secondarySystemBackground))
-    }
-
-    private var addressBar: some View {
-        HStack(spacing: 8) {
-            // Reserve the shield slot even when there's no trust, so the
-            // text field doesn't jump horizontally as tabs switch between
-            // ENS-resolved and plain pages.
-            Group {
-                if let trust = tabStore.activeTab?.currentTrust {
-                    TrustShield(trust: trust)
-                } else {
-                    Color.clear
-                }
-            }
-            .frame(width: 28, height: 28)
-            TextField("name.eth, bzz://<hash>, or https://…", text: $addressText)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .keyboardType(.URL)
-                .submitLabel(.go)
-                .focused($addressFocused)
-                .onSubmit(navigate)
-            if addressFocused {
-                Button("Go", action: navigate)
-                    .buttonStyle(.borderedProminent)
-            } else if let active = tabStore.activeTab, active.isLoading {
-                Button { active.stop() } label: {
-                    Image(systemName: "xmark")
-                }
-            } else {
-                Button { tabStore.activeTab?.reload() } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .disabled(tabStore.activeTab?.displayURL == nil)
+    private var pillBar: some View {
+        let active = tabStore.activeTab
+        return GlassChromeGroup(spacing: 8) {
+            HStack(spacing: 8) {
+                NavPill(
+                    canGoBack: active?.canGoBack == true,
+                    canGoForward: active?.canGoForward == true,
+                    onBack: { tabStore.activeTab?.goBack() },
+                    onForward: { tabStore.activeTab?.goForward() }
+                )
+                URLPill(
+                    text: $addressText,
+                    isFocused: $addressFocused,
+                    trust: active?.currentTrust,
+                    isLoading: active?.isLoading == true,
+                    progress: active?.progress ?? 0,
+                    hasURL: active?.displayURL != nil,
+                    onSubmit: navigate,
+                    onReload: { tabStore.activeTab?.reload() },
+                    onStop: { tabStore.activeTab?.stop() }
+                )
+                .frame(maxWidth: .infinity)
+                MenuPill(
+                    nodeStatus: swarm.status,
+                    peerCount: swarm.peerCount,
+                    isURLBookmarked: isActiveURLBookmarked,
+                    canBookmark: activeURL != nil,
+                    shareURL: activeURL,
+                    onBookmarkToggle: toggleBookmark,
+                    onTabs: { isShowingTabSwitcher = true },
+                    onWallet: { isShowingWallet = true },
+                    onNode: { isShowingNode = true },
+                    onBookmarks: { isShowingBookmarks = true },
+                    onHistory: { isShowingHistory = true },
+                    onSettings: { isShowingSettings = true }
+                )
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(Color(.secondarySystemBackground))
-    }
-
-    @ViewBuilder private var progressBar: some View {
-        if let active = tabStore.activeTab, active.isLoading, active.progress > 0, active.progress < 1 {
-            ProgressView(value: active.progress)
-                .tint(.accentColor)
-                .scaleEffect(y: 0.5)
-        } else {
-            Color.clear.frame(height: 2)
-        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
     }
 
     @ViewBuilder private var webArea: some View {
@@ -292,45 +265,6 @@ struct ContentView: View {
             .padding(.horizontal, 12).padding(.vertical, 8)
             .foregroundStyle(.white)
             .background(Color.red)
-        }
-    }
-
-    private var toolbar: some View {
-        HStack(spacing: 0) {
-            toolbarButton("chevron.backward", enabled: tabStore.activeTab?.canGoBack == true) {
-                tabStore.activeTab?.goBack()
-            }
-            toolbarButton("chevron.forward", enabled: tabStore.activeTab?.canGoForward == true) {
-                tabStore.activeTab?.goForward()
-            }
-            Spacer()
-            shareButton
-            Spacer()
-            bookmarkButton
-            Spacer()
-            Button { isShowingTabSwitcher = true } label: {
-                tabsButtonLabel.frame(width: 44, height: 44)
-            }
-            Spacer()
-            toolbarButton("creditcard.fill", enabled: true) { isShowingWallet = true }
-            Spacer()
-            toolbarButton("circle.hexagongrid.fill", enabled: true) { isShowingNode = true }
-            Spacer()
-            menuButton
-        }
-        .padding(.horizontal, 12)
-        .background(Color(.secondarySystemBackground))
-    }
-
-    @ViewBuilder private var shareButton: some View {
-        if let url = activeURL {
-            ShareLink(item: url) {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 20))
-                    .frame(width: 44, height: 44)
-            }
-        } else {
-            toolbarButton("square.and.arrow.up", enabled: false) {}
         }
     }
 
@@ -390,84 +324,12 @@ struct ContentView: View {
 
     private var isActiveURLBookmarked: Bool {
         guard let url = activeURL else { return false }
-        return bookmarkedURLs.contains(url)
+        return allBookmarks.contains { $0.url == url }
     }
 
-    private var bookmarkButton: some View {
-        Button {
-            guard let tab = tabStore.activeTab, let url = activeURL else { return }
-            bookmarkStore.toggle(url: url, title: tab.title)
-        } label: {
-            Image(systemName: isActiveURLBookmarked ? "star.fill" : "star")
-                .font(.system(size: 20))
-                .frame(width: 44, height: 44)
-        }
-        .disabled(activeURL == nil)
-    }
-
-    private var menuButton: some View {
-        Menu {
-            Button {
-                isShowingBookmarks = true
-            } label: {
-                Label("Bookmarks", systemImage: "book")
-            }
-            Button {
-                isShowingHistory = true
-            } label: {
-                Label("History", systemImage: "clock")
-            }
-            Divider()
-            Button {
-                isShowingSettings = true
-            } label: {
-                Label("Settings", systemImage: "gear")
-            }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-                .font(.system(size: 20))
-                .frame(width: 44, height: 44)
-        }
-    }
-
-    private var tabsButtonLabel: some View {
-        ZStack {
-            Image(systemName: "square.on.square").font(.system(size: 20))
-            if !tabStore.records.isEmpty {
-                Text("\(tabStore.records.count)")
-                    .font(.caption2).bold()
-                    .padding(.horizontal, 4).padding(.vertical, 1)
-                    .background(Color.accentColor, in: Capsule())
-                    .foregroundStyle(.white)
-                    .offset(x: 14, y: -10)
-            }
-        }
-    }
-
-    private func toolbarButton(_ systemImage: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 20))
-                .frame(width: 44, height: 44)
-        }
-        .disabled(!enabled)
-    }
-
-    /// Status-bar suffix for light-mode readiness — shows what bee is
-    /// busy with (starting, syncing) so the user always knows without
-    /// having to open the node sheet. Nil means "nothing noteworthy" →
-    /// status bar stays compact.
-    private var readinessSuffix: String? {
-        // When bee crashed, the prefix already says "failed". Don't
-        // contradict it with "· starting" derived from BeeReadiness'
-        // not-running guard.
-        if swarm.status == .failed { return nil }
-        switch beeReadiness.state {
-        case .browsingOnly, .ready: return nil
-        case .initializing: return "starting"
-        case .startingUp: return "starting up"
-        case .syncingPostage(let percent, _, _): return "syncing \(percent)%"
-        }
+    private func toggleBookmark() {
+        guard let tab = tabStore.activeTab, let url = activeURL else { return }
+        bookmarkStore.toggle(url: url, title: tab.title)
     }
 
     private func navigate() {
