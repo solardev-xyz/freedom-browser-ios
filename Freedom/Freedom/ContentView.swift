@@ -8,6 +8,7 @@ struct ContentView: View {
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(Vault.self) private var vault
     @Environment(BeeIdentityCoordinator.self) private var beeIdentity
+    @Environment(SettingsStore.self) private var settings
     @Environment(\.scenePhase) private var scenePhase
 
     // Drives the menu's bookmark-toggle row (star fill + label text).
@@ -29,8 +30,6 @@ struct ContentView: View {
     @State private var addressText: String = ""
     @State private var banner: Banner? = nil
     @State private var isShowingTabSwitcher = false
-    @State private var isShowingHistory = false
-    @State private var isShowingBookmarks = false
     @State private var isShowingSettings = false
     @State private var isShowingWallet = false
     @State private var isShowingNode = false
@@ -114,18 +113,6 @@ struct ContentView: View {
         .animation(.snappy(duration: 0.25), value: tabStore.activeTab?.chromeIsCompact)
         .sheet(isPresented: $isShowingTabSwitcher) {
             TabSwitcher(isPresented: $isShowingTabSwitcher)
-        }
-        .sheet(isPresented: $isShowingHistory) {
-            HistoryView(onSelect: { browserURL in
-                navigate(to: browserURL)
-                isShowingHistory = false
-            })
-        }
-        .sheet(isPresented: $isShowingBookmarks) {
-            BookmarksView(onSelect: { browserURL in
-                navigate(to: browserURL)
-                isShowingBookmarks = false
-            })
         }
         .sheet(isPresented: $isShowingSettings) {
             SettingsView()
@@ -290,15 +277,15 @@ struct ContentView: View {
                     MenuPill(
                         nodeStatus: swarm.status,
                         peerCount: swarm.peerCount,
+                        nodeStatsLine: nodeStatsLine,
                         isURLBookmarked: isActiveURLBookmarked,
                         canBookmark: activeURL != nil,
                         shareURL: activeURL,
                         onBookmarkToggle: toggleBookmark,
                         onTabs: { isShowingTabSwitcher = true },
+                        onNewTab: { tabStore.newTab() },
                         onWallet: { isShowingWallet = true },
                         onNode: { isShowingNode = true },
-                        onBookmarks: { isShowingBookmarks = true },
-                        onHistory: { isShowingHistory = true },
                         onSettings: { isShowingSettings = true }
                     )
                     // iOS 26's `.buttonStyle(.glass)` reserves a slightly
@@ -399,6 +386,17 @@ struct ContentView: View {
     private var webAreaIgnoredEdges: Edge.Set {
         tabStore.activeTab?.themeColor == nil ? [.top, .bottom] : .bottom
     }
+
+    /// "Light · 32 peers" / "Ultralight · 0 peers" / "Off" — drives the
+    /// menu's node-stats subtitle. Status takes precedence when the
+    /// node isn't running so the line doesn't pretend to have peers.
+    private var nodeStatsLine: String {
+        guard swarm.status == .running else { return swarm.status.rawValue.capitalized }
+        let mode = settings.beeNodeMode == .light ? "Light" : "Ultralight"
+        let peers = "\(swarm.peerCount) peer\(swarm.peerCount == 1 ? "" : "s")"
+        return "\(mode) · \(peers)"
+    }
+
 
     @ViewBuilder private var webArea: some View {
         if let active = tabStore.activeTab, active.hasNavigated {
