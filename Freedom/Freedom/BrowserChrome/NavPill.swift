@@ -13,14 +13,14 @@ struct NavPill: View {
             Button(action: onBack) {
                 Image(systemName: "chevron.backward")
                     .font(.system(size: 17, weight: .medium))
-                    .frame(width: 44, height: 44)
+                    .frame(width: 50, height: 50)
             }
             .disabled(!canGoBack)
             if canGoForward {
                 Button(action: onForward) {
                     Image(systemName: "chevron.forward")
                         .font(.system(size: 17, weight: .medium))
-                        .frame(width: 44, height: 44)
+                        .frame(width: 50, height: 50)
                 }
                 .transition(.move(edge: .leading).combined(with: .opacity))
             }

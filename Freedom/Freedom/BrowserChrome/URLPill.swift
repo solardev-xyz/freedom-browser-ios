@@ -80,8 +80,8 @@ struct URLPill: View {
                 .disabled(!isLoading && displayURL == nil)
             }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 44)
+        .padding(.horizontal, 10)
+        .frame(height: 50)
         .glassPill()
         .overlay(alignment: .bottom) {
             if isLoading, progress > 0, progress < 1 {

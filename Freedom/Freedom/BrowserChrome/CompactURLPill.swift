@@ -19,8 +19,8 @@ struct CompactURLPill: View {
                     .font(.subheadline)
                     .foregroundStyle(displayURL == nil ? .secondary : .primary)
             }
-            .padding(.horizontal, 14)
-            .frame(height: 34)
+            .padding(.horizontal, 16)
+            .frame(height: 38)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)

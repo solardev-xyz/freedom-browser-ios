@@ -301,12 +301,19 @@ struct ContentView: View {
                         onHistory: { isShowingHistory = true },
                         onSettings: { isShowingSettings = true }
                     )
+                    // iOS 26's `.buttonStyle(.glass)` reserves a slightly
+                    // wider layout box than the visible circle, so the
+                    // HStack's 8pt spacing leaves a bigger visual gap on
+                    // this side than on the NavPill side. Pull it back
+                    // by a few points so the URL pill sits centered
+                    // between equally-spaced neighbors.
+                    .padding(.leading, -5)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 32)
+        .padding(.bottom, 0)
     }
 
     /// Compact pill tap: just restore full chrome (same effect as
@@ -333,7 +340,7 @@ struct ContentView: View {
         Button(action: cancelEdit) {
             Image(systemName: "xmark")
                 .font(.system(size: 17, weight: .medium))
-                .frame(width: 44, height: 44)
+                .frame(width: 50, height: 50)
         }
         .buttonStyle(.plain)
         .glassPill()

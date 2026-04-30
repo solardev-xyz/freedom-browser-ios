@@ -63,8 +63,26 @@ struct MenuPill: View {
             }
         } label: {
             NodeStatusIcon(status: nodeStatus, peerCount: peerCount)
-                .frame(width: 44, height: 44)
         }
-        .glassPill()
+        .modifier(NativeGlassMenuStyle())
     }
 }
+
+/// iOS 26+ uses the system glass button style + circle border shape so
+/// the Menu morphs natively into the popover with no rectangular flash.
+/// On older iOS, falls back to the cross-version `.glassPill()` capsule.
+private struct NativeGlassMenuStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .controlSize(.large)
+        } else {
+            content
+                .frame(width: 50, height: 50)
+                .glassPill()
+        }
+    }
+}
+
