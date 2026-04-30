@@ -240,6 +240,7 @@ struct ContentView: View {
                         onTap: tapCompactToEdit
                     )
                     .transition(.opacity)
+                    .simultaneousGesture(swipeUpToTabs)
                     Spacer(minLength: 0)
                 } else {
                     URLPill(
@@ -254,6 +255,7 @@ struct ContentView: View {
                         onStop: { tabStore.activeTab?.stop() }
                     )
                     .frame(maxWidth: .infinity)
+                    .simultaneousGesture(swipeUpToTabs)
                 }
                 if mode == .editing {
                     cancelPill
@@ -288,6 +290,19 @@ struct ContentView: View {
     private func tapCompactToEdit() {
         tabStore.activeTab?.chromeIsCompact = false
         addressFocused = true
+    }
+
+    /// Safari's pro-user gesture: upward swipe from the URL pill opens
+    /// the tab switcher. `minimumDistance: 30` keeps quick taps as taps
+    /// — Button cancels its own tap past ~10pt of movement, so the
+    /// 10-30pt zone is a deliberate no-op. Skipped while editing.
+    private var swipeUpToTabs: some Gesture {
+        DragGesture(minimumDistance: 30)
+            .onEnded { value in
+                guard !addressFocused,
+                      value.translation.height < -50 else { return }
+                isShowingTabSwitcher = true
+            }
     }
 
     private var cancelPill: some View {
