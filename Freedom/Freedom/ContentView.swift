@@ -448,9 +448,8 @@ struct ContentView: View {
     /// node isn't running so the line doesn't pretend to have peers.
     private var nodeStatsLine: String {
         guard swarm.status == .running else { return swarm.status.rawValue.capitalized }
-        let mode = settings.beeNodeMode == .light ? "Light" : "Ultralight"
         let peers = "\(swarm.peerCount) peer\(swarm.peerCount == 1 ? "" : "s")"
-        return "\(mode) · \(peers)"
+        return "\(settings.beeNodeMode.displayName) · \(peers)"
     }
 
 

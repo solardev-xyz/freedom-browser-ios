@@ -15,4 +15,12 @@ import Foundation
 enum BeeNodeMode: String, CaseIterable, Hashable, Sendable {
     case ultraLight = "ultra-light"
     case light
+
+    /// User-facing label.
+    var displayName: String {
+        switch self {
+        case .light:      "Light"
+        case .ultraLight: "Ultralight"
+        }
+    }
 }

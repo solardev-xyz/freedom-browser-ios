@@ -470,6 +470,17 @@ final class BrowserTab {
         bottomChromeProbeTask = nil
     }
 
+    /// Wipe per-page chrome surface state at navigation start so the
+    /// next page renders against fresh defaults — previous theme
+    /// color, sampled nav color, or layout-mode result can't bleed
+    /// into the new page. Sibling to `resetENSState()`.
+    fileprivate func resetPerPageSurfaceState() {
+        themeColor = nil
+        bottomChromeMode = .overlay
+        bottomNavColor = nil
+        cancelBottomChromeProbe()
+    }
+
     private func probeBottomChromeOnce() async {
         // Hit-test the bottom-center pixel of the viewport, then walk
         // up the ancestor chain until we either find a container that
@@ -609,10 +620,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // negotiation into a fresh navigation.
         MainActor.assumeIsolated {
             owner?.reinstallPreloads()
-            owner?.themeColor = nil
-            owner?.bottomChromeMode = .overlay
-            owner?.bottomNavColor = nil
-            owner?.cancelBottomChromeProbe()
+            owner?.resetPerPageSurfaceState()
         }
     }
 

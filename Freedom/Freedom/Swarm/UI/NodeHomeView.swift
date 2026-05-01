@@ -214,14 +214,15 @@ struct NodeHomeView: View {
     /// shows the same suffix at all times; this row mirrors it inside
     /// the node sheet so users don't have to check both surfaces.
     private var modeRowValue: String {
+        let mode = settings.beeNodeMode.displayName
         switch (settings.beeNodeMode, beeReadiness.state) {
-        case (.ultraLight, _): return "Ultralight"
-        case (.light, .ready): return "Light · ready"
-        case (.light, .startingUp): return "Light · starting up"
+        case (.ultraLight, _): return mode
+        case (.light, .ready): return "\(mode) · ready"
+        case (.light, .startingUp): return "\(mode) · starting up"
         case (.light, .syncingPostage(let percent, _, _)):
-            return "Light · syncing \(percent)%"
-        case (.light, .initializing): return "Light · starting"
-        case (.light, .browsingOnly): return "Light"
+            return "\(mode) · syncing \(percent)%"
+        case (.light, .initializing): return "\(mode) · starting"
+        case (.light, .browsingOnly): return mode
         }
     }
 
