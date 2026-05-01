@@ -8,12 +8,12 @@
 
 /* Begin PBXBuildFile section */
 		170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */ = {isa = PBXBuildFile; productRef = 170726AB2F96CD3900CCFF45 /* SwarmKit */; };
-		17F5F0F0000000000000F503 /* IPFSKit in Frameworks */ = {isa = PBXBuildFile; productRef = 17F5F0F0000000000000F502 /* IPFSKit */; };
 		17CFC0872F9EAD0B00A6E66C /* CryptoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 17CFC0862F9EAD0B00A6E66C /* CryptoSwift */; };
 		17E52F300000000000000003 /* web3.swift in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F200000000000000002 /* web3.swift */; };
 		17E52F50000000000000000E /* ENSNormalize in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F60000000000000000F /* ENSNormalize */; };
 		17E52F80000000000000000A /* secp256k1 in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F90000000000000000B /* secp256k1 */; };
 		17E52FA0000000000000000C /* BigInt in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52FB0000000000000000D /* BigInt */; };
+		17F5F0F0000000000000F503 /* IPFSKit in Frameworks */ = {isa = PBXBuildFile; productRef = 17F5F0F0000000000000F502 /* IPFSKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -573,10 +573,6 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = SwarmKit;
 		};
-		17F5F0F0000000000000F502 /* IPFSKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = IPFSKit;
-		};
 		17CFC0862F9EAD0B00A6E66C /* CryptoSwift */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 17CFC0852F9EAD0B00A6E66C /* XCRemoteSwiftPackageReference "CryptoSwift" */;
@@ -601,6 +597,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 17E52FC0000000000000000E /* XCRemoteSwiftPackageReference "BigInt" */;
 			productName = BigInt;
+		};
+		17F5F0F0000000000000F502 /* IPFSKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = IPFSKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

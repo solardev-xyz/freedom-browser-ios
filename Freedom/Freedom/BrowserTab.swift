@@ -145,6 +145,11 @@ final class BrowserTab {
         self.settings = settings
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BzzSchemeHandler(), forURLScheme: "bzz")
+        // One handler instance per scheme — WKWebKit requires distinct
+        // objects per scheme registration even when the implementation
+        // is the same.
+        config.setURLSchemeHandler(IpfsSchemeHandler(), forURLScheme: "ipfs")
+        config.setURLSchemeHandler(IpfsSchemeHandler(), forURLScheme: "ipns")
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         let contentController = WKUserContentController()
         config.userContentController = contentController
@@ -255,7 +260,7 @@ final class BrowserTab {
         activeResolveTask?.cancel()
         resetENSState()
         switch browserURL {
-        case .bzz(let target), .web(let target):
+        case .bzz(let target), .ipfs(let target), .ipns(let target), .web(let target):
             webView.load(URLRequest(url: target))
         case .ens(let name):
             ensURL = browserURL.url
@@ -354,11 +359,13 @@ final class BrowserTab {
             return
         }
         if Task.isCancelled { return }
+        // bzz / ipfs / ipns all flow through the same trust gate and
+        // load via their respective WKURLSchemeHandlers — kubo handles
+        // ipfs:// and ipns://, bee handles bzz://. The codec switch is
+        // a no-op now but kept for symmetry should we later add
+        // codec-specific gating (e.g. an IPNS-specific advisory).
         switch result.codec {
-        case .ipfs, .ipns:
-            ensStatus = .failed(message: "IPFS/IPNS content not yet supported on iOS.")
-            return
-        case .bzz:
+        case .bzz, .ipfs, .ipns:
             break
         }
         if result.trust.level == .unverified, settings.blockUnverifiedEns {
@@ -650,8 +657,15 @@ enum ENSErrorFormatting {
             return "This ENS name resolves via an offchain gateway (CCIP-Read). Enable it in Settings → Advanced to load it."
         case ENSResolutionError.notFound(.emptyAddress, _):
             return "This ENS name has no Ethereum address set."
-        case ENSResolutionError.unsupportedCodec:
-            return "Unsupported contenthash codec."
+        case ENSResolutionError.unsupportedCodec(let rawBytes, _):
+            // Diagnostic: surface the first few bytes so we can tell which
+            // failure mode bit (ABI-unwrap garbage vs. unrecognized codec)
+            // and what the resolver actually returned.
+            let preview = rawBytes.prefix(40)
+                .map { String(format: "%02x", $0) }
+                .joined()
+            let suffix = rawBytes.count > 40 ? "…" : ""
+            return "Unsupported contenthash codec. Got \(rawBytes.count)B: \(preview)\(suffix)"
         case ENSResolutionError.conflict:
             return "RPC providers disagreed on the contenthash — possible attack."
         case ENSResolutionError.anchorDisagreement:
