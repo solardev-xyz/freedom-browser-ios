@@ -576,6 +576,15 @@ final class BrowserTab {
             lastScrollY = y
             return
         }
+        // Programmatic scrolls (WKWebView restoring a remembered offset
+        // on back-nav, anchor jumps, JS scrollTo) shouldn't flip the
+        // chrome — only user-driven drags / their decelerations should.
+        // Keep the anchor in sync so the next real drag still sees a
+        // sensible delta.
+        guard scrollView.isDragging || scrollView.isDecelerating else {
+            lastScrollY = y
+            return
+        }
         let delta = y - lastScrollY
         if delta > Self.chromeCompactDeltaThreshold {
             if !chromeIsCompact { chromeIsCompact = true }
