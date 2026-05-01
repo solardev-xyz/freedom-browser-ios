@@ -105,6 +105,13 @@ struct ContentView: View {
                 pillBar
             }
             .frame(maxWidth: .infinity)
+            // Reserved mode: paint the chrome region with the page's
+            // theme-color so it blends seamlessly with the page's
+            // bottom nav above. Overlay mode keeps it transparent so
+            // the webview shows through behind the floating pills.
+            .background {
+                bottomChromeBackground.ignoresSafeArea(edges: .bottom)
+            }
             // Block stray taps in the chrome bar's transparent gaps from
             // falling through to the editingContent (HomePage) below —
             // otherwise tapping the cancel pill also "clicks" the bookmark
@@ -404,13 +411,33 @@ struct ContentView: View {
         tabStore.activeTab?.themeColor.map(Color.init) ?? .clear
     }
 
-    /// Webview ignores the bottom safe area always (so content flows
-    /// under the floating pill bar). Top is only ignored when the page
-    /// hasn't set a theme-color — when it has, we yield the top edge to
-    /// the colored background layer instead of painting page content
-    /// behind the status bar.
+    /// Webview's safe-area treatment depends on per-page signals:
+    /// - Top: ignored when the page hasn't set a theme-color, so
+    ///   content paints behind the status bar; respected when there
+    ///   is one (the colored background layer takes the top edge).
+    /// - Bottom: ignored in `.overlay` mode (full-bleed under the
+    ///   pill bar — Safari's "Google.com" model); respected in
+    ///   `.reserved` mode, so the page's own bottom nav stays
+    ///   tappable above our chrome.
     private var webAreaIgnoredEdges: Edge.Set {
-        tabStore.activeTab?.themeColor == nil ? [.top, .bottom] : .bottom
+        let active = tabStore.activeTab
+        var edges: Edge.Set = []
+        if active?.themeColor == nil { edges.insert(.top) }
+        if (active?.bottomChromeMode ?? .overlay) == .overlay {
+            edges.insert(.bottom)
+        }
+        return edges
+    }
+
+    /// Solid background painted behind the chrome region in
+    /// `.reserved` mode so the area beneath the webview blends with
+    /// the page's brand. Theme-color when present, system background
+    /// otherwise. Transparent in `.overlay` mode (chrome floats over
+    /// the webview, no fill needed).
+    private var bottomChromeBackground: Color {
+        let active = tabStore.activeTab
+        guard (active?.bottomChromeMode ?? .overlay) == .reserved else { return .clear }
+        return active?.themeColor.map(Color.init) ?? Color(.systemBackground)
     }
 
     /// "Light · 32 peers" / "Ultralight · 0 peers" / "Off" — drives the

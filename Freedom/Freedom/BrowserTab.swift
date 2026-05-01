@@ -13,6 +13,18 @@ final class BrowserTab {
         case failed(message: String)
     }
 
+    enum BottomChromeMode {
+        /// Pill bar floats over a full-bleed webview. Page content
+        /// extends to the bottom edge of the screen; chrome is purely
+        /// translucent overlay. Used for sites without prominent
+        /// bottom UI (most pages).
+        case overlay
+        /// Webview is bounded above the pill bar; the chrome region
+        /// gets a solid background. Used when the page declares its
+        /// own fixed/sticky bottom nav so it stays tappable.
+        case reserved
+    }
+
     /// A gated navigation waiting for user consent. Rendered in place of
     /// the webview until the user continues (unverified only) or backs
     /// out (all gates). Conflict and anchorDisagreement are security
@@ -42,6 +54,14 @@ final class BrowserTab {
     /// GitHub's near-black extends seamlessly into the status bar
     /// region. `nil` falls back to the system background color.
     var themeColor: UIColor?
+    /// Whether the page has a "real" fixed/sticky bottom UI (nav bar,
+    /// tab bar, action bar). Drives the chrome's overlay-vs-reserved
+    /// mode: in `.overlay`, our pill bar floats over a full-bleed
+    /// webview (Safari's "Google.com" mode); in `.reserved`, the
+    /// webview stops above the pill bar and the chrome region gets a
+    /// solid theme-color background, so the page's bottom nav stays
+    /// interactive (Safari's "Instagram" mode).
+    var bottomChromeMode: BottomChromeMode = .overlay
     private(set) var hasNavigated: Bool = false
 
     /// Pseudo-URL for the originating ENS name when the page was loaded
@@ -100,6 +120,7 @@ final class BrowserTab {
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var lastScrollY: CGFloat = 0
+    @ObservationIgnored private var bottomChromeProbeTask: Task<Void, Never>?
     @ObservationIgnored private let navDelegate = NavDelegate()
     @ObservationIgnored private var activeResolveTask: Task<Void, Never>?
     @ObservationIgnored private let contentController: WKUserContentController
@@ -220,6 +241,7 @@ final class BrowserTab {
 
     deinit {
         observations.forEach { $0.invalidate() }
+        bottomChromeProbeTask?.cancel()
     }
 
     func navigate(to browserURL: BrowserURL) {
@@ -412,6 +434,78 @@ final class BrowserTab {
     /// from tiny accidental drags.
     private static let chromeCompactDeltaThreshold: CGFloat = 10
 
+    /// Best-effort detection of fixed/sticky bottom UI on the page.
+    /// Approximates Safari's "reserve space for the page's nav bar"
+    /// behavior — true Safari uses a private layout-negotiation
+    /// system; we fake it by scanning likely candidate elements (nav,
+    /// footer, body's direct children, role="navigation") for
+    /// fixed/sticky positioning that lands near the bottom edge with
+    /// meaningful size.
+    ///
+    /// SPAs (React/Vue/Svelte) often render `<body><div id="app"/>`
+    /// in the initial HTML and mount their UI after `didFinish` —
+    /// so the probe is re-run at increasing delays. The schedule is
+    /// cancelled on the next navigation so a slow page doesn't
+    /// override a faster subsequent one.
+    fileprivate func detectBottomChromeMode() {
+        bottomChromeProbeTask?.cancel()
+        bottomChromeProbeTask = Task { @MainActor [weak self] in
+            await self?.probeBottomChromeOnce()
+            for delayMs in [400, 1200, 2500] {
+                try? await Task.sleep(for: .milliseconds(delayMs))
+                if Task.isCancelled { return }
+                await self?.probeBottomChromeOnce()
+            }
+        }
+    }
+
+    fileprivate func cancelBottomChromeProbe() {
+        bottomChromeProbeTask?.cancel()
+        bottomChromeProbeTask = nil
+    }
+
+    private func probeBottomChromeOnce() async {
+        // Hit-test the bottom-center pixel of the viewport, then walk
+        // up the ancestor chain until we either find a container that
+        // looks like a nav bar (substantial height/width, anchored to
+        // the bottom edge) or fall through to body. This catches
+        // bottom UI regardless of CSS positioning — `position: fixed`,
+        // `sticky`, OR a flex-column layout where the nav is just the
+        // last child of a viewport-sized container (a common Vue/React
+        // pattern that the previous position-only heuristic missed).
+        let js = """
+        (function() {
+            var vh = window.innerHeight;
+            var vw = window.innerWidth;
+            if (vh < 200 || vw < 200) return false;
+            var probeY = vh - 30;
+            var el = document.elementFromPoint(vw / 2, probeY);
+            if (!el || el === document.body || el === document.documentElement) return false;
+            var maxNavHeight = vh * 0.25;
+            while (el && el !== document.body && el !== document.documentElement) {
+                var r = el.getBoundingClientRect();
+                var anchoredBottom = r.bottom >= vh - 60 && r.bottom <= vh + 20;
+                var navSized = r.height >= 40 && r.height <= maxNavHeight && r.width >= vw * 0.5;
+                if (anchoredBottom && navSized) {
+                    if (el.querySelector('a, button, [role="button"], [role="tab"], [role="link"]')) {
+                        return true;
+                    }
+                }
+                el = el.parentElement;
+            }
+            return false;
+        })()
+        """
+        let result = try? await webView.evaluateJavaScript(js)
+        // Bail if the navigation cycled out from under us — the JS we
+        // just ran is for a page we've since left, and writing its
+        // result would override the new page's reset-to-`.overlay`.
+        if Task.isCancelled { return }
+        let hasBottomUI = (result as? Bool) ?? false
+        let next: BottomChromeMode = hasBottomUI ? .reserved : .overlay
+        if bottomChromeMode != next { bottomChromeMode = next }
+    }
+
     /// Reads the page's `<meta name="theme-color">` after navigation
     /// commits and stores the parsed `UIColor` for the top-safe-area
     /// background. Honors media-conditional tags — pages can ship
@@ -475,12 +569,15 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         // Fresh EIP-6963 UUID + idempotent swarm preload per page session.
-        // Theme color is per-page; clear so the chrome shows the system
-        // background color while loading rather than carrying the
-        // previous page's brand color into a fresh navigation.
+        // Per-page surface state (theme color + bottom chrome mode) is
+        // cleared so the chrome reverts to default while loading rather
+        // than carrying the previous page's brand color or layout
+        // negotiation into a fresh navigation.
         MainActor.assumeIsolated {
             owner?.reinstallPreloads()
             owner?.themeColor = nil
+            owner?.bottomChromeMode = .overlay
+            owner?.cancelBottomChromeProbe()
         }
     }
 
@@ -492,6 +589,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         MainActor.assumeIsolated {
             owner?.onNavigationFinish?(url, title)
             owner?.extractThemeColor()
+            owner?.detectBottomChromeMode()
         }
     }
 }
