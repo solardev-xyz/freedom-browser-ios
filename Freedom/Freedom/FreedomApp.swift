@@ -1,11 +1,13 @@
 import SwiftUI
 import SwiftData
 import SwarmKit
+import IPFSKit
 import ENSNormalize
 
 @main
 struct FreedomApp: App {
     @State private var swarm: SwarmNode
+    @State private var ipfs: IPFSNode
     @State private var settings: SettingsStore
     @State private var historyStore: HistoryStore
     @State private var bookmarkStore: BookmarkStore
@@ -67,6 +69,7 @@ struct FreedomApp: App {
             self._beeIdentity = State(wrappedValue: BeeIdentityCoordinator(settings: settings))
             let swarmInstance = SwarmNode()
             self._swarm = State(wrappedValue: swarmInstance)
+            self._ipfs = State(wrappedValue: IPFSNode())
             let readiness = BeeReadiness(swarm: swarmInstance, settings: settings)
             self._beeReadiness = State(wrappedValue: readiness)
             let stamps = StampService(swarm: swarmInstance, settings: settings)
@@ -140,6 +143,7 @@ struct FreedomApp: App {
         WindowGroup {
             ContentView()
                 .environment(swarm)
+                .environment(ipfs)
                 .environment(settings)
                 .environment(tabStore)
                 .environment(historyStore)
@@ -160,6 +164,7 @@ struct FreedomApp: App {
                 .environment(swarmPublishHistoryStore)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
+                .task { startIpfsIfNeeded() }
                 .task { beeReadiness.start() }
                 .task { stampService.start() }
                 .task { beeWalletInfo.start() }
@@ -169,6 +174,17 @@ struct FreedomApp: App {
                 // shouldn't block first frame on a power user's history.
                 .task { swarmPublishHistoryStore.sweepOrphans() }
         }
+    }
+
+    /// Brings the kubo IPFS node up alongside bee. Runs in parallel with
+    /// `startNodeIfNeeded` so a slow ENS / RPC / chequebook bring-up on
+    /// the bee side doesn't block IPFS from coming online (and vice
+    /// versa). `IPFSNode.start` is fire-and-forget — actual node bringup
+    /// happens on a detached task inside the wrapper.
+    private func startIpfsIfNeeded() {
+        guard ipfs.status == .idle else { return }
+        let config = IPFSConfig(dataDir: IPFSNode.defaultDataDir())
+        ipfs.start(config)
     }
 
     private func startNodeIfNeeded() async {

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */ = {isa = PBXBuildFile; productRef = 170726AB2F96CD3900CCFF45 /* SwarmKit */; };
+		17F5F0F0000000000000F503 /* IPFSKit in Frameworks */ = {isa = PBXBuildFile; productRef = 17F5F0F0000000000000F502 /* IPFSKit */; };
 		17CFC0872F9EAD0B00A6E66C /* CryptoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 17CFC0862F9EAD0B00A6E66C /* CryptoSwift */; };
 		17E52F300000000000000003 /* web3.swift in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F200000000000000002 /* web3.swift */; };
 		17E52F50000000000000000E /* ENSNormalize in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F60000000000000000F /* ENSNormalize */; };
@@ -62,6 +63,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */,
+				17F5F0F0000000000000F503 /* IPFSKit in Frameworks */,
 				17E52F300000000000000003 /* web3.swift in Frameworks */,
 				17E52F50000000000000000E /* ENSNormalize in Frameworks */,
 				17E52F80000000000000000A /* secp256k1 in Frameworks */,
@@ -119,6 +121,7 @@
 			name = Freedom;
 			packageProductDependencies = (
 				170726AB2F96CD3900CCFF45 /* SwarmKit */,
+				17F5F0F0000000000000F502 /* IPFSKit */,
 				17E52F200000000000000002 /* web3.swift */,
 				17E52F60000000000000000F /* ENSNormalize */,
 				17E52F90000000000000000B /* secp256k1 */,
@@ -569,6 +572,10 @@
 		170726AB2F96CD3900CCFF45 /* SwarmKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SwarmKit;
+		};
+		17F5F0F0000000000000F502 /* IPFSKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = IPFSKit;
 		};
 		17CFC0862F9EAD0B00A6E66C /* CryptoSwift */ = {
 			isa = XCSwiftPackageProductDependency;
