@@ -62,6 +62,12 @@ final class BrowserTab {
     /// solid theme-color background, so the page's bottom nav stays
     /// interactive (Safari's "Instagram" mode).
     var bottomChromeMode: BottomChromeMode = .overlay
+    /// Background color sampled directly from the detected bottom-nav
+    /// element. Preferred over `themeColor` for painting the chrome
+    /// region in `.reserved` mode — gives a seamless visual edge with
+    /// the page's nav above. `nil` falls back to `themeColor`, then
+    /// system background.
+    var bottomNavColor: UIColor?
     private(set) var hasNavigated: Bool = false
 
     /// Pseudo-URL for the originating ENS name when the page was loaded
@@ -473,14 +479,20 @@ final class BrowserTab {
         // `sticky`, OR a flex-column layout where the nav is just the
         // last child of a viewport-sized container (a common Vue/React
         // pattern that the previous position-only heuristic missed).
+        //
+        // When a match is found, also sample the effective background
+        // color (walking up if the matched element is transparent) so
+        // the native chrome can paint its region in the same color —
+        // Safari's seamless-extension trick.
         let js = """
         (function() {
             var vh = window.innerHeight;
             var vw = window.innerWidth;
-            if (vh < 200 || vw < 200) return false;
+            if (vh < 200 || vw < 200) return null;
             var probeY = vh - 30;
             var el = document.elementFromPoint(vw / 2, probeY);
-            if (!el || el === document.body || el === document.documentElement) return false;
+            if (!el || el === document.body || el === document.documentElement) return null;
+            var transparent = /^rgba?\\([^)]+,\\s*0(?:\\.0+)?\\s*\\)$/;
             var maxNavHeight = vh * 0.25;
             while (el && el !== document.body && el !== document.documentElement) {
                 var r = el.getBoundingClientRect();
@@ -488,12 +500,22 @@ final class BrowserTab {
                 var navSized = r.height >= 40 && r.height <= maxNavHeight && r.width >= vw * 0.5;
                 if (anchoredBottom && navSized) {
                     if (el.querySelector('a, button, [role="button"], [role="tab"], [role="link"]')) {
-                        return true;
+                        var bgEl = el;
+                        var bgColor = null;
+                        while (bgEl && bgEl !== document.documentElement) {
+                            var bg = window.getComputedStyle(bgEl).backgroundColor;
+                            if (bg && bg !== 'transparent' && !transparent.test(bg)) {
+                                bgColor = bg;
+                                break;
+                            }
+                            bgEl = bgEl.parentElement;
+                        }
+                        return { hasBottomUI: true, bgColor: bgColor };
                     }
                 }
                 el = el.parentElement;
             }
-            return false;
+            return null;
         })()
         """
         let result = try? await webView.evaluateJavaScript(js)
@@ -501,9 +523,12 @@ final class BrowserTab {
         // just ran is for a page we've since left, and writing its
         // result would override the new page's reset-to-`.overlay`.
         if Task.isCancelled { return }
-        let hasBottomUI = (result as? Bool) ?? false
-        let next: BottomChromeMode = hasBottomUI ? .reserved : .overlay
-        if bottomChromeMode != next { bottomChromeMode = next }
+        let dict = result as? [String: Any]
+        let hasBottomUI = (dict?["hasBottomUI"] as? Bool) ?? false
+        let nextMode: BottomChromeMode = hasBottomUI ? .reserved : .overlay
+        let nextColor = (dict?["bgColor"] as? String).flatMap(UIColor.init(cssRGB:))
+        if bottomChromeMode != nextMode { bottomChromeMode = nextMode }
+        if bottomNavColor != nextColor { bottomNavColor = nextColor }
     }
 
     /// Reads the page's `<meta name="theme-color">` after navigation
@@ -577,6 +602,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
             owner?.reinstallPreloads()
             owner?.themeColor = nil
             owner?.bottomChromeMode = .overlay
+            owner?.bottomNavColor = nil
             owner?.cancelBottomChromeProbe()
         }
     }

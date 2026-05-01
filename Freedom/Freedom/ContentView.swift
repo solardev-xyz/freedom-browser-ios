@@ -431,13 +431,16 @@ struct ContentView: View {
 
     /// Solid background painted behind the chrome region in
     /// `.reserved` mode so the area beneath the webview blends with
-    /// the page's brand. Theme-color when present, system background
-    /// otherwise. Transparent in `.overlay` mode (chrome floats over
-    /// the webview, no fill needed).
+    /// the page's bottom nav. Priority: the color sampled directly
+    /// from the nav element (best match — Safari's seamless edge),
+    /// then `theme-color` (page-level brand), then system background
+    /// (last resort). Transparent in `.overlay` mode.
     private var bottomChromeBackground: Color {
         let active = tabStore.activeTab
         guard (active?.bottomChromeMode ?? .overlay) == .reserved else { return .clear }
-        return active?.themeColor.map(Color.init) ?? Color(.systemBackground)
+        if let navColor = active?.bottomNavColor { return Color(navColor) }
+        if let themeColor = active?.themeColor { return Color(themeColor) }
+        return Color(.systemBackground)
     }
 
     /// "Light · 32 peers" / "Ultralight · 0 peers" / "Off" — drives the
