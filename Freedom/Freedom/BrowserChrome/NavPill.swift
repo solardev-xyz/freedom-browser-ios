@@ -25,6 +25,10 @@ struct NavPill: View {
                 .transition(.move(edge: .leading).combined(with: .opacity))
             }
         }
+        // Default Button tint is the accent color (blue). The chevrons
+        // read better as standard label color so they don't fight with
+        // the URL pill's neutral text.
+        .tint(.primary)
         .glassPill()
         .animation(.spring(duration: 0.35), value: canGoForward)
     }
