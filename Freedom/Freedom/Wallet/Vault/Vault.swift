@@ -84,6 +84,17 @@ final class Vault {
         return try EthereumAccount(keyStorage: HDKeyStorage(privateKey: hdKey.privateKey))
     }
 
+    /// The 64-byte BIP-39 master seed (PBKDF2 output of mnemonic +
+    /// passphrase). Used by SLIP-0010 derivations — currently the IPFS
+    /// Ed25519 identity at `m/44'/73405'/0'/0'/0'` — which need the
+    /// pre-BIP-32 seed material. Same one-shot lifetime contract as
+    /// `signingKey(at:)`: the returned Data is not zeroed on drop;
+    /// keep it scoped to a single derivation.
+    func bip39Seed() throws -> Data {
+        guard let seed else { throw Error.notUnlocked }
+        return seed
+    }
+
     /// Re-reads the mnemonic from Keychain storage, triggering a fresh
     /// biometric prompt on the cloudSynced tier. Used for "Show recovery
     /// phrase" — we deliberately don't cache the words on the Vault, so

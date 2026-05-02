@@ -8,6 +8,8 @@ import UIKit
 @MainActor
 struct IpfsNodeHomeView: View {
     @Environment(IPFSNode.self) private var ipfs
+    @Environment(Vault.self) private var vault
+    @Environment(IpfsIdentityCoordinator.self) private var ipfsIdentity
 
     var body: some View {
         ScrollView {
@@ -55,21 +57,48 @@ struct IpfsNodeHomeView: View {
     private var identityCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Identity").font(.caption).foregroundStyle(.secondary)
-            // For now the kubo node uses the random RSA-2048 keypair it
-            // generated on first repo init — recoverable across restarts
-            // but distinct per device / install. Vault-derived Ed25519
-            // identity is the next milestone (see project plan).
             row(
                 label: "Peer ID",
                 value: ipfs.peerID.isEmpty ? "—" : truncate(ipfs.peerID),
                 copyable: ipfs.peerID.isEmpty ? nil : ipfs.peerID
             )
-            row(label: "Source", value: "Random (anonymous)")
+            HStack(alignment: .firstTextBaseline) {
+                Text("Source")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if ipfsIdentity.status == .swapping {
+                    Text("Updating…")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                } else {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .frame(width: 8, height: 8)
+                            .foregroundStyle(isVaultDerived ? .green : .gray)
+                        Text(isVaultDerived ? "Vault-derived" : "Random")
+                            .font(.subheadline)
+                            .foregroundStyle(isVaultDerived ? .primary : .secondary)
+                    }
+                }
+            }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// True iff the running node's PeerID matches what the vault's seed
+    /// would derive at the SLIP-0010 IPFS path. Computed on every render
+    /// — cheap (~50µs of HMAC-SHA512 + SHA-512); avoids a stale cache.
+    private var isVaultDerived: Bool {
+        guard !ipfs.peerID.isEmpty else { return false }
+        guard vault.state == .unlocked else { return false }
+        guard let seed = try? vault.bip39Seed() else { return false }
+        guard let identity = try? IpfsIdentityKey.derive(fromSeed: seed) else { return false }
+        let derived = IpfsIdentityFormat.peerID(publicKey: identity.publicKey)
+        return derived == ipfs.peerID
     }
 
     private var logsLink: some View {

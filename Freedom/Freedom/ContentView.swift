@@ -10,6 +10,7 @@ struct ContentView: View {
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(Vault.self) private var vault
     @Environment(BeeIdentityCoordinator.self) private var beeIdentity
+    @Environment(IpfsIdentityCoordinator.self) private var ipfsIdentity
     @Environment(SettingsStore.self) private var settings
     @Environment(\.scenePhase) private var scenePhase
 
@@ -213,27 +214,61 @@ struct ContentView: View {
             }
         }
         // Self-heal hooks: if a previous identity swap was interrupted
-        // (app crash, force-quit) the bee node could be running with a
-        // stale identity. The coordinator's `checkAndHeal` is idempotent
-        // and gates internally — safe to call on every transition.
+        // (app crash, force-quit) either node could be running with a
+        // stale identity. Both coordinators' `checkAndHeal` are
+        // idempotent and gate internally — safe to call on every
+        // transition.
         .onChange(of: vault.state) { _, _ in
             beeIdentity.checkAndHeal(vault: vault, swarm: swarm)
+            ipfsIdentity.checkAndHeal(vault: vault, ipfs: ipfs)
         }
         .onChange(of: swarm.status) { _, _ in
             beeIdentity.checkAndHeal(vault: vault, swarm: swarm)
         }
-        .alert(
-            "Swarm node update failed",
-            isPresented: Binding(
-                get: { beeIdentity.isFailed },
-                set: { if !$0 { beeIdentity.dismissError() } }
-            ),
-            presenting: beeIdentity.failedMessage
-        ) { _ in
-            Button("Retry") { beeIdentity.retry() }
-            Button("Cancel", role: .cancel) { beeIdentity.dismissError() }
-        } message: { message in
-            Text(message)
+        .onChange(of: ipfs.status) { _, _ in
+            ipfsIdentity.checkAndHeal(vault: vault, ipfs: ipfs)
+        }
+        .modifier(NodeIdentityAlerts(
+            beeIdentity: beeIdentity,
+            ipfsIdentity: ipfsIdentity
+        ))
+    }
+
+    /// Two parallel identity-failure alerts (Swarm + IPFS). Pulled out
+    /// of the main body so the type-checker doesn't blow its budget on
+    /// the already-long ZStack/sheet chain.
+    private struct NodeIdentityAlerts: ViewModifier {
+        let beeIdentity: BeeIdentityCoordinator
+        let ipfsIdentity: IpfsIdentityCoordinator
+
+        func body(content: Content) -> some View {
+            content
+                .alert(
+                    "Swarm node update failed",
+                    isPresented: Binding(
+                        get: { beeIdentity.isFailed },
+                        set: { if !$0 { beeIdentity.dismissError() } }
+                    ),
+                    presenting: beeIdentity.failedMessage
+                ) { _ in
+                    Button("Retry") { beeIdentity.retry() }
+                    Button("Cancel", role: .cancel) { beeIdentity.dismissError() }
+                } message: { message in
+                    Text(message)
+                }
+                .alert(
+                    "IPFS node update failed",
+                    isPresented: Binding(
+                        get: { ipfsIdentity.isFailed },
+                        set: { if !$0 { ipfsIdentity.dismissError() } }
+                    ),
+                    presenting: ipfsIdentity.failedMessage
+                ) { _ in
+                    Button("Retry") { ipfsIdentity.retry() }
+                    Button("Cancel", role: .cancel) { ipfsIdentity.dismissError() }
+                } message: { message in
+                    Text(message)
+                }
         }
     }
 

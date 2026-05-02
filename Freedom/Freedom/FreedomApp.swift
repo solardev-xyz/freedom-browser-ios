@@ -20,6 +20,7 @@ struct FreedomApp: App {
     @State private var permissionStore: PermissionStore
     @State private var autoApproveStore: AutoApproveStore
     @State private var beeIdentity: BeeIdentityCoordinator
+    @State private var ipfsIdentity: IpfsIdentityCoordinator
     @State private var beeReadiness: BeeReadiness
     @State private var stampService: StampService
     @State private var beeWalletInfo: BeeWalletInfo
@@ -67,6 +68,7 @@ struct FreedomApp: App {
             self._autoApproveStore = State(wrappedValue: autoApprove)
             self._transactionService = State(wrappedValue: txService)
             self._beeIdentity = State(wrappedValue: BeeIdentityCoordinator(settings: settings))
+            self._ipfsIdentity = State(wrappedValue: IpfsIdentityCoordinator(settings: settings))
             let swarmInstance = SwarmNode()
             self._swarm = State(wrappedValue: swarmInstance)
             self._ipfs = State(wrappedValue: IPFSNode())
@@ -156,6 +158,7 @@ struct FreedomApp: App {
                 .environment(permissionStore)
                 .environment(autoApproveStore)
                 .environment(beeIdentity)
+                .environment(ipfsIdentity)
                 .environment(beeReadiness)
                 .environment(stampService)
                 .environment(beeWalletInfo)
