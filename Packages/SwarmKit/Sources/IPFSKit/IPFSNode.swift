@@ -66,6 +66,11 @@ public final class IPFSNode {
     public private(set) var peerID: String = ""
     public private(set) var gatewayURL: URL?
     public private(set) var log: [String] = []
+    /// Snapshot of the config the node was last started with — surfaces
+    /// the routing-mode / lowPower settings to UI without callers
+    /// having to hold the `IPFSConfig` separately. Reset on `stop()`.
+    public private(set) var activeRoutingMode: IPFSRoutingMode = .autoclient
+    public private(set) var activeLowPower: Bool = true
 
     // gomobile-bound types live in the `Kubo` framework module under
     // the Go-package-derived `Mobile*` prefix (because the Go package
@@ -82,6 +87,8 @@ public final class IPFSNode {
 
     public func start(_ config: IPFSConfig) {
         guard node == nil else { return }
+        activeRoutingMode = config.routingMode
+        activeLowPower = config.lowPower
         status = .starting
         append("starting kubo (\(config.routingMode.rawValue), \(config.lowPower ? "lowpower" : "default"))…")
 

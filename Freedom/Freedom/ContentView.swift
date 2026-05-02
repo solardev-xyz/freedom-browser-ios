@@ -1,9 +1,11 @@
 import SwiftData
 import SwiftUI
 import SwarmKit
+import IPFSKit
 
 struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
+    @Environment(IPFSNode.self) private var ipfs
     @Environment(TabStore.self) private var tabStore
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(Vault.self) private var vault
@@ -33,6 +35,7 @@ struct ContentView: View {
     @State private var isShowingSettings = false
     @State private var isShowingWallet = false
     @State private var isShowingNode = false
+    @State private var isShowingIpfsNode = false
     @FocusState private var addressFocused: Bool
     /// Gates suggestions so they don't appear before the user actually
     /// types in the prefilled URL (Safari behavior). Reset on every
@@ -132,6 +135,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingNode) {
             NodeSheet(isPresented: $isShowingNode)
+        }
+        .sheet(isPresented: $isShowingIpfsNode) {
+            IpfsNodeSheet(isPresented: $isShowingIpfsNode)
         }
         .sheet(item: approvalBinding) { approval in
             switch approval.kind {
@@ -287,7 +293,8 @@ struct ContentView: View {
                     MenuPill(
                         nodeStatus: swarm.status,
                         peerCount: swarm.peerCount,
-                        nodeStatsLine: nodeStatsLine,
+                        swarmStatsLine: swarmStatsLine,
+                        ipfsStatsLine: ipfsStatsLine,
                         isURLBookmarked: isActiveURLBookmarked,
                         canBookmark: activeURL != nil,
                         shareURL: activeURL,
@@ -295,7 +302,8 @@ struct ContentView: View {
                         onTabs: { isShowingTabSwitcher = true },
                         onNewTab: { tabStore.newTab() },
                         onWallet: { isShowingWallet = true },
-                        onNode: { isShowingNode = true },
+                        onSwarmNode: { isShowingNode = true },
+                        onIpfsNode: { isShowingIpfsNode = true },
                         onSettings: { isShowingSettings = true }
                     )
                     // iOS 26's `.buttonStyle(.glass)` reserves a slightly
@@ -443,13 +451,23 @@ struct ContentView: View {
         return Color(.systemBackground)
     }
 
-    /// "Light · 32 peers" / "Ultralight · 0 peers" / "Off" — drives the
-    /// menu's node-stats subtitle. Status takes precedence when the
-    /// node isn't running so the line doesn't pretend to have peers.
-    private var nodeStatsLine: String {
-        guard swarm.status == .running else { return swarm.status.rawValue.capitalized }
-        let peers = "\(swarm.peerCount) peer\(swarm.peerCount == 1 ? "" : "s")"
-        return "\(settings.beeNodeMode.displayName) · \(peers)"
+    /// "Swarm · 32 peers" / "Swarm · Off" — menu line. Status takes
+    /// precedence when the node isn't running so the line doesn't
+    /// pretend to have peers. Light/ultralight is intentionally not
+    /// surfaced here; that distinction lives inside the Swarm node
+    /// sheet so the at-a-glance menu line stays symmetric with IPFS.
+    private var swarmStatsLine: String {
+        nodeLine(prefix: "Swarm", running: swarm.status == .running, peerCount: swarm.peerCount, status: swarm.status.rawValue)
+    }
+
+    /// "IPFS · 39 peers" / "IPFS · Off". Same shape as Swarm.
+    private var ipfsStatsLine: String {
+        nodeLine(prefix: "IPFS", running: ipfs.status == .running, peerCount: ipfs.peerCount, status: ipfs.status.rawValue)
+    }
+
+    private func nodeLine(prefix: String, running: Bool, peerCount: Int, status: String) -> String {
+        guard running else { return "\(prefix) · \(status.capitalized)" }
+        return "\(prefix) · \(peerCount) peer\(peerCount == 1 ? "" : "s")"
     }
 
 

@@ -11,7 +11,8 @@ import SwarmKit
 struct MenuPill: View {
     let nodeStatus: SwarmStatus
     let peerCount: Int
-    let nodeStatsLine: String
+    let swarmStatsLine: String
+    let ipfsStatsLine: String
 
     let isURLBookmarked: Bool
     let canBookmark: Bool
@@ -21,7 +22,8 @@ struct MenuPill: View {
     let onTabs: () -> Void
     let onNewTab: () -> Void
     let onWallet: () -> Void
-    let onNode: () -> Void
+    let onSwarmNode: () -> Void
+    let onIpfsNode: () -> Void
     let onSettings: () -> Void
 
     var body: some View {
@@ -62,13 +64,17 @@ struct MenuPill: View {
                 }
             }
 
-            // Top-most section: tappable node entry. System Menu
-            // collapses multi-line button labels, so the section
-            // header carries the title and the row carries the live
-            // stats line — both speak to the same `onNode` tap.
-            Section("Swarm node") {
-                Button(action: onNode) {
-                    Label(nodeStatsLine, systemImage: "circle.hexagongrid.fill")
+            // Top-most section: tappable node entries grouped under one
+            // "Nodes" header. Each row's label already carries the node
+            // name + live peer count, so the section header just frames
+            // them. Per the bottom-up convention, Swarm last in code →
+            // top of the visual menu (primary), IPFS one row below it.
+            Section("Nodes") {
+                Button(action: onIpfsNode) {
+                    Label(ipfsStatsLine, systemImage: "globe.asia.australia.fill")
+                }
+                Button(action: onSwarmNode) {
+                    Label(swarmStatsLine, systemImage: "circle.hexagongrid.fill")
                 }
             }
         } label: {
