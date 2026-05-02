@@ -20,12 +20,16 @@ let package = Package(
         .library(name: "IPFSKit", targets: ["IPFSKit"]),
     ],
     targets: [
-        // Local development: relative path to the sibling
-        // freedom-node-mobile build output. Switch to a URL+checksum
-        // once an ios-vX.Y.Z release is cut.
+        // Combined bee+kubo xcframework built by
+        // solardev-xyz/freedom-node-mobile@ios-build-target. SHA256 is
+        // verified by SwiftPM before unpacking; bumps require a new tag,
+        // a new release, and a new checksum here.
+        // Local-path development override: comment out the URL/checksum
+        // pair below and replace with `path: "../../../freedom-node-mobile/build/Mobile.xcframework"`.
         .binaryTarget(
             name: "Mobile",
-            path: "../../../freedom-node-mobile/build/Mobile.xcframework"
+            url: "https://github.com/solardev-xyz/freedom-node-mobile/releases/download/ios-v0.1.0/Mobile.xcframework.zip",
+            checksum: "270a6ee96c03c2bd8d6c1197f488a6ec6810f2391e44225e2d9ceff398664aed"
         ),
         .target(
             name: "SwarmKit",
