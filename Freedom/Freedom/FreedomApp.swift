@@ -27,6 +27,7 @@ struct FreedomApp: App {
     @State private var swarmPermissionStore: SwarmPermissionStore
     @State private var swarmFeedStore: SwarmFeedStore
     @State private var swarmPublishHistoryStore: SwarmPublishHistoryStore
+    @State private var adblock: AdblockService
     private let modelContainer: ModelContainer
 
     init() {
@@ -122,6 +123,8 @@ struct FreedomApp: App {
                 currentStamps: { stamps.stamps },
                 getTag: { try await swarmBee.getTag(uid: $0) }
             )
+            let adblockService = AdblockService(settings: settings)
+            self._adblock = State(wrappedValue: adblockService)
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
                 historyStore: history,
@@ -129,7 +132,8 @@ struct FreedomApp: App {
                 ensResolver: resolver,
                 settings: settings,
                 wallet: wallet,
-                swarm: swarmServices
+                swarm: swarmServices,
+                adblock: adblockService
             ))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
@@ -165,12 +169,17 @@ struct FreedomApp: App {
                 .environment(swarmPermissionStore)
                 .environment(swarmFeedStore)
                 .environment(swarmPublishHistoryStore)
+                .environment(adblock)
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
                 .task { startIpfsIfNeeded() }
                 .task { beeReadiness.start() }
                 .task { stampService.start() }
                 .task { beeWalletInfo.start() }
+                // Compile bundled rule lists once on launch. Cached compiles
+                // (same identifier) finish in ms; cold compiles ~1s for the
+                // largest shards. Off the main path so first frame isn't blocked.
+                .task { await adblock.compileBundledIfNeeded() }
                 // Process-killed-mid-publish rows have no in-memory state
                 // to resume from; flip them to `failed` once on cold start.
                 // Off the init critical path — fetch is unbounded and

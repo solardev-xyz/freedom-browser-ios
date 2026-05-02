@@ -18,6 +18,7 @@ final class TabStore {
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private let wallet: WalletServices
     @ObservationIgnored private let swarm: SwarmServices
+    @ObservationIgnored private let adblock: AdblockService
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
     init(
@@ -27,7 +28,8 @@ final class TabStore {
         ensResolver: ENSResolver,
         settings: SettingsStore,
         wallet: WalletServices,
-        swarm: SwarmServices
+        swarm: SwarmServices,
+        adblock: AdblockService
     ) {
         self.context = context
         self.historyStore = historyStore
@@ -36,6 +38,7 @@ final class TabStore {
         self.settings = settings
         self.wallet = wallet
         self.swarm = swarm
+        self.adblock = adblock
         reloadRecords()
     }
 
@@ -133,7 +136,8 @@ final class TabStore {
             ensResolver: ensResolver,
             settings: settings,
             wallet: wallet,
-            swarm: swarm
+            swarm: swarm,
+            adblock: adblock
         )
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }

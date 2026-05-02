@@ -31,6 +31,11 @@ struct SettingsView: View {
                 } label: {
                     Label("RPC", systemImage: "antenna.radiowaves.left.and.right")
                 }
+                NavigationLink {
+                    AdblockSettingsView()
+                } label: {
+                    Label("Ad Blocking", systemImage: "shield.lefthalf.filled")
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

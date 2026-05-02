@@ -138,7 +138,8 @@ final class BrowserTab {
         ensResolver: ENSResolver,
         settings: SettingsStore,
         wallet: WalletServices,
-        swarm: SwarmServices
+        swarm: SwarmServices,
+        adblock: AdblockService
     ) {
         self.recordID = recordID
         self.ensResolver = ensResolver
@@ -154,6 +155,12 @@ final class BrowserTab {
         let contentController = WKUserContentController()
         config.userContentController = contentController
         self.contentController = contentController
+        // Adblock rule lists are attached BEFORE the webview is created so
+        // they apply to the very first navigation. No-op until the service
+        // has finished compiling — early tabs created during cold launch
+        // miss the first page's blocking, which is acceptable since the
+        // compile is sub-second once warm.
+        adblock.attach(to: contentController)
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = navDelegate
         navDelegate.owner = self

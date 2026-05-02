@@ -23,3 +23,8 @@ Carthage/Build/
 
 # Built xcframeworks (built from bee-lite-java, referenced by path)
 Mobile.xcframework/
+
+# Bundled adblock JSON — regenerable via the sibling freedom-adblock-service
+# `npm run build`, then copied into Freedom/Freedom/Resources/adblock/.
+# Kept out of git for size (~23 MB) and to avoid noisy diffs every refresh.
+Freedom/Freedom/Resources/adblock/

@@ -79,6 +79,24 @@ final class SettingsStore {
     var hasCompletedPublishSetup: Bool {
         didSet { defaults.set(hasCompletedPublishSetup, forKey: Keys.hasCompletedPublishSetup) }
     }
+    /// Block ads via EasyList. Default on.
+    var adblockAdsEnabled: Bool {
+        didSet { defaults.set(adblockAdsEnabled, forKey: Keys.adblockAdsEnabled) }
+    }
+    /// Block trackers via EasyPrivacy. Default on.
+    var adblockPrivacyEnabled: Bool {
+        didSet { defaults.set(adblockPrivacyEnabled, forKey: Keys.adblockPrivacyEnabled) }
+    }
+    /// Block cookie banners via Fanboy's Cookiemonster. Default off — hides
+    /// banners users may want to see for genuine consent decisions.
+    var adblockCookiesEnabled: Bool {
+        didSet { defaults.set(adblockCookiesEnabled, forKey: Keys.adblockCookiesEnabled) }
+    }
+    /// Block other annoyances via Fanboy's Annoyances. Default off — broad
+    /// catch-all that occasionally hides genuine page content.
+    var adblockAnnoyancesEnabled: Bool {
+        didSet { defaults.set(adblockAnnoyancesEnabled, forKey: Keys.adblockAnnoyancesEnabled) }
+    }
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -100,6 +118,10 @@ final class SettingsStore {
             Keys.hasCompletedPublishSetup: false,
             Keys.ipfsRoutingMode: IPFSRoutingMode.autoclient.rawValue,
             Keys.ipfsLowPower: true,
+            Keys.adblockAdsEnabled: true,
+            Keys.adblockPrivacyEnabled: true,
+            Keys.adblockCookiesEnabled: false,
+            Keys.adblockAnnoyancesEnabled: false,
         ])
         self.enableEnsCustomRpc = defaults.bool(forKey: Keys.enableEnsCustomRpc)
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
@@ -120,6 +142,10 @@ final class SettingsStore {
         self.ipfsRoutingMode = defaults.string(forKey: Keys.ipfsRoutingMode)
             .flatMap(IPFSRoutingMode.init(rawValue:)) ?? .autoclient
         self.ipfsLowPower = defaults.bool(forKey: Keys.ipfsLowPower)
+        self.adblockAdsEnabled = defaults.bool(forKey: Keys.adblockAdsEnabled)
+        self.adblockPrivacyEnabled = defaults.bool(forKey: Keys.adblockPrivacyEnabled)
+        self.adblockCookiesEnabled = defaults.bool(forKey: Keys.adblockCookiesEnabled)
+        self.adblockAnnoyancesEnabled = defaults.bool(forKey: Keys.adblockAnnoyancesEnabled)
     }
 
     /// Materialize current IPFS settings into an `IPFSConfig` ready for
@@ -150,5 +176,9 @@ final class SettingsStore {
         static let hasCompletedPublishSetup = "hasCompletedPublishSetup"
         static let ipfsRoutingMode = "ipfsRoutingMode"
         static let ipfsLowPower = "ipfsLowPower"
+        static let adblockAdsEnabled = "adblockAdsEnabled"
+        static let adblockPrivacyEnabled = "adblockPrivacyEnabled"
+        static let adblockCookiesEnabled = "adblockCookiesEnabled"
+        static let adblockAnnoyancesEnabled = "adblockAnnoyancesEnabled"
     }
 }
