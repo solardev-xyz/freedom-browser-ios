@@ -7,15 +7,18 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "AdblockSer
 
 /// Compiles bundled WebKit content-blocker JSON via `WKContentRuleListStore`,
 /// caches the resulting `WKContentRuleList` instances, and attaches the
-/// user-enabled subset to each new tab's `WKUserContentController`.
+/// user-enabled subset to each tab's `WKUserContentController`. Toggles and
+/// allowlist edits live-refresh every attached controller; in-flight requests
+/// pick up the new rules immediately, already-rendered content needs a reload.
 ///
-/// Bundled artifacts live under `Resources/adblock/` and are produced by the
-/// sibling `freedom-adblock-service` package (Brave's adblock-rs → WebKit JSON,
-/// sharded under iOS 17's size-crash threshold). Phase 1 ships compile-and-attach
-/// only; runtime updates over Swarm Feed land in phase 3.
+/// Per-site allowlist is implemented Brave-iOS-style: when a tab's top URL
+/// is on an allowlisted domain (or a subdomain thereof), the block lists are
+/// physically detached from that tab's controller. WebKit doesn't reliably
+/// honor a separate `ignore-previous-rules` content rule list across attached
+/// blockers — Brave learned the same lesson and built per-tab attach/detach.
 ///
-/// Toggle semantics: settings changes apply to NEW tabs at creation time.
-/// Existing tabs keep their attached rule lists until they're closed.
+/// Bundled JSON ships under `Resources/adblock/` and is produced by the sibling
+/// `freedom-adblock-service` package (Brave's adblock-rs → WebKit JSON).
 @MainActor
 @Observable
 final class AdblockService {
@@ -57,21 +60,20 @@ final class AdblockService {
     private(set) var status: Status = .idle
 
     @ObservationIgnored private let settings: SettingsStore
-    /// Apple documents `default()` as nullable but in practice it only returns
-    /// nil when the device's filesystem is unreachable. Cached at init so each
-    /// compile/lookup doesn't re-fetch and so the failure case surfaces once.
+    /// Apple documents `default()` as nullable; in practice it only returns
+    /// nil when the device filesystem is unreachable.
     @ObservationIgnored private let store: WKContentRuleListStore?
     @ObservationIgnored private var compiledByCategory: [Category: [WKContentRuleList]] = [:]
     @ObservationIgnored private(set) var manifest: BundledAdblockManifest?
+    @ObservationIgnored private var attachments: [Attachment] = []
 
     init(settings: SettingsStore) {
         self.settings = settings
         self.store = WKContentRuleListStore.default()
     }
 
-    /// Loads `metadata.json`, compiles each shard via `WKContentRuleListStore`,
-    /// and stores the compiled lists in memory. Idempotent — a second call
-    /// while compiling or already ready is a no-op.
+    /// Loads `metadata.json`, compiles each shard via `WKContentRuleListStore`.
+    /// Idempotent — a second call while compiling or already ready is a no-op.
     func compileBundledIfNeeded() async {
         guard status == .idle else { return }
         guard store != nil else {
@@ -98,27 +100,47 @@ final class AdblockService {
                 compiledByCategory[category] = compiled
                 log.info("compiled \(compiled.count) shard(s) for \(category.rawValue, privacy: .public)")
             }
+
+            // Defensive: rewrite any non-canonical allowlist entries
+            // (URL-form, www-prefixed, port-suffixed) back to canonical form.
+            let normalized = settings.adblockAllowlist.compactMap { normalizedHost($0) }
+            let deduped = Array(Set(normalized)).sorted()
+            if deduped != settings.adblockAllowlist {
+                settings.adblockAllowlist = deduped
+            }
+
             status = .ready
+            refreshAllAttachments()
         } catch {
             log.error("compile failed: \(String(describing: error), privacy: .public)")
             status = .failed(message: error.localizedDescription)
         }
     }
 
-    /// Add the user-enabled rule lists to a fresh tab's user content controller.
-    /// Called once at `BrowserTab.init`. No-op until `compileBundledIfNeeded`
-    /// has succeeded — early tabs created before compile completes get no
-    /// blocking on this navigation, which is fine: the bundle takes ~1s to
-    /// compile cold and milliseconds warm (the `WKContentRuleListStore`
-    /// disk cache survives across launches under stable identifiers).
+    /// Register a controller for live-managed rule list attachment. Initial
+    /// attach uses no URL context — the tab calls `updateURL` before its
+    /// first navigation. Safe to call before `compileBundledIfNeeded`
+    /// finishes — early tabs get caught up by the post-compile refresh.
+    /// Idempotent per controller.
     func attach(to controller: WKUserContentController) {
-        guard status == .ready else { return }
-        for category in Category.allCases where isEnabled(category) {
-            for list in compiledByCategory[category] ?? [] {
-                controller.add(list)
-            }
-        }
+        if attachments.contains(where: { $0.controller === controller }) { return }
+        let lists = desiredLists(for: nil)
+        for list in lists { controller.add(list) }
+        attachments.append(Attachment(controller: controller, currentHost: nil, attachedLists: lists))
     }
+
+    /// Notify the service that a tab's top-level URL changed. Detaches /
+    /// re-attaches rule lists when the new host crosses an allowlist
+    /// boundary. No-op if the host (post-normalization) hasn't changed.
+    func updateURL(_ url: URL?, for controller: WKUserContentController) {
+        let host = normalizedHost(url?.host)
+        guard let index = attachments.firstIndex(where: { $0.controller === controller }) else { return }
+        if attachments[index].currentHost == host { return }
+        attachments[index].currentHost = host
+        applyTo(attachmentIndex: index)
+    }
+
+    // MARK: - Category toggles
 
     func isEnabled(_ category: Category) -> Bool {
         switch category {
@@ -130,12 +152,14 @@ final class AdblockService {
     }
 
     func setEnabled(_ category: Category, _ value: Bool) {
+        guard isEnabled(category) != value else { return }
         switch category {
         case .ads:        settings.adblockAdsEnabled = value
         case .privacy:    settings.adblockPrivacyEnabled = value
         case .cookies:    settings.adblockCookiesEnabled = value
         case .annoyances: settings.adblockAnnoyancesEnabled = value
         }
+        refreshAllAttachments()
     }
 
     func ruleCount(for category: Category) -> Int? {
@@ -144,6 +168,162 @@ final class AdblockService {
 
     func shardCount(for category: Category) -> Int? {
         manifest?.category(category)?.shards.count
+    }
+
+    // MARK: - Per-site allowlist
+
+    var allowlistDomains: [String] {
+        settings.adblockAllowlist
+    }
+
+    /// Subdomain-aware: returns true if `host` matches an allowlist entry
+    /// exactly OR is a subdomain of one (`m.bild.de` ↔ allowlisted `bild.de`).
+    func isAllowlisted(host: String?) -> Bool {
+        guard let normalized = normalizedHost(host) else { return false }
+        return isCovered(host: normalized)
+    }
+
+    func isAllowlisted(url: URL?) -> Bool {
+        isAllowlisted(host: url?.host)
+    }
+
+    func addAllowlist(domain: String) {
+        guard let normalized = normalizedHost(domain) else { return }
+        addNormalized(normalized)
+    }
+
+    func removeAllowlist(domain: String) {
+        guard let normalized = normalizedHost(domain) else { return }
+        removeNormalized([normalized])
+    }
+
+    /// Batched removal — single attachment refresh regardless of how many
+    /// domains the caller passes. Used by the swipe-delete handler.
+    func removeAllowlist(domains: [String]) {
+        let normalized = Set(domains.compactMap { normalizedHost($0) })
+        guard !normalized.isEmpty else { return }
+        removeNormalized(normalized)
+    }
+
+    /// Toggle allowlist state for `host` (exact-match toggle); returns the
+    /// new state. The exact-match semantics differ from `isAllowlisted`'s
+    /// subdomain-aware check on purpose — toggling adds/removes the host
+    /// the user is currently on, even if a parent domain is also allowlisted.
+    @discardableResult
+    func toggleAllowlist(host: String?) -> Bool {
+        guard let normalized = normalizedHost(host) else { return false }
+        if settings.adblockAllowlist.contains(normalized) {
+            removeNormalized([normalized])
+            return false
+        }
+        addNormalized(normalized)
+        return true
+    }
+
+    private func addNormalized(_ normalized: String) {
+        mutateAllowlist { current in
+            guard !current.contains(normalized) else { return current }
+            var next = current
+            next.append(normalized)
+            next.sort()
+            return next
+        }
+    }
+
+    private func removeNormalized(_ normalized: Set<String>) {
+        mutateAllowlist { current in
+            current.filter { !normalized.contains($0) }
+        }
+    }
+
+    private func mutateAllowlist(_ transform: ([String]) -> [String]) {
+        let current = settings.adblockAllowlist
+        let next = transform(current)
+        guard next != current else { return }
+        settings.adblockAllowlist = next
+        refreshAllAttachments()
+    }
+
+    /// Used internally to decide attach/detach. Subdomain-aware: returns
+    /// true if `host` exactly matches OR is a strict subdomain of any
+    /// allowlist entry. `evilbild.de` does NOT match allowlisted `bild.de`
+    /// — only entries with a preceding dot count as subdomains.
+    private func isCovered(host: String) -> Bool {
+        for allowed in settings.adblockAllowlist {
+            if host == allowed { return true }
+            if host.hasSuffix("." + allowed) { return true }
+        }
+        return false
+    }
+
+    /// Lowercase + strip leading `www.` + extract host from URL-form input.
+    /// Returns nil for empty/unparseable input. Only `www.` is stripped —
+    /// `news.ycombinator.com` and `ycombinator.com` are different sites.
+    func normalizedHost(_ host: String?) -> String? {
+        guard let raw = host?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        if raw.contains("://"), let url = URL(string: raw), let h = url.host {
+            return canonicalize(h)
+        }
+        let hostOnly = raw
+            .split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init) ?? raw
+        return canonicalize(hostOnly)
+    }
+
+    private func canonicalize(_ host: String) -> String? {
+        let lower = host.lowercased()
+        let noPort = lower.split(separator: ":", maxSplits: 1).first.map(String.init) ?? lower
+        guard !noPort.isEmpty, noPort.contains(".") else { return nil }
+        if noPort.hasPrefix("www.") {
+            let stripped = String(noPort.dropFirst(4))
+            return stripped.isEmpty ? nil : stripped
+        }
+        return noPort
+    }
+
+    // MARK: - Attachment refresh
+
+    /// Empty list when status isn't ready, or when `host` is allowlisted
+    /// (per-site disable). Otherwise the user-enabled block lists.
+    private func desiredLists(for host: String?) -> [WKContentRuleList] {
+        guard status == .ready else { return [] }
+        if let host, isCovered(host: host) { return [] }
+        var lists: [WKContentRuleList] = []
+        for category in Category.allCases where isEnabled(category) {
+            if let categoryLists = compiledByCategory[category] {
+                lists.append(contentsOf: categoryLists)
+            }
+        }
+        return lists
+    }
+
+    /// Re-evaluate every live attachment against current state. Prunes
+    /// dead refs along the way.
+    private func refreshAllAttachments() {
+        attachments.removeAll { $0.controller == nil }
+        for index in attachments.indices {
+            applyTo(attachmentIndex: index)
+        }
+    }
+
+    private func applyTo(attachmentIndex: Int) {
+        guard let controller = attachments[attachmentIndex].controller else { return }
+        let current = attachments[attachmentIndex].attachedLists
+        let desired = desiredLists(for: attachments[attachmentIndex].currentHost)
+        // Identity comparison is sound: rule lists are cached in
+        // `compiledByCategory`, so identical desired sets share instances.
+        // Skipping the remove/add saves a WebKit IPC round-trip per list —
+        // matters most for allowlisted tabs whose desired set stays empty.
+        if current.count == desired.count,
+           zip(current, desired).allSatisfy({ $0 === $1 }) {
+            return
+        }
+        for old in current { controller.remove(old) }
+        for new in desired { controller.add(new) }
+        attachments[attachmentIndex].attachedLists = desired
     }
 
     // MARK: - Compile pipeline
@@ -221,6 +401,14 @@ final class AdblockService {
             return url
         }
         throw AdblockError.resourceMissing("\(name).\(ext)")
+    }
+
+    // MARK: - Attachment tracking
+
+    private struct Attachment {
+        weak var controller: WKUserContentController?
+        var currentHost: String?
+        var attachedLists: [WKContentRuleList]
     }
 }
 

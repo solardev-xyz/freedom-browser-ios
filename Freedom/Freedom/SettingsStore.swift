@@ -97,6 +97,14 @@ final class SettingsStore {
     var adblockAnnoyancesEnabled: Bool {
         didSet { defaults.set(adblockAnnoyancesEnabled, forKey: Keys.adblockAnnoyancesEnabled) }
     }
+    /// Per-site allowlist: top-level frame domains for which all adblock
+    /// categories are bypassed (the page sees the unblocked web). Stored
+    /// normalized — lowercase, leading `www.` stripped — so user toggles on
+    /// `www.nytimes.com` and a typed entry of `nytimes.com` produce the
+    /// same canonical entry.
+    var adblockAllowlist: [String] {
+        didSet { defaults.set(adblockAllowlist, forKey: Keys.adblockAllowlist) }
+    }
     /// Whether the embedded Swarm (bee) node should be running. User-
     /// togglable from the Swarm node sheet. Default true preserves the
     /// historical behavior. False means the node never starts on app
@@ -139,6 +147,7 @@ final class SettingsStore {
             Keys.adblockPrivacyEnabled: true,
             Keys.adblockCookiesEnabled: false,
             Keys.adblockAnnoyancesEnabled: false,
+            Keys.adblockAllowlist: [String](),
             Keys.swarmNodeEnabled: true,
             Keys.ipfsNodeEnabled: false,
         ])
@@ -165,6 +174,7 @@ final class SettingsStore {
         self.adblockPrivacyEnabled = defaults.bool(forKey: Keys.adblockPrivacyEnabled)
         self.adblockCookiesEnabled = defaults.bool(forKey: Keys.adblockCookiesEnabled)
         self.adblockAnnoyancesEnabled = defaults.bool(forKey: Keys.adblockAnnoyancesEnabled)
+        self.adblockAllowlist = defaults.stringArray(forKey: Keys.adblockAllowlist) ?? []
         self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
         self.ipfsNodeEnabled = defaults.bool(forKey: Keys.ipfsNodeEnabled)
     }
@@ -201,6 +211,7 @@ final class SettingsStore {
         static let adblockPrivacyEnabled = "adblockPrivacyEnabled"
         static let adblockCookiesEnabled = "adblockCookiesEnabled"
         static let adblockAnnoyancesEnabled = "adblockAnnoyancesEnabled"
+        static let adblockAllowlist = "adblockAllowlist"
         static let swarmNodeEnabled = "swarmNodeEnabled"
         static let ipfsNodeEnabled = "ipfsNodeEnabled"
     }

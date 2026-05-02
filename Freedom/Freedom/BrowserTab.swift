@@ -124,6 +124,7 @@ final class BrowserTab {
 
     @ObservationIgnored private let ensResolver: ENSResolver
     @ObservationIgnored private let settings: SettingsStore
+    @ObservationIgnored private let adblock: AdblockService
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var lastScrollY: CGFloat = 0
     @ObservationIgnored private var bottomChromeProbeTask: Task<Void, Never>?
@@ -144,6 +145,7 @@ final class BrowserTab {
         self.recordID = recordID
         self.ensResolver = ensResolver
         self.settings = settings
+        self.adblock = adblock
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BzzSchemeHandler(), forURLScheme: "bzz")
         // One handler instance per scheme — WKWebKit requires distinct
@@ -268,12 +270,22 @@ final class BrowserTab {
         resetENSState()
         switch browserURL {
         case .bzz(let target), .ipfs(let target), .ipns(let target), .web(let target):
-            webView.load(URLRequest(url: target))
+            loadInWebView(target)
         case .ens(let name):
             ensURL = browserURL.url
             ensStatus = .resolving(name: name)
             activeResolveTask = Task { await resolveAndLoad(name: name) }
         }
+    }
+
+    /// Single chokepoint for `webView.load`. Syncs adblock state to the
+    /// new top URL synchronously beforehand — otherwise the first batch
+    /// of subresources can be blocked under the previous tab's allowlist
+    /// state. The KVO observer on `webView.url` catches subsequent
+    /// changes (redirects, anchor clicks, pushState).
+    private func loadInWebView(_ url: URL) {
+        adblock.updateURL(url, for: contentController)
+        webView.load(URLRequest(url: url))
     }
 
     private func resetENSState() {
@@ -290,7 +302,7 @@ final class BrowserTab {
         pendingGate = nil
         ensStatus = .idle
         currentTrust = trust
-        webView.load(URLRequest(url: url))
+        loadInWebView(url)
     }
 
     func dismissGate() {
@@ -386,7 +398,7 @@ final class BrowserTab {
         ensStatus = .idle
         currentTrust = result.trust
         handedToWebView = true
-        webView.load(URLRequest(url: result.uri))
+        loadInWebView(result.uri)
     }
 
     private func observeWebView() {
@@ -399,6 +411,10 @@ final class BrowserTab {
             MainActor.assumeIsolated {
                 guard let self, self.url != wv.url else { return }
                 self.url = wv.url
+                // Redundant for `loadInWebView`-initiated loads (host already
+                // matches and updateURL early-returns); required for
+                // redirects, anchor clicks, and pushState.
+                self.adblock.updateURL(wv.url, for: self.contentController)
             }
         })
         observations.append(webView.observe(\.title, options: .new) { [weak self] wv, _ in

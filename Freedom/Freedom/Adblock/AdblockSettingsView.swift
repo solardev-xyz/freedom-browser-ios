@@ -1,14 +1,15 @@
 import SwiftUI
 
-/// Per-category toggles + status row + filter-list attribution. Toggles
-/// take effect on new tabs; existing tabs keep what they were created
-/// with until closed (the "Reload to apply" footer is the user's hint).
+/// Per-category toggles + status + per-site allowlist + filter-list
+/// attribution. Edits live-refresh every open tab.
 struct AdblockSettingsView: View {
     @Environment(AdblockService.self) private var adblock
     @Environment(SettingsStore.self) private var settings
 
+    @State private var isAddingSite = false
+    @State private var newSiteText = ""
+
     var body: some View {
-        @Bindable var settings = settings
         Form {
             Section {
                 statusRow
@@ -17,15 +18,17 @@ struct AdblockSettingsView: View {
             }
 
             Section {
-                toggleRow(.ads, binding: $settings.adblockAdsEnabled)
-                toggleRow(.privacy, binding: $settings.adblockPrivacyEnabled)
-                toggleRow(.cookies, binding: $settings.adblockCookiesEnabled)
-                toggleRow(.annoyances, binding: $settings.adblockAnnoyancesEnabled)
+                toggleRow(.ads)
+                toggleRow(.privacy)
+                toggleRow(.cookies)
+                toggleRow(.annoyances)
             } header: {
                 Text("Filter lists")
             } footer: {
-                Text("Toggles apply to new tabs. Open a new tab — or close and reopen — to test a different combination.")
+                Text("Toggles apply live to all open tabs. Already-rendered content keeps its current state until you reload the page.")
             }
+
+            allowlistSection
 
             if let manifest = adblock.manifest {
                 Section {
@@ -40,6 +43,21 @@ struct AdblockSettingsView: View {
         }
         .navigationTitle("Ad Blocking")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Add allowlisted site", isPresented: $isAddingSite) {
+            TextField("example.com", text: $newSiteText)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+                .autocorrectionDisabled()
+            Button("Cancel", role: .cancel) { newSiteText = "" }
+            Button("Add") {
+                let toAdd = newSiteText
+                newSiteText = ""
+                adblock.addAllowlist(domain: toAdd)
+            }
+            .disabled(adblock.normalizedHost(newSiteText) == nil)
+        } message: {
+            Text("All adblock categories will be bypassed on this domain and its subdomains.")
+        }
     }
 
     @ViewBuilder
@@ -62,8 +80,14 @@ struct AdblockSettingsView: View {
         }
     }
 
-    private func toggleRow(_ category: AdblockService.Category, binding: Binding<Bool>) -> some View {
-        Toggle(isOn: binding) {
+    private func toggleRow(_ category: AdblockService.Category) -> some View {
+        // Routes through `setEnabled` so the live refresh fires; binding
+        // directly to `settings.adblockXEnabled` would skip it.
+        let binding = Binding(
+            get: { adblock.isEnabled(category) },
+            set: { adblock.setEnabled(category, $0) }
+        )
+        return Toggle(isOn: binding) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(category.displayName)
                 if let count = adblock.ruleCount(for: category),
@@ -76,6 +100,32 @@ struct AdblockSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+
+    private var allowlistSection: some View {
+        Section {
+            ForEach(adblock.allowlistDomains, id: \.self) { domain in
+                Text(domain)
+            }
+            .onDelete { indexSet in
+                let domains = adblock.allowlistDomains
+                adblock.removeAllowlist(domains: indexSet.map { domains[$0] })
+            }
+            Button {
+                newSiteText = ""
+                isAddingSite = true
+            } label: {
+                Label("Add site…", systemImage: "plus")
+            }
+        } header: {
+            Text("Allowlisted sites")
+        } footer: {
+            if adblock.allowlistDomains.isEmpty {
+                Text("Sites you add here have all adblock categories bypassed. Useful when blocking breaks a page you trust.")
+            } else {
+                Text("Adblock is bypassed on \(adblock.allowlistDomains.count) site\(adblock.allowlistDomains.count == 1 ? "" : "s") and their subdomains. Swipe to remove.")
             }
         }
     }
