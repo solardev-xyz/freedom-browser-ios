@@ -19,33 +19,73 @@ struct NodeHomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // CTA whenever the user doesn't have a usable stamp —
-                // covers fresh ultralight users, mid-sync, and the
-                // light+ready+no-stamps gap. The setup is only "done"
-                // once the user has a usable stamp (step 4 of the
-                // checklist).
-                if !stampService.hasUsableStamps {
-                    publishSetupCTA
+                enableCard
+                if settings.swarmNodeEnabled {
+                    // CTA whenever the user doesn't have a usable stamp —
+                    // covers fresh ultralight users, mid-sync, and the
+                    // light+ready+no-stamps gap. The setup is only "done"
+                    // once the user has a usable stamp (step 4 of the
+                    // checklist).
+                    if !stampService.hasUsableStamps {
+                        publishSetupCTA
+                    }
+                    statusCard
+                    nodeWalletCard
+                    // Chequebook only exists in light mode and only after
+                    // bee's chequebook subsystem has come online.
+                    if beeReadiness.chequebookAddress != nil {
+                        chequebookCard
+                    }
+                    // Stamps row appears once the user has crossed `.ready`
+                    // at least once — same gate as the inline mode toggle.
+                    // Pre-setup users use the publish-setup CTA above and
+                    // never see a half-disabled "stamps" row.
+                    if settings.hasCompletedPublishSetup {
+                        stampsRow
+                        publishHistoryRow
+                    }
+                    logsLink
                 }
-                statusCard
-                nodeWalletCard
-                // Chequebook only exists in light mode and only after
-                // bee's chequebook subsystem has come online.
-                if beeReadiness.chequebookAddress != nil {
-                    chequebookCard
-                }
-                // Stamps row appears once the user has crossed `.ready`
-                // at least once — same gate as the inline mode toggle.
-                // Pre-setup users use the publish-setup CTA above and
-                // never see a half-disabled "stamps" row.
-                if settings.hasCompletedPublishSetup {
-                    stampsRow
-                    publishHistoryRow
-                }
-                logsLink
             }
             .padding(20)
         }
+    }
+
+    /// Top-level enable/disable for the Swarm node. When off the rest
+    /// of the sheet is hidden — there's nothing meaningful to show
+    /// (no peers, no chequebook, no stamps). Toggle ON kicks off a
+    /// runtime boot using the same flow as app launch.
+    private var enableCard: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Enable")
+                    .font(.headline)
+                Text("Run the embedded Swarm (bee) node")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Toggle("Enable", isOn: enableBinding)
+                .labelsHidden()
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var enableBinding: Binding<Bool> {
+        Binding(
+            get: { settings.swarmNodeEnabled },
+            set: { newValue in
+                settings.swarmNodeEnabled = newValue
+                if newValue {
+                    Task { await SwarmRuntime.enable(swarm: swarm, settings: settings) }
+                } else {
+                    swarm.stop()
+                }
+            }
+        )
     }
 
     /// Pushes onto the existing NodeSheet NavigationStack — no second

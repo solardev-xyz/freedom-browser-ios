@@ -194,12 +194,14 @@ struct FreedomApp: App {
     /// versa). `IPFSNode.start` is fire-and-forget — actual node bringup
     /// happens on a detached task inside the wrapper.
     private func startIpfsIfNeeded() {
+        guard settings.ipfsNodeEnabled else { return }
         guard ipfs.status == .idle else { return }
         let config = settings.ipfsConfig(dataDir: IPFSNode.defaultDataDir())
         ipfs.start(config)
     }
 
     private func startNodeIfNeeded() async {
+        guard settings.swarmNodeEnabled else { return }
         guard swarm.status == .idle else { return }
         do {
             // Legacy installs encrypted the keystore with the old hardcoded

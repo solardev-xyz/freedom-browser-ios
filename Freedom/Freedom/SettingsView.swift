@@ -22,6 +22,11 @@ struct SettingsView: View {
                     Label("ENS", systemImage: "globe")
                 }
                 NavigationLink {
+                    SwarmSettingsView()
+                } label: {
+                    Label("Swarm", systemImage: "circle.hexagongrid.fill")
+                }
+                NavigationLink {
                     IPFSSettingsView()
                 } label: {
                     Label("IPFS", systemImage: "globe.asia.australia")

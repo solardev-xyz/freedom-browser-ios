@@ -22,6 +22,12 @@ struct IPFSSettingsView: View {
 
         Form {
             Section {
+                Toggle("Enable", isOn: enableBinding)
+            } footer: {
+                Text("Run the embedded IPFS (kubo) node on app launch and right now. Disable to free CPU / memory; ipfs:// page loads will fail until re-enabled.")
+            }
+
+            Section {
                 Picker("Routing", selection: $settings.ipfsRoutingMode) {
                     ForEach(IPFSRoutingMode.allCases, id: \.self) { mode in
                         Text(displayName(mode)).tag(mode)
@@ -29,7 +35,7 @@ struct IPFSSettingsView: View {
                 }
                 Toggle("Low power", isOn: $settings.ipfsLowPower)
             } header: {
-                Text("Node")
+                Text("Routing")
             } footer: {
                 Text(footerText)
             }
@@ -71,6 +77,21 @@ struct IPFSSettingsView: View {
         case .dht:        "Full DHT"
         case .disabled:   "Off"
         }
+    }
+
+    private var enableBinding: Binding<Bool> {
+        Binding(
+            get: { settings.ipfsNodeEnabled },
+            set: { newValue in
+                settings.ipfsNodeEnabled = newValue
+                if newValue {
+                    let config = settings.ipfsConfig(dataDir: IPFSNode.defaultDataDir())
+                    ipfs.start(config)
+                } else {
+                    ipfs.stop()
+                }
+            }
+        )
     }
 
     private func applyIfChanged() {

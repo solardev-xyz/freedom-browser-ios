@@ -10,16 +10,60 @@ struct IpfsNodeHomeView: View {
     @Environment(IPFSNode.self) private var ipfs
     @Environment(Vault.self) private var vault
     @Environment(IpfsIdentityCoordinator.self) private var ipfsIdentity
+    @Environment(SettingsStore.self) private var settings
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                statusCard
-                identityCard
-                logsLink
+                enableCard
+                if settings.ipfsNodeEnabled {
+                    statusCard
+                    identityCard
+                    logsLink
+                }
             }
             .padding(20)
         }
+    }
+
+    /// Top-level enable/disable for the IPFS node. Defaults to off
+    /// because running both kubo and bee in parallel currently degrades
+    /// phone performance too much before the lighter clients land.
+    /// Toggle ON kicks off a runtime boot with the current settings
+    /// (routing mode, low-power); toggle OFF stops the node and frees
+    /// its goroutines, libp2p connections, and Go heap.
+    private var enableCard: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Enable")
+                    .font(.headline)
+                Text("Run the embedded IPFS (kubo) node")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Toggle("Enable", isOn: enableBinding)
+                .labelsHidden()
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var enableBinding: Binding<Bool> {
+        Binding(
+            get: { settings.ipfsNodeEnabled },
+            set: { newValue in
+                settings.ipfsNodeEnabled = newValue
+                if newValue {
+                    let config = settings.ipfsConfig(dataDir: IPFSNode.defaultDataDir())
+                    ipfs.start(config)
+                } else {
+                    ipfs.stop()
+                }
+            }
+        )
     }
 
     // MARK: - Cards

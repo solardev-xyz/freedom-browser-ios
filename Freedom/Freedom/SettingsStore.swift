@@ -97,6 +97,23 @@ final class SettingsStore {
     var adblockAnnoyancesEnabled: Bool {
         didSet { defaults.set(adblockAnnoyancesEnabled, forKey: Keys.adblockAnnoyancesEnabled) }
     }
+    /// Whether the embedded Swarm (bee) node should be running. User-
+    /// togglable from the Swarm node sheet. Default true preserves the
+    /// historical behavior. False means the node never starts on app
+    /// launch and `bzz://` page loads fail until re-enabled.
+    var swarmNodeEnabled: Bool {
+        didSet { defaults.set(swarmNodeEnabled, forKey: Keys.swarmNodeEnabled) }
+    }
+    /// Whether the embedded IPFS (kubo) node should be running. User-
+    /// togglable from the IPFS node sheet. Default **false** as a
+    /// short-term performance fix — running both nodes in parallel
+    /// degrades phone responsiveness too much before the lighter
+    /// node clients land. False means the node never starts on app
+    /// launch and `ipfs://` / `ipns://` page loads (including ENS-
+    /// dispatched ones) fail until re-enabled.
+    var ipfsNodeEnabled: Bool {
+        didSet { defaults.set(ipfsNodeEnabled, forKey: Keys.ipfsNodeEnabled) }
+    }
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -122,6 +139,8 @@ final class SettingsStore {
             Keys.adblockPrivacyEnabled: true,
             Keys.adblockCookiesEnabled: false,
             Keys.adblockAnnoyancesEnabled: false,
+            Keys.swarmNodeEnabled: true,
+            Keys.ipfsNodeEnabled: false,
         ])
         self.enableEnsCustomRpc = defaults.bool(forKey: Keys.enableEnsCustomRpc)
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
@@ -146,6 +165,8 @@ final class SettingsStore {
         self.adblockPrivacyEnabled = defaults.bool(forKey: Keys.adblockPrivacyEnabled)
         self.adblockCookiesEnabled = defaults.bool(forKey: Keys.adblockCookiesEnabled)
         self.adblockAnnoyancesEnabled = defaults.bool(forKey: Keys.adblockAnnoyancesEnabled)
+        self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
+        self.ipfsNodeEnabled = defaults.bool(forKey: Keys.ipfsNodeEnabled)
     }
 
     /// Materialize current IPFS settings into an `IPFSConfig` ready for
@@ -180,5 +201,7 @@ final class SettingsStore {
         static let adblockPrivacyEnabled = "adblockPrivacyEnabled"
         static let adblockCookiesEnabled = "adblockCookiesEnabled"
         static let adblockAnnoyancesEnabled = "adblockAnnoyancesEnabled"
+        static let swarmNodeEnabled = "swarmNodeEnabled"
+        static let ipfsNodeEnabled = "ipfsNodeEnabled"
     }
 }
