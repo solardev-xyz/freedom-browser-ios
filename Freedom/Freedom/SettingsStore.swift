@@ -1,4 +1,5 @@
 import Foundation
+import IPFSKit
 
 enum BlockAnchor: String, CaseIterable, Hashable {
     case latest
@@ -57,6 +58,18 @@ final class SettingsStore {
     var beeNodeMode: BeeNodeMode {
         didSet { defaults.set(beeNodeMode.rawValue, forKey: Keys.beeNodeMode) }
     }
+    /// kubo content-routing mode. `.autoclient` is the default —
+    /// delegated-routing + light DHT client, the cheapest reachable
+    /// configuration on mobile.
+    var ipfsRoutingMode: IPFSRoutingMode {
+        didSet { defaults.set(ipfsRoutingMode.rawValue, forKey: Keys.ipfsRoutingMode) }
+    }
+    /// Whether kubo runs with reduced libp2p connection/stream limits
+    /// (DHT server off, smaller pools). Right setting for mobile by
+    /// default; advanced users can disable for a fuller swarm presence.
+    var ipfsLowPower: Bool {
+        didSet { defaults.set(ipfsLowPower, forKey: Keys.ipfsLowPower) }
+    }
     /// True once the user has successfully reached light-mode `.ready` at
     /// least once. Drives the inline mode toggle in `NodeHomeView`: a true
     /// flag means bee's statestore still has the `swap_chequebook` entry
@@ -85,6 +98,8 @@ final class SettingsStore {
             Keys.enableCcipRead: true,
             Keys.beeNodeMode: BeeNodeMode.ultraLight.rawValue,
             Keys.hasCompletedPublishSetup: false,
+            Keys.ipfsRoutingMode: IPFSRoutingMode.autoclient.rawValue,
+            Keys.ipfsLowPower: true,
         ])
         self.enableEnsCustomRpc = defaults.bool(forKey: Keys.enableEnsCustomRpc)
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
@@ -102,6 +117,21 @@ final class SettingsStore {
         self.beeNodeMode = defaults.string(forKey: Keys.beeNodeMode)
             .flatMap(BeeNodeMode.init(rawValue:)) ?? .ultraLight
         self.hasCompletedPublishSetup = defaults.bool(forKey: Keys.hasCompletedPublishSetup)
+        self.ipfsRoutingMode = defaults.string(forKey: Keys.ipfsRoutingMode)
+            .flatMap(IPFSRoutingMode.init(rawValue:)) ?? .autoclient
+        self.ipfsLowPower = defaults.bool(forKey: Keys.ipfsLowPower)
+    }
+
+    /// Materialize current IPFS settings into an `IPFSConfig` ready for
+    /// `IPFSNode.start` / `restart`. The data dir, gateway host, and
+    /// gateway port aren't user-configurable yet; defaults from
+    /// `IPFSConfig.init` apply.
+    func ipfsConfig(dataDir: URL) -> IPFSConfig {
+        IPFSConfig(
+            dataDir: dataDir,
+            lowPower: ipfsLowPower,
+            routingMode: ipfsRoutingMode
+        )
     }
 
     private enum Keys {
@@ -118,5 +148,7 @@ final class SettingsStore {
         static let enableCcipRead = "enableCcipRead"
         static let beeNodeMode = "beeNodeMode"
         static let hasCompletedPublishSetup = "hasCompletedPublishSetup"
+        static let ipfsRoutingMode = "ipfsRoutingMode"
+        static let ipfsLowPower = "ipfsLowPower"
     }
 }

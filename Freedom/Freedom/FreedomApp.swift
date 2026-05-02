@@ -183,7 +183,7 @@ struct FreedomApp: App {
     /// happens on a detached task inside the wrapper.
     private func startIpfsIfNeeded() {
         guard ipfs.status == .idle else { return }
-        let config = IPFSConfig(dataDir: IPFSNode.defaultDataDir())
+        let config = settings.ipfsConfig(dataDir: IPFSNode.defaultDataDir())
         ipfs.start(config)
     }
 

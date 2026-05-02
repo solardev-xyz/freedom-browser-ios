@@ -123,6 +123,25 @@ public final class IPFSNode {
         }
     }
 
+    /// Apply a new config — stops the node if it's currently running,
+    /// then starts with the new config. Settings-driven — used when the
+    /// user changes routing mode / low-power from the IPFS settings
+    /// page. Idempotent on `.idle` / `.stopped` / `.failed` states
+    /// (just starts).
+    public func restart(_ config: IPFSConfig) async {
+        if node != nil {
+            stop()
+            // Best-effort wait for stopped. Don't poll forever — kubo's
+            // shutdown is fast (~15ms in coprobe), 5s is generous for
+            // simulator overhead.
+            for _ in 0..<50 {
+                if status == .stopped || status == .idle || status == .failed { break }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        start(config)
+    }
+
     public func stop() {
         guard let n = node else { return }
         status = .stopping

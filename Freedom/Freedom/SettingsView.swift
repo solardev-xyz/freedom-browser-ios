@@ -22,6 +22,11 @@ struct SettingsView: View {
                     Label("ENS", systemImage: "globe")
                 }
                 NavigationLink {
+                    IPFSSettingsView()
+                } label: {
+                    Label("IPFS", systemImage: "globe.asia.australia")
+                }
+                NavigationLink {
                     RPCSettingsView()
                 } label: {
                     Label("RPC", systemImage: "antenna.radiowaves.left.and.right")
