@@ -291,8 +291,10 @@ struct ContentView: View {
                         .transition(.opacity)
                 } else if mode == .normal {
                     MenuPill(
-                        nodeStatus: swarm.status,
-                        peerCount: swarm.peerCount,
+                        swarmStatus: swarm.status,
+                        swarmPeerCount: swarm.peerCount,
+                        ipfsStatus: ipfs.status,
+                        ipfsPeerCount: ipfs.peerCount,
                         swarmStatsLine: swarmStatsLine,
                         ipfsStatsLine: ipfsStatsLine,
                         isURLBookmarked: isActiveURLBookmarked,

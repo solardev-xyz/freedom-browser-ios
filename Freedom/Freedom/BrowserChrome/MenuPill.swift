@@ -1,5 +1,6 @@
 import SwiftUI
 import SwarmKit
+import IPFSKit
 
 /// Catch-all menu pill. The label is the ambient `NodeStatusIcon` (red
 /// dot when off, green with arcs by peer count) instead of an ellipsis.
@@ -9,8 +10,10 @@ import SwarmKit
 /// item closest to the user's finger is first in code. We follow that
 /// convention so the visual top-down order matches the user's spec.
 struct MenuPill: View {
-    let nodeStatus: SwarmStatus
-    let peerCount: Int
+    let swarmStatus: SwarmStatus
+    let swarmPeerCount: Int
+    let ipfsStatus: IPFSStatus
+    let ipfsPeerCount: Int
     let swarmStatsLine: String
     let ipfsStatsLine: String
 
@@ -78,7 +81,12 @@ struct MenuPill: View {
                 }
             }
         } label: {
-            NodeStatusIcon(status: nodeStatus, peerCount: peerCount)
+            NodeStatusIcon(
+                swarmStatus: swarmStatus,
+                swarmPeerCount: swarmPeerCount,
+                ipfsStatus: ipfsStatus,
+                ipfsPeerCount: ipfsPeerCount
+            )
         }
         .modifier(NativeGlassMenuStyle())
     }
