@@ -1,4 +1,5 @@
 import Foundation
+import IPFSKit
 import Observation
 import OSLog
 import SwiftData
@@ -19,6 +20,7 @@ final class TabStore {
     @ObservationIgnored private let wallet: WalletServices
     @ObservationIgnored private let swarm: SwarmServices
     @ObservationIgnored private let adblock: AdblockService
+    @ObservationIgnored private let ipfs: IPFSNode
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
 
     init(
@@ -29,7 +31,8 @@ final class TabStore {
         settings: SettingsStore,
         wallet: WalletServices,
         swarm: SwarmServices,
-        adblock: AdblockService
+        adblock: AdblockService,
+        ipfs: IPFSNode
     ) {
         self.context = context
         self.historyStore = historyStore
@@ -39,6 +42,7 @@ final class TabStore {
         self.wallet = wallet
         self.swarm = swarm
         self.adblock = adblock
+        self.ipfs = ipfs
         reloadRecords()
     }
 
@@ -137,7 +141,8 @@ final class TabStore {
             settings: settings,
             wallet: wallet,
             swarm: swarm,
-            adblock: adblock
+            adblock: adblock,
+            ipfs: ipfs
         )
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }

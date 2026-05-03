@@ -20,7 +20,6 @@ struct FreedomApp: App {
     @State private var permissionStore: PermissionStore
     @State private var autoApproveStore: AutoApproveStore
     @State private var beeIdentity: BeeIdentityCoordinator
-    @State private var ipfsIdentity: IpfsIdentityCoordinator
     @State private var beeReadiness: BeeReadiness
     @State private var stampService: StampService
     @State private var beeWalletInfo: BeeWalletInfo
@@ -69,10 +68,10 @@ struct FreedomApp: App {
             self._autoApproveStore = State(wrappedValue: autoApprove)
             self._transactionService = State(wrappedValue: txService)
             self._beeIdentity = State(wrappedValue: BeeIdentityCoordinator(settings: settings))
-            self._ipfsIdentity = State(wrappedValue: IpfsIdentityCoordinator(settings: settings))
             let swarmInstance = SwarmNode()
             self._swarm = State(wrappedValue: swarmInstance)
-            self._ipfs = State(wrappedValue: IPFSNode())
+            let ipfsInstance = IPFSNode()
+            self._ipfs = State(wrappedValue: ipfsInstance)
             let readiness = BeeReadiness(swarm: swarmInstance, settings: settings)
             self._beeReadiness = State(wrappedValue: readiness)
             let stamps = StampService(swarm: swarmInstance, settings: settings)
@@ -133,7 +132,8 @@ struct FreedomApp: App {
                 settings: settings,
                 wallet: wallet,
                 swarm: swarmServices,
-                adblock: adblockService
+                adblock: adblockService,
+                ipfs: ipfsInstance
             ))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
@@ -162,7 +162,6 @@ struct FreedomApp: App {
                 .environment(permissionStore)
                 .environment(autoApproveStore)
                 .environment(beeIdentity)
-                .environment(ipfsIdentity)
                 .environment(beeReadiness)
                 .environment(stampService)
                 .environment(beeWalletInfo)
@@ -188,11 +187,11 @@ struct FreedomApp: App {
         }
     }
 
-    /// Brings the kubo IPFS node up alongside bee. Runs in parallel with
-    /// `startNodeIfNeeded` so a slow ENS / RPC / chequebook bring-up on
-    /// the bee side doesn't block IPFS from coming online (and vice
-    /// versa). `IPFSNode.start` is fire-and-forget — actual node bringup
-    /// happens on a detached task inside the wrapper.
+    /// Brings the Rust IPFS reader up alongside bee. Runs in parallel
+    /// with `startNodeIfNeeded` so a slow ENS / RPC / chequebook
+    /// bring-up on the bee side doesn't block IPFS from coming online
+    /// (and vice versa). `IPFSNode.start` is fire-and-forget — actual
+    /// gateway bringup happens on a detached task inside the wrapper.
     private func startIpfsIfNeeded() {
         guard settings.ipfsNodeEnabled else { return }
         guard ipfs.status == .idle else { return }

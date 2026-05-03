@@ -1,8 +1,8 @@
 import IPFSKit
 import SwiftUI
 
-/// Full kubo log surface — diagnostic-only. Same shape as the Swarm
-/// `NodeLogView`; hidden behind an unobtrusive footer link in
+/// Full IPFS reader log surface — diagnostic-only. Same shape as the
+/// Swarm `NodeLogView`; hidden behind an unobtrusive footer link in
 /// `IpfsNodeHomeView`.
 @MainActor
 struct IpfsNodeLogView: View {
@@ -10,7 +10,7 @@ struct IpfsNodeLogView: View {
 
     var body: some View {
         ScrollView {
-            // Lazy — `ipfs.log` is capped at 500 lines (IPFSKit), and an
+            // Lazy — `ipfs.log` is capped at 500 lines (IPFSKit); an
             // eager VStack would inflate every row up-front on push.
             LazyVStack(alignment: .leading, spacing: 4) {
                 if ipfs.log.isEmpty {

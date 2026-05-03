@@ -1,4 +1,5 @@
 import Foundation
+import IPFSKit
 import Observation
 import UIKit
 import web3
@@ -125,6 +126,7 @@ final class BrowserTab {
     @ObservationIgnored private let ensResolver: ENSResolver
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private let adblock: AdblockService
+    @ObservationIgnored private let ipfs: IPFSNode
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var lastScrollY: CGFloat = 0
     @ObservationIgnored private var bottomChromeProbeTask: Task<Void, Never>?
@@ -133,6 +135,10 @@ final class BrowserTab {
     @ObservationIgnored private let contentController: WKUserContentController
     @ObservationIgnored fileprivate var walletBridge: EthereumBridge?
     @ObservationIgnored fileprivate var swarmBridge: SwarmBridge?
+    /// Live preload task ID for the current ipfs/ipns navigation, if
+    /// any. Cancelled and re-issued on every committed top-level
+    /// navigation; cleared on failure.
+    @ObservationIgnored private var activePreloadID: UInt64 = 0
 
     init(
         recordID: UUID = UUID(),
@@ -140,19 +146,22 @@ final class BrowserTab {
         settings: SettingsStore,
         wallet: WalletServices,
         swarm: SwarmServices,
-        adblock: AdblockService
+        adblock: AdblockService,
+        ipfs: IPFSNode
     ) {
         self.recordID = recordID
         self.ensResolver = ensResolver
         self.settings = settings
         self.adblock = adblock
+        self.ipfs = ipfs
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BzzSchemeHandler(), forURLScheme: "bzz")
         // One handler instance per scheme — WKWebKit requires distinct
         // objects per scheme registration even when the implementation
-        // is the same.
-        config.setURLSchemeHandler(IpfsSchemeHandler(), forURLScheme: "ipfs")
-        config.setURLSchemeHandler(IpfsSchemeHandler(), forURLScheme: "ipns")
+        // is the same. Both schemes resolve through the same Rust
+        // gateway, but each gets its own handler instance.
+        config.setURLSchemeHandler(IpfsSchemeHandler(node: ipfs), forURLScheme: "ipfs")
+        config.setURLSchemeHandler(IpfsSchemeHandler(node: ipfs), forURLScheme: "ipns")
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         let contentController = WKUserContentController()
         config.userContentController = contentController
@@ -285,7 +294,34 @@ final class BrowserTab {
     /// changes (redirects, anchor clicks, pushState).
     private func loadInWebView(_ url: URL) {
         adblock.updateURL(url, for: contentController)
+        triggerIpfsPreload(for: url)
         webView.load(URLRequest(url: url))
+    }
+
+    /// Kicks off a Rust-side preload for `ipfs://` / `ipns://`
+    /// top-level loads. The reader resolves providers, fetches root
+    /// blocks, and warms the cache in parallel with WebKit's request,
+    /// so the scheme-handler request typically hits a hot block tree.
+    /// Replaces any in-flight preload (one per tab); the previous
+    /// task is cancelled.
+    private func triggerIpfsPreload(for url: URL) {
+        cancelActivePreload()
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "ipfs" || scheme == "ipns",
+              let host = url.host else { return }
+        let path = url.path.isEmpty ? "/" : url.path
+        let gatewayPath: String =
+            (path.hasPrefix("/ipfs/") || path.hasPrefix("/ipns/"))
+            ? path
+            : "/\(scheme)/\(host)\(path)"
+        let id = ipfs.preload(path: gatewayPath)
+        activePreloadID = id
+    }
+
+    fileprivate func cancelActivePreload() {
+        guard activePreloadID != 0 else { return }
+        _ = ipfs.cancelPreload(taskID: activePreloadID)
+        activePreloadID = 0
     }
 
     private func resetENSState() {
@@ -334,6 +370,7 @@ final class BrowserTab {
     }
     func stop() {
         activeResolveTask?.cancel()
+        cancelActivePreload()
         webView.stopLoading()
     }
 
@@ -660,9 +697,26 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // WKNavigationDelegate callbacks arrive on the main thread, same
         // pattern as the KVO observers in BrowserTab.
         MainActor.assumeIsolated {
+            owner?.cancelActivePreload()
             owner?.onNavigationFinish?(url, title)
             owner?.extractThemeColor()
             owner?.detectBottomChromeMode()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        MainActor.assumeIsolated {
+            owner?.cancelActivePreload()
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        MainActor.assumeIsolated {
+            owner?.cancelActivePreload()
         }
     }
 }

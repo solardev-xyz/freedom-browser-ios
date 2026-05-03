@@ -1,9 +1,18 @@
 import Foundation
 import Observation
-// The combined freedom-node-mobile binding emits a single `Mobile`
-// framework module containing both bee (`MobileMobile*`) and kubo
-// (`MobileIpfs*`) Obj-C surfaces. SwarmKit also imports this module.
-import Mobile
+
+/// `IPFSNode` is now a thin Swift facade over `FreedomIpfsReader` (Rust
+/// read-only IPFS reader). The public type names — `IPFSNode`,
+/// `IPFSStatus`, `IPFSConfig`, `IPFSRoutingMode` — are preserved from
+/// the previous Kubo-backed implementation to keep the iOS app's blast
+/// radius small.
+///
+/// What is NOT preserved from the Kubo era:
+/// - There is no Kubo PeerID. `peerID` exists as an empty
+///   compile-compatibility property; never display it.
+/// - `peerCount` is meaningless (no libp2p peer set on the reader); kept
+///   only to keep call sites compiling. Prefer `diagnostics`.
+/// - Writing/pinning is not implemented; `add(_:)` always throws.
 
 public enum IPFSStatus: String, Sendable {
     case idle, starting, running, stopping, stopped, failed
@@ -12,40 +21,58 @@ public enum IPFSStatus: String, Sendable {
 public enum IPFSError: LocalizedError {
     case notRunning
     case startFailed(String)
+    case unsupported
 
     public var errorDescription: String? {
         switch self {
         case .notRunning: "IPFS node is not running"
         case .startFailed(let message): "IPFS node failed to start: \(message)"
+        case .unsupported: "Operation is not supported by the read-only IPFS reader"
         }
     }
 }
 
+/// Routing mode strings are kept for source compatibility with the old
+/// Kubo settings. Mapping to Rust:
+/// - `autoclient` → `.auto` (delegated + light DHT fallback)
+/// - `dht` / `dhtclient` → `.lightDht`
+/// - `disabled` → start an offline/cache-only gateway (no online retrieval)
 public enum IPFSRoutingMode: String, Sendable, CaseIterable {
     case dht         = "dht"
     case dhtclient   = "dhtclient"
     case autoclient  = "autoclient"
-    /// "none" — content routing fully off. Avoid the bare `.none` Swift
-    /// case name to keep this from colliding with `Optional.none` at use
-    /// sites; the rawValue still matches what the Go wrapper expects.
+    /// "none" — no online retrieval. Avoid the bare `.none` Swift case
+    /// name to keep this from colliding with `Optional.none`.
     case disabled    = "none"
 }
 
 public struct IPFSConfig: Sendable {
     public var dataDir: URL
+    /// Loopback host. Rust gateway only binds loopback addresses.
     public var gatewayHost: String
+    /// `0` (the new default) means an ephemeral port — read the actual
+    /// port back from `IPFSNode.gatewayURL` after start.
     public var gatewayPort: Int
+    /// When true, scales request/provider budgets down for mobile.
     public var lowPower: Bool
     public var routingMode: IPFSRoutingMode
+    /// When true, do not start the online retrieval gateway — only the
+    /// local cache is served. Equivalent to `.disabled` routing.
     public var offline: Bool
+    /// Block-store cache budget. `0` lets Rust use its built-in default.
+    public var maxCacheBytes: UInt64
+    /// Optional delegated-router endpoints. Empty uses the Rust default.
+    public var delegatedRouters: [String]
 
     public init(
         dataDir: URL,
         gatewayHost: String = "127.0.0.1",
-        gatewayPort: Int = 5050,
+        gatewayPort: Int = 0,
         lowPower: Bool = true,
         routingMode: IPFSRoutingMode = .autoclient,
-        offline: Bool = false
+        offline: Bool = false,
+        maxCacheBytes: UInt64 = 256 * 1024 * 1024,
+        delegatedRouters: [String] = []
     ) {
         self.dataDir = dataDir
         self.gatewayHost = gatewayHost
@@ -53,148 +80,284 @@ public struct IPFSConfig: Sendable {
         self.lowPower = lowPower
         self.routingMode = routingMode
         self.offline = offline
+        self.maxCacheBytes = maxCacheBytes
+        self.delegatedRouters = delegatedRouters
     }
 
     public var gatewayAddr: String { "\(gatewayHost):\(gatewayPort)" }
+
+    /// Translate the legacy routing-mode setting + offline flag into the
+    /// shape the Rust reader expects.
+    public var rustRoutingMode: FreedomIpfsRoutingMode {
+        if offline { return .offline }
+        switch routingMode {
+        case .autoclient: return .auto
+        case .dht, .dhtclient: return .lightDht
+        case .disabled: return .offline
+        }
+    }
+
+    /// Shape both the request-concurrency and provider budgets from
+    /// the `lowPower` flag. The freedom-ipfs device-verification
+    /// runbook recommends 4 concurrent requests as the floor for
+    /// mobile — going below that produces "Service Unavailable —
+    /// gateway busy" 503s on real web pages, which fan out 10-20
+    /// parallel subresource requests at once. `lowPower` here is a
+    /// "tighter mobile budget", not "starve the gateway."
+    public var maxConcurrentRequests: Int { lowPower ? 4 : 8 }
+    public var dhtMaxProviders: Int { lowPower ? 4 : 8 }
+    public var dhtQueryTimeoutSeconds: UInt64 { lowPower ? 10 : 15 }
+
 }
 
 @MainActor
 @Observable
 public final class IPFSNode {
     public private(set) var status: IPFSStatus = .idle
+    /// Compile-compatibility shim — the Rust reader has no libp2p peer
+    /// set. UI should hide this.
     public private(set) var peerCount: Int = 0
-    public private(set) var peerID: String = ""
+    /// Compile-compatibility shim — the Rust reader has no Kubo PeerID.
+    /// Always empty. Never surface this in the UI.
+    public let peerID: String = ""
     public private(set) var gatewayURL: URL?
     public private(set) var log: [String] = []
-    /// Snapshot of the config the node was last started with — surfaces
-    /// the routing-mode / lowPower settings to UI without callers
-    /// having to hold the `IPFSConfig` separately. Reset on `stop()`.
     public private(set) var activeRoutingMode: IPFSRoutingMode = .autoclient
     public private(set) var activeLowPower: Bool = true
+    /// Latest snapshot from the polling loop. `nil` until first read.
+    public private(set) var diagnostics: FreedomIpfsDiagnostics?
 
-    // gomobile-bound types live in the `Kubo` framework module under
-    // the Go-package-derived `Mobile*` prefix (because the Go package
-    // is named `mobile`). Same shape as SwarmKit's MobileMobileNode.
-    private var node: MobileIpfsNodeProtocol?
+    private var reader: FreedomIpfsReader?
     private var pollTask: Task<Void, Never>?
+    private var activeConfig: IPFSConfig?
+    /// Bumped on every state transition that should invalidate any
+    /// in-flight `start` / `restart` detached task. After the slow Rust
+    /// call returns, the resumption checks the captured generation
+    /// against this counter — a mismatch means `stop()` (or another
+    /// `start`/`restart`) ran while we were waiting, and the freshly
+    /// configured reader is torn down instead of being published.
+    private var lifecycleGeneration: Int = 0
 
     public init() {}
 
     public static func defaultDataDir() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ipfs", isDirectory: true)
+            .appendingPathComponent("freedom-ipfs", isDirectory: true)
     }
 
     public func start(_ config: IPFSConfig) {
-        guard node == nil else { return }
+        guard reader == nil else { return }
+        lifecycleGeneration += 1
+        let myGeneration = lifecycleGeneration
         activeRoutingMode = config.routingMode
         activeLowPower = config.lowPower
+        activeConfig = config
         status = .starting
-        append("starting kubo (\(config.routingMode.rawValue), \(config.lowPower ? "lowpower" : "default"))…")
+        append("starting freedom-ipfs (\(config.routingMode.rawValue), \(config.lowPower ? "lowpower" : "default"))…")
 
         try? FileManager.default.createDirectory(at: config.dataDir, withIntermediateDirectories: true)
         append("dataDir: \(config.dataDir.path)")
 
-        let options = Self.buildOptions(config)
-        let projectedGatewayURL = URL(string: "http://\(config.gatewayAddr)")
+        let dataDir = config.dataDir
+        let cacheBytes = config.maxCacheBytes
+        let address = config.gatewayAddr
+        let routingMode = config.rustRoutingMode
+        let maxConcurrent = config.maxConcurrentRequests
+        let dhtTimeout = config.dhtQueryTimeoutSeconds
+        let dhtMax = config.dhtMaxProviders
+        let routers = config.delegatedRouters
 
         Task.detached(priority: .userInitiated) { [weak self] in
-            var err: NSError?
-            // MobileStartIpfsNode is synchronous on the Go side; it waits
-            // for the corehttp gateway to signal "ready" before returning.
-            // Run on a background thread so a slow plugin-init or libp2p
-            // bring-up doesn't stall the main actor on cold launch.
-            let n = MobileStartIpfsNode(options, "info", &err)
-            await MainActor.run {
-                guard let self else { return }
-                if let n {
-                    self.node = n
-                    self.peerID = n.peerID()
-                    self.gatewayURL = projectedGatewayURL
+            do {
+                let reader = try FreedomIpfsReader(
+                    dataDirectory: dataDir,
+                    maxCacheBytes: cacheBytes
+                )
+                try reader.startOnlineGateway(
+                    address: address,
+                    delegatedRouters: routers,
+                    routingMode: routingMode,
+                    maxConcurrentRequests: maxConcurrent,
+                    dhtQueryTimeoutSeconds: dhtTimeout,
+                    dhtMaxProviders: dhtMax
+                )
+                let resolvedURL = reader.gatewayURL
+                let snapshot = reader.diagnostics
+                await MainActor.run {
+                    guard let self else {
+                        // Owning IPFSNode was released — tear down the
+                        // freshly-built reader so we don't leak a live
+                        // gateway.
+                        _ = reader.stopGateway()
+                        return
+                    }
+                    guard self.lifecycleGeneration == myGeneration else {
+                        // `stop()` or another `start`/`restart` ran
+                        // while the gateway was warming up. Discard
+                        // this reader instead of publishing it.
+                        _ = reader.stopGateway()
+                        self.append("start cancelled — discarding warmed-up gateway")
+                        return
+                    }
+                    self.reader = reader
+                    self.gatewayURL = resolvedURL
+                    self.diagnostics = snapshot
                     self.status = .running
-                    let pid = self.peerID.isEmpty ? "(unassigned)" : String(self.peerID.prefix(12)) + "…"
-                    self.append("node running · peer \(pid)")
+                    let urlString = resolvedURL?.absoluteString ?? "(no gateway)"
+                    self.append("node running · gateway \(urlString)")
                     self.startPolling()
-                } else {
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self, self.lifecycleGeneration == myGeneration else { return }
                     self.status = .failed
-                    self.append("start failed: \(err?.localizedDescription ?? "unknown error")")
+                    self.append("start failed: \(error.localizedDescription)")
                 }
             }
         }
     }
 
-    /// Apply a new config — stops the node if it's currently running,
-    /// then starts with the new config. Settings-driven — used when the
-    /// user changes routing mode / low-power from the IPFS settings
-    /// page. Idempotent on `.idle` / `.stopped` / `.failed` states
-    /// (just starts).
     public func restart(_ config: IPFSConfig) async {
-        if node != nil {
-            stop()
-            // Best-effort wait for stopped. Don't poll forever — kubo's
-            // shutdown is fast (~15ms in coprobe), 5s is generous for
-            // simulator overhead.
-            for _ in 0..<50 {
-                if status == .stopped || status == .idle || status == .failed { break }
-                try? await Task.sleep(nanoseconds: 100_000_000)
+        // If the reader is alive, reuse its handle by calling
+        // `restartOnlineGateway` — avoids tearing down the cache for a
+        // routing-mode flip. The Rust reader treats `.offline` mode as
+        // a valid restart target, so this also covers the
+        // disabled / cache-only flow.
+        if let reader {
+            lifecycleGeneration += 1
+            let myGeneration = lifecycleGeneration
+            activeRoutingMode = config.routingMode
+            activeLowPower = config.lowPower
+            activeConfig = config
+            status = .starting
+            append("restarting gateway (\(config.routingMode.rawValue), \(config.lowPower ? "lowpower" : "default"))…")
+            let address = config.gatewayAddr
+            let routingMode = config.rustRoutingMode
+            let maxConcurrent = config.maxConcurrentRequests
+            let dhtTimeout = config.dhtQueryTimeoutSeconds
+            let dhtMax = config.dhtMaxProviders
+            let routers = config.delegatedRouters
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try reader.restartOnlineGateway(
+                        address: address,
+                        delegatedRouters: routers,
+                        routingMode: routingMode,
+                        maxConcurrentRequests: maxConcurrent,
+                        dhtQueryTimeoutSeconds: dhtTimeout,
+                        dhtMaxProviders: dhtMax
+                    )
+                }.value
+                // The Rust restart held us across an `await`. If
+                // `stop()` (or another lifecycle action) ran during
+                // that window, the reader we restarted has already
+                // been torn down on the main side — drop the result
+                // instead of re-publishing stale state.
+                guard lifecycleGeneration == myGeneration else { return }
+                gatewayURL = reader.gatewayURL
+                diagnostics = reader.diagnostics
+                status = .running
+                let urlString = gatewayURL?.absoluteString ?? "(no gateway)"
+                append("node running · gateway \(urlString)")
+                return
+            } catch {
+                guard lifecycleGeneration == myGeneration else { return }
+                status = .failed
+                append("restart failed: \(error.localizedDescription)")
+                return
             }
         }
+        // Otherwise start fresh — covers idle/stopped/failed.
         start(config)
     }
 
     public func stop() {
-        guard let n = node else { return }
+        // Bumping the generation invalidates any in-flight `start` /
+        // `restart` task. Without this, a slow startup that completes
+        // after the user toggles off would silently re-publish itself.
+        lifecycleGeneration += 1
+        guard let reader else {
+            // No reader was published yet, but a startup may still be
+            // racing in the background — its post-await guard will
+            // see the gen mismatch and tear itself down. Settle the
+            // visible state here.
+            if status == .starting {
+                status = .stopped
+                append("stopped before startup completed")
+            }
+            return
+        }
         status = .stopping
         append("shutting down…")
         pollTask?.cancel()
         pollTask = nil
-        let captured = n
-        node = nil
+        let captured = reader
+        self.reader = nil
         gatewayURL = nil
         Task.detached(priority: .userInitiated) { [weak self] in
-            do {
-                try captured.shutdown()
-                await MainActor.run {
-                    self?.status = .stopped
-                    self?.peerCount = 0
-                    self?.append("stopped")
-                }
-            } catch {
-                await MainActor.run {
-                    self?.status = .failed
-                    self?.append("shutdown failed: \(error.localizedDescription)")
-                }
+            _ = captured.stopGateway()
+            await MainActor.run {
+                guard let self else { return }
+                self.status = .stopped
+                self.peerCount = 0
+                self.diagnostics = nil
+                self.append("stopped")
             }
         }
     }
 
-    /// Pin `data` into the local kubo blockstore. Returns the resulting
-    /// `/ipfs/<cid>` path. The pin is local-only — does not provide the
-    /// CID to the DHT.
+    /// Writing to IPFS is not part of the Rust reader's surface area.
+    /// Always throws — present for source-level compatibility.
     public func add(_ data: Data) async throws -> String {
-        guard let captured = node else { throw IPFSError.notRunning }
-        return try await withUnsafeThrowingContinuation { cont in
-            DispatchQueue.global(qos: .userInitiated).async {
-                // gomobile annotates the Obj-C return as `_Nonnull`, so
-                // Swift's `error:` → `throws` bridging is not applied;
-                // the method signature is `addBytes(_:error:) -> String`.
-                // Use the explicit error-pointer pattern instead.
-                var err: NSError?
-                let path = captured.addBytes(data, error: &err)
-                if let err {
-                    cont.resume(throwing: err)
-                } else {
-                    cont.resume(returning: path)
-                }
-            }
-        }
+        _ = data
+        throw IPFSError.unsupported
     }
+
+    /// Translate an `ipfs://` / `ipns://` URL or a `/ipfs/...` /
+    /// `/ipns/...` gateway-style path into a localhost gateway URL bound
+    /// to whatever ephemeral port the Rust reader is listening on.
+    public func localGatewayURL(for address: String) -> URL? {
+        reader?.localGatewayURL(for: address)
+    }
+
+    /// Fire-and-forget preload. `0` if the reader isn't running. The
+    /// returned task ID can be passed to `cancelPreload(_:)`.
+    @discardableResult
+    public func preload(path: String) -> UInt64 {
+        reader?.preload(path: path) ?? 0
+    }
+
+    @discardableResult
+    public func cancelPreload(taskID: UInt64) -> Bool {
+        reader?.cancelPreload(taskID: taskID) ?? false
+    }
+
+    // MARK: - Lifecycle hooks (called by the app)
+
+    public func enterBackground() {
+        _ = reader?.enterBackground()
+    }
+
+    public func enterForeground() {
+        _ = reader?.enterForeground()
+    }
+
+    public func handleLowMemory(maxCacheBytes: UInt64 = 0) {
+        _ = reader?.handleLowMemory(maxCacheBytes: maxCacheBytes)
+    }
+
+    public func handleNetworkChange() {
+        _ = reader?.handleNetworkChange()
+    }
+
+    // MARK: - Internals
 
     private func startPolling() {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self, let node = self.node else { break }
-                self.peerCount = Int(node.connectedPeerCount())
+                guard let self, let reader = self.reader else { break }
+                let snapshot = reader.diagnostics
+                self.diagnostics = snapshot
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
         }
@@ -204,15 +367,5 @@ public final class IPFSNode {
         let ts = Date().formatted(date: .omitted, time: .standard)
         log.append("\(ts)  \(line)")
         if log.count > 500 { log.removeFirst(log.count - 500) }
-    }
-
-    private static func buildOptions(_ c: IPFSConfig) -> MobileIpfsNodeOptions {
-        let o = MobileIpfsNodeOptions()
-        o.dataDir = c.dataDir.path
-        o.gatewayAddr = c.gatewayAddr
-        o.offline = c.offline
-        o.lowPower = c.lowPower
-        o.routingMode = c.routingMode.rawValue
-        return o
     }
 }

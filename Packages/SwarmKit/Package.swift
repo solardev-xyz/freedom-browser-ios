@@ -1,17 +1,12 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
-// One Swift package, two library products (SwarmKit + IPFSKit), one
-// underlying binary target. The combined `Mobile.xcframework` (built by
-// freedom-node-mobile/Makefile build-ios) embeds both bee-lite and kubo
-// into a single Go runtime — required because two gomobile-bound
-// xcframeworks cannot coexist in one iOS process (they conflict over Go
-// runtime TLS slots and crash at startup, regardless of which is
-// actually used).
-//
-// The two Swift targets share the binary so they share the runtime.
-// Each exposes only its own slice of the gomobile-generated Obj-C
-// surface (MobileMobile* for bee, MobileIpfs* for kubo).
+// One Swift package, two library products. SwarmKit links the gomobile
+// `Mobile.xcframework` (bee-lite) from freedom-node-mobile. IPFSKit
+// links the Rust `FreedomIpfs.xcframework` from freedom-ipfs — a
+// lightweight read-only IPFS reader. The two frameworks are
+// independent (Rust has no Go runtime), so they coexist in one process
+// without the gomobile-TLS-slot conflict that prevented this before.
 let package = Package(
     name: "SwarmKit",
     platforms: [.iOS(.v17)],
@@ -20,7 +15,7 @@ let package = Package(
         .library(name: "IPFSKit", targets: ["IPFSKit"]),
     ],
     targets: [
-        // Combined bee+kubo xcframework built by
+        // Bee-lite gomobile binding from
         // solardev-xyz/freedom-node-mobile@ios-build-target. SHA256 is
         // verified by SwiftPM before unpacking; bumps require a new tag,
         // a new release, and a new checksum here.
@@ -30,6 +25,14 @@ let package = Package(
             name: "Mobile",
             url: "https://github.com/solardev-xyz/freedom-node-mobile/releases/download/ios-v0.1.0/Mobile.xcframework.zip",
             checksum: "270a6ee96c03c2bd8d6c1197f488a6ec6810f2391e44225e2d9ceff398664aed"
+        ),
+        // Rust read-only IPFS reader from flotob/freedom-ipfs. Built
+        // locally during the spike via
+        // `cargo run -p xtask -- build-xcframework`. Replace with a
+        // `url:`/`checksum:` pair once a release artifact is published.
+        .binaryTarget(
+            name: "FreedomIpfs",
+            path: "../../../freedom-ipfs/target/ios-xcframework/FreedomIpfs.xcframework"
         ),
         .target(
             name: "SwarmKit",
@@ -43,9 +46,11 @@ let package = Package(
         ),
         .target(
             name: "IPFSKit",
-            dependencies: ["Mobile"],
+            dependencies: ["FreedomIpfs"],
             linkerSettings: [
-                .linkedLibrary("resolv"),
+                // Rust hyper / reqwest pulls in SystemConfiguration for
+                // proxy/network config detection on Apple platforms.
+                .linkedFramework("SystemConfiguration"),
             ]
         ),
     ]

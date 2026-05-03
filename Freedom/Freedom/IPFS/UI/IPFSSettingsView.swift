@@ -1,10 +1,11 @@
 import IPFSKit
 import SwiftUI
 
-/// Per-section settings page for the embedded kubo node. Reachable from
-/// the top-level `SettingsView` hub. Changes write through to
-/// `SettingsStore` immediately; the kubo node is restarted when the
-/// user navigates back, so a quick toggle-and-revert does no work.
+/// Per-section settings page for the embedded IPFS reader (Rust
+/// `freedom-ipfs`). Reachable from the top-level `SettingsView` hub.
+/// Changes write through to `SettingsStore` immediately; the gateway
+/// is restarted when the user navigates back, so a quick
+/// toggle-and-revert does no work.
 @MainActor
 struct IPFSSettingsView: View {
     @Environment(SettingsStore.self) private var settings
@@ -24,16 +25,16 @@ struct IPFSSettingsView: View {
             Section {
                 Toggle("Enable", isOn: enableBinding)
             } footer: {
-                Text("Run the embedded IPFS (kubo) node on app launch and right now. Disable to free CPU / memory; ipfs:// page loads will fail until re-enabled.")
+                Text("Run the embedded IPFS reader on app launch and right now. Disable to free CPU / memory; ipfs:// page loads will fail until re-enabled.")
             }
 
             Section {
                 Picker("Routing", selection: $settings.ipfsRoutingMode) {
-                    ForEach(IPFSRoutingMode.allCases, id: \.self) { mode in
+                    ForEach(visibleRoutingModes, id: \.self) { mode in
                         Text(displayName(mode)).tag(mode)
                     }
                 }
-                Toggle("Low power", isOn: $settings.ipfsLowPower)
+                Toggle("Low resource", isOn: $settings.ipfsLowPower)
             } header: {
                 Text("Routing")
             } footer: {
@@ -43,11 +44,25 @@ struct IPFSSettingsView: View {
             Section {
                 LabeledContent("Status", value: ipfs.status.rawValue.capitalized)
                 LabeledContent("Active routing", value: ipfs.activeRoutingMode.rawValue)
-                LabeledContent("Active power", value: ipfs.activeLowPower ? "low" : "default")
+                LabeledContent("Active budget", value: ipfs.activeLowPower ? "low" : "default")
+                if let gateway = ipfs.gatewayURL {
+                    LabeledContent("Gateway", value: gateway.absoluteString)
+                }
+                if let diag = ipfs.diagnostics {
+                    LabeledContent(
+                        "Cache",
+                        value: "\(diag.stats.blockCount) blocks · " +
+                            ByteCountFormatter.string(
+                                fromByteCount: Int64(diag.stats.totalBytes),
+                                countStyle: .file
+                            )
+                    )
+                    LabeledContent("Preloads", value: "\(diag.activePreloadCount)")
+                }
             } header: {
                 Text("Live")
             } footer: {
-                Text("Settings apply on the next node restart. Leaving this page restarts the node automatically if anything changed.")
+                Text("Settings apply on the next gateway restart. Leaving this page restarts the gateway automatically if anything changed.")
             }
         }
         .navigationTitle("IPFS")
@@ -61,20 +76,26 @@ struct IPFSSettingsView: View {
         }
     }
 
+    /// `dht` and `dhtclient` both map to the Rust reader's `.lightDht`
+    /// — hide the redundant `dht` row from the picker so the user
+    /// doesn't see two synonymous options. The case stays in the enum
+    /// so settings persisted from earlier builds still load.
+    private var visibleRoutingModes: [IPFSRoutingMode] {
+        IPFSRoutingMode.allCases.filter { $0 != .dht }
+    }
+
     private var footerText: String {
         switch settings.ipfsRoutingMode {
-        case .autoclient: "Hybrid: delegated routing + light DHT. Cheapest, default."
-        case .dhtclient:  "DHT lookups only. No delegated routing — slightly higher reachability cost, no third-party trust."
-        case .dht:        "Full DHT participation. Highest battery / bandwidth use; fully decentralised content routing."
-        case .disabled:   "No content routing. Gateway-only mode — works for content already pinned locally."
+        case .autoclient: "Hybrid: delegated routing + light DHT fallback. Cheapest, default."
+        case .dhtclient, .dht: "Light DHT only. No delegated routing — slightly higher reachability cost, no third-party trust."
+        case .disabled:   "Cache-only. The local gateway serves blocks already cached; no online retrieval."
         }
     }
 
     private func displayName(_ mode: IPFSRoutingMode) -> String {
         switch mode {
         case .autoclient: "Auto"
-        case .dhtclient:  "Light DHT"
-        case .dht:        "Full DHT"
+        case .dhtclient, .dht:  "Light DHT"
         case .disabled:   "Off"
         }
     }
@@ -95,6 +116,12 @@ struct IPFSSettingsView: View {
     }
 
     private func applyIfChanged() {
+        // Don't restart a disabled node — the user has explicitly
+        // toggled IPFS off (the enable binding already called
+        // `ipfs.stop()`). Without this guard, changing routing or
+        // low-power and then disabling-and-leaving would restart the
+        // gateway right after stopping it.
+        guard settings.ipfsNodeEnabled else { return }
         guard let initialRoutingMode, let initialLowPower else { return }
         let changed =
             initialRoutingMode != settings.ipfsRoutingMode

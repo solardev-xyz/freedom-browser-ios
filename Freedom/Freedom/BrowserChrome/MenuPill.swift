@@ -13,7 +13,6 @@ struct MenuPill: View {
     let swarmStatus: SwarmStatus
     let swarmPeerCount: Int
     let ipfsStatus: IPFSStatus
-    let ipfsPeerCount: Int
     let swarmStatsLine: String
     let ipfsStatsLine: String
 
@@ -84,8 +83,7 @@ struct MenuPill: View {
             NodeStatusIcon(
                 swarmStatus: swarmStatus,
                 swarmPeerCount: swarmPeerCount,
-                ipfsStatus: ipfsStatus,
-                ipfsPeerCount: ipfsPeerCount
+                ipfsStatus: ipfsStatus
             )
         }
         .modifier(NativeGlassMenuStyle())

@@ -12,14 +12,13 @@ import IPFSKit
 ///       0 arcs · <10 peers
 ///       1 arc  · 10–99 peers
 ///       2 arcs · 100+ peers
-///   - Arcs below the dot (IPFS peer-count tiers, colored independently
-///     by IPFS status): same tiers, mirrored. Lets the user read
-///     reachability of both nodes at a glance without opening the menu.
+///   - Arcs below the dot (IPFS reader state — no peers; one arc means
+///     gateway is up, dot color tracks status). The Rust reader has no
+///     libp2p peer set so we don't tier IPFS by peer count.
 struct NodeStatusIcon: View {
     let swarmStatus: SwarmStatus
     let swarmPeerCount: Int
     let ipfsStatus: IPFSStatus
-    let ipfsPeerCount: Int
 
     var body: some View {
         ZStack {
@@ -29,9 +28,8 @@ struct NodeStatusIcon: View {
             // Swarm: arcs above
             if swarmArcCount >= 1 { arc(diameter: 12, color: swarmColor, above: true) }
             if swarmArcCount >= 2 { arc(diameter: 18, color: swarmColor, above: true) }
-            // IPFS: arcs below
-            if ipfsArcCount >= 1  { arc(diameter: 12, color: ipfsColor,  above: false) }
-            if ipfsArcCount >= 2  { arc(diameter: 18, color: ipfsColor,  above: false) }
+            // IPFS: a single arc below when the gateway is up.
+            if ipfsStatus == .running { arc(diameter: 12, color: ipfsColor, above: false) }
         }
         .frame(width: 22, height: 22)
         .accessibilityLabel(accessibilityLabel)
@@ -60,12 +58,11 @@ struct NodeStatusIcon: View {
         switch ipfsStatus {
         case .idle, .stopping, .stopped, .failed: return .red
         case .starting:                            return .orange
-        case .running:                             return ipfsPeerCount == 0 ? .orange : .green
+        case .running:                             return .green
         }
     }
 
     private var swarmArcCount: Int { arcCount(running: swarmStatus == .running, peers: swarmPeerCount) }
-    private var ipfsArcCount: Int  { arcCount(running: ipfsStatus  == .running, peers: ipfsPeerCount) }
 
     private func arcCount(running: Bool, peers: Int) -> Int {
         guard running else { return 0 }
@@ -75,37 +72,34 @@ struct NodeStatusIcon: View {
     }
 
     private var accessibilityLabel: String {
-        "Swarm: \(describe(status: swarmStatus.rawValue, peers: swarmPeerCount, isRunning: swarmStatus == .running)). " +
-        "IPFS: \(describe(status: ipfsStatus.rawValue, peers: ipfsPeerCount, isRunning: ipfsStatus == .running))."
+        "Swarm: \(describeSwarm()). IPFS: \(ipfsStatus.rawValue)."
     }
 
-    private func describe(status: String, peers: Int, isRunning: Bool) -> String {
-        guard isRunning else { return status }
-        return peers == 0 ? "running, connecting" : "running, \(peers) peer\(peers == 1 ? "" : "s")"
+    private func describeSwarm() -> String {
+        guard swarmStatus == .running else { return swarmStatus.rawValue }
+        return swarmPeerCount == 0
+            ? "running, connecting"
+            : "running, \(swarmPeerCount) peer\(swarmPeerCount == 1 ? "" : "s")"
     }
 }
 
 #Preview {
     HStack(spacing: 24) {
         VStack(spacing: 4) {
-            NodeStatusIcon(swarmStatus: .stopped, swarmPeerCount: 0, ipfsStatus: .stopped, ipfsPeerCount: 0)
+            NodeStatusIcon(swarmStatus: .stopped, swarmPeerCount: 0, ipfsStatus: .stopped)
             Text("both off").font(.caption2)
         }
         VStack(spacing: 4) {
-            NodeStatusIcon(swarmStatus: .running, swarmPeerCount: 5, ipfsStatus: .stopped, ipfsPeerCount: 0)
+            NodeStatusIcon(swarmStatus: .running, swarmPeerCount: 5, ipfsStatus: .stopped)
             Text("S 5 / I off").font(.caption2)
         }
         VStack(spacing: 4) {
-            NodeStatusIcon(swarmStatus: .running, swarmPeerCount: 50, ipfsStatus: .running, ipfsPeerCount: 5)
-            Text("S 50 / I 5").font(.caption2)
+            NodeStatusIcon(swarmStatus: .running, swarmPeerCount: 50, ipfsStatus: .running)
+            Text("S 50 / I on").font(.caption2)
         }
         VStack(spacing: 4) {
-            NodeStatusIcon(swarmStatus: .running, swarmPeerCount: 200, ipfsStatus: .running, ipfsPeerCount: 50)
-            Text("S 200 / I 50").font(.caption2)
-        }
-        VStack(spacing: 4) {
-            NodeStatusIcon(swarmStatus: .running, swarmPeerCount: 200, ipfsStatus: .running, ipfsPeerCount: 200)
-            Text("both 200").font(.caption2)
+            NodeStatusIcon(swarmStatus: .running, swarmPeerCount: 200, ipfsStatus: .running)
+            Text("S 200 / I on").font(.caption2)
         }
     }
     .padding()

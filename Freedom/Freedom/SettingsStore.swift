@@ -58,15 +58,15 @@ final class SettingsStore {
     var beeNodeMode: BeeNodeMode {
         didSet { defaults.set(beeNodeMode.rawValue, forKey: Keys.beeNodeMode) }
     }
-    /// kubo content-routing mode. `.autoclient` is the default —
-    /// delegated-routing + light DHT client, the cheapest reachable
-    /// configuration on mobile.
+    /// IPFS reader content-routing mode. `.autoclient` is the default
+    /// — delegated routing with a light-DHT fallback. Cheapest config
+    /// on mobile.
     var ipfsRoutingMode: IPFSRoutingMode {
         didSet { defaults.set(ipfsRoutingMode.rawValue, forKey: Keys.ipfsRoutingMode) }
     }
-    /// Whether kubo runs with reduced libp2p connection/stream limits
-    /// (DHT server off, smaller pools). Right setting for mobile by
-    /// default; advanced users can disable for a fuller swarm presence.
+    /// Whether the reader runs on tighter request/provider budgets
+    /// (lower concurrency and DHT fan-out). Right setting for mobile
+    /// by default.
     var ipfsLowPower: Bool {
         didSet { defaults.set(ipfsLowPower, forKey: Keys.ipfsLowPower) }
     }
@@ -112,13 +112,13 @@ final class SettingsStore {
     var swarmNodeEnabled: Bool {
         didSet { defaults.set(swarmNodeEnabled, forKey: Keys.swarmNodeEnabled) }
     }
-    /// Whether the embedded IPFS (kubo) node should be running. User-
-    /// togglable from the IPFS node sheet. Default **false** as a
-    /// short-term performance fix — running both nodes in parallel
-    /// degrades phone responsiveness too much before the lighter
-    /// node clients land. False means the node never starts on app
-    /// launch and `ipfs://` / `ipns://` page loads (including ENS-
-    /// dispatched ones) fail until re-enabled.
+    /// Whether the embedded IPFS reader should be running. User-
+    /// togglable from the IPFS node sheet. Default **false** so
+    /// upgrades from the old kubo-backed build don't auto-start the
+    /// reader before the user has seen its settings page. False means
+    /// the reader never starts on app launch and `ipfs://` / `ipns://`
+    /// page loads (including ENS-dispatched ones) fail until
+    /// re-enabled.
     var ipfsNodeEnabled: Bool {
         didSet { defaults.set(ipfsNodeEnabled, forKey: Keys.ipfsNodeEnabled) }
     }

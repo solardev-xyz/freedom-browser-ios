@@ -2,14 +2,14 @@ import IPFSKit
 import SwiftUI
 import UIKit
 
-/// Container view for the embedded IPFS (kubo) node — status, peer ID,
-/// gateway, routing mode. Diagnostic logs hang off an unobtrusive footer
-/// link, mirroring the Swarm `NodeHomeView` shape.
+/// Container view for the embedded IPFS reader (Rust `freedom-ipfs`):
+/// status, gateway URL, cache health, retrieval/routing counters, and
+/// active preloads. The reader is a read-only browser path — there is
+/// no PeerID and no libp2p peer set, so the previous identity card
+/// has been replaced with diagnostics-derived health rows.
 @MainActor
 struct IpfsNodeHomeView: View {
     @Environment(IPFSNode.self) private var ipfs
-    @Environment(Vault.self) private var vault
-    @Environment(IpfsIdentityCoordinator.self) private var ipfsIdentity
     @Environment(SettingsStore.self) private var settings
 
     var body: some View {
@@ -18,7 +18,9 @@ struct IpfsNodeHomeView: View {
                 enableCard
                 if settings.ipfsNodeEnabled {
                     statusCard
-                    identityCard
+                    cacheCard
+                    retrievalCard
+                    routingCard
                     logsLink
                 }
             }
@@ -26,18 +28,15 @@ struct IpfsNodeHomeView: View {
         }
     }
 
-    /// Top-level enable/disable for the IPFS node. Defaults to off
-    /// because running both kubo and bee in parallel currently degrades
-    /// phone performance too much before the lighter clients land.
-    /// Toggle ON kicks off a runtime boot with the current settings
-    /// (routing mode, low-power); toggle OFF stops the node and frees
-    /// its goroutines, libp2p connections, and Go heap.
+    /// Top-level enable/disable. Toggle ON kicks off a runtime boot of
+    /// the Rust gateway with the current settings; toggle OFF stops
+    /// the gateway and clears the in-memory diagnostics.
     private var enableCard: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Enable")
                     .font(.headline)
-                Text("Run the embedded IPFS (kubo) node")
+                Text("Run the embedded IPFS reader")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -79,10 +78,6 @@ struct IpfsNodeHomeView: View {
                     .font(.headline)
                     .monospaced()
                 Spacer()
-                Text("\(ipfs.peerCount) peer\(ipfs.peerCount == 1 ? "" : "s")")
-                    .font(.subheadline)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
             }
             Divider().opacity(0.3)
             row(label: "Routing", value: ipfs.activeRoutingMode.rawValue)
@@ -98,34 +93,18 @@ struct IpfsNodeHomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private var identityCard: some View {
+    private var cacheCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Identity").font(.caption).foregroundStyle(.secondary)
+            Text("Cache").font(.caption).foregroundStyle(.secondary)
+            row(label: "Blocks", value: "\(diagnostics?.stats.blockCount ?? 0)")
             row(
-                label: "Peer ID",
-                value: ipfs.peerID.isEmpty ? "—" : truncate(ipfs.peerID),
-                copyable: ipfs.peerID.isEmpty ? nil : ipfs.peerID
+                label: "Size",
+                value: ByteCountFormatter.string(
+                    fromByteCount: Int64(diagnostics?.stats.totalBytes ?? 0),
+                    countStyle: .file
+                )
             )
-            HStack(alignment: .firstTextBaseline) {
-                Text("Source")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if ipfsIdentity.status == .swapping {
-                    Text("Updating…")
-                        .font(.subheadline)
-                        .foregroundStyle(.orange)
-                } else {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .frame(width: 8, height: 8)
-                            .foregroundStyle(isVaultDerived ? .green : .gray)
-                        Text(isVaultDerived ? "Vault-derived" : "Random")
-                            .font(.subheadline)
-                            .foregroundStyle(isVaultDerived ? .primary : .secondary)
-                    }
-                }
-            }
+            row(label: "Active preloads", value: "\(diagnostics?.activePreloadCount ?? 0)")
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -133,17 +112,37 @@ struct IpfsNodeHomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    /// True iff the running node's PeerID matches what the vault's seed
-    /// would derive at the SLIP-0010 IPFS path. Computed on every render
-    /// — cheap (~50µs of HMAC-SHA512 + SHA-512); avoids a stale cache.
-    private var isVaultDerived: Bool {
-        guard !ipfs.peerID.isEmpty else { return false }
-        guard vault.state == .unlocked else { return false }
-        guard let seed = try? vault.bip39Seed() else { return false }
-        guard let identity = try? IpfsIdentityKey.derive(fromSeed: seed) else { return false }
-        let derived = IpfsIdentityFormat.peerID(publicKey: identity.publicKey)
-        return derived == ipfs.peerID
+    private var retrievalCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Retrieval").font(.caption).foregroundStyle(.secondary)
+            row(label: "Cache hits", value: "\(diagnostics?.retrievalStats.cacheHits ?? 0)")
+            row(label: "HTTP provider blocks", value: "\(diagnostics?.retrievalStats.httpProviderBlocks ?? 0)")
+            row(label: "Bitswap blocks", value: "\(diagnostics?.retrievalStats.bitswapBlocks ?? 0)")
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
+
+    private var routingCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Routing").font(.caption).foregroundStyle(.secondary)
+            row(label: "Delegated lookups", value: "\(diagnostics?.routingStats.delegatedProviderLookups ?? 0)")
+            row(label: "Delegated results", value: "\(diagnostics?.routingStats.delegatedProviderResults ?? 0)")
+            row(label: "Delegated errors", value: "\(diagnostics?.routingStats.delegatedProviderErrors ?? 0)")
+            Divider().opacity(0.3)
+            row(label: "DHT lookups", value: "\(diagnostics?.routingStats.dhtProviderLookups ?? 0)")
+            row(label: "DHT results", value: "\(diagnostics?.routingStats.dhtProviderResults ?? 0)")
+            row(label: "DHT errors", value: "\(diagnostics?.routingStats.dhtProviderErrors ?? 0)")
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var diagnostics: FreedomIpfsDiagnostics? { ipfs.diagnostics }
 
     private var logsLink: some View {
         NavigationLink {
@@ -188,12 +187,5 @@ struct IpfsNodeHomeView: View {
                 .foregroundStyle(.secondary)
             }
         }
-    }
-
-    /// PeerIDs are 50+ chars; ellide the middle so both ends are visible.
-    /// Same idiom the Swarm node sheet uses for long ENS names.
-    private func truncate(_ s: String) -> String {
-        guard s.count > 16 else { return s }
-        return "\(s.prefix(8))…\(s.suffix(6))"
     }
 }

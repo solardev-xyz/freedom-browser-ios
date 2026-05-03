@@ -1,7 +1,9 @@
+import Network
 import SwiftData
 import SwiftUI
 import SwarmKit
 import IPFSKit
+import UIKit
 
 struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
@@ -10,7 +12,6 @@ struct ContentView: View {
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(Vault.self) private var vault
     @Environment(BeeIdentityCoordinator.self) private var beeIdentity
-    @Environment(IpfsIdentityCoordinator.self) private var ipfsIdentity
     @Environment(SettingsStore.self) private var settings
     @Environment(\.scenePhase) private var scenePhase
 
@@ -205,41 +206,53 @@ struct ContentView: View {
             }
         }
         .onChange(of: scenePhase) { _, new in
-            if new == .background {
+            switch new {
+            case .background:
                 Task { await tabStore.captureActive() }
                 // Auto-lock on background — if a thief grabs an unlocked
                 // phone and switches away from Freedom, the wallet relocks
                 // immediately. `lock()` is a no-op when already locked/empty.
                 vault.lock()
+                // Hint the Rust reader to drop background work — bitswap
+                // chatter, idle DHT requests — so we don't eat suspended
+                // CPU budget.
+                ipfs.enterBackground()
+            case .active:
+                ipfs.enterForeground()
+            case .inactive:
+                break
+            @unknown default:
+                break
             }
         }
-        // Self-heal hooks: if a previous identity swap was interrupted
-        // (app crash, force-quit) either node could be running with a
-        // stale identity. Both coordinators' `checkAndHeal` are
-        // idempotent and gate internally — safe to call on every
-        // transition.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            // The Rust reader trims its block-store cache when it gets
+            // this signal. `0` keeps the existing cap; pass a smaller
+            // budget to force a harder evict.
+            ipfs.handleLowMemory()
+        }
+        .task {
+            await observeIpfsNetworkChanges()
+        }
+        // Self-heal hook: if a previous Swarm identity swap was
+        // interrupted (app crash, force-quit) the node could be
+        // running with a stale identity. Idempotent and gates
+        // internally. The IPFS reader has no per-user identity to
+        // sync, so it has no equivalent hook here.
         .onChange(of: vault.state) { _, _ in
             beeIdentity.checkAndHeal(vault: vault, swarm: swarm)
-            ipfsIdentity.checkAndHeal(vault: vault, ipfs: ipfs)
         }
         .onChange(of: swarm.status) { _, _ in
             beeIdentity.checkAndHeal(vault: vault, swarm: swarm)
         }
-        .onChange(of: ipfs.status) { _, _ in
-            ipfsIdentity.checkAndHeal(vault: vault, ipfs: ipfs)
-        }
-        .modifier(NodeIdentityAlerts(
-            beeIdentity: beeIdentity,
-            ipfsIdentity: ipfsIdentity
-        ))
+        .modifier(BeeIdentityAlert(beeIdentity: beeIdentity))
     }
 
-    /// Two parallel identity-failure alerts (Swarm + IPFS). Pulled out
-    /// of the main body so the type-checker doesn't blow its budget on
-    /// the already-long ZStack/sheet chain.
-    private struct NodeIdentityAlerts: ViewModifier {
+    /// Swarm-only identity-failure alert. Pulled out of the main body
+    /// so the type-checker doesn't blow its budget on the already-long
+    /// ZStack/sheet chain.
+    private struct BeeIdentityAlert: ViewModifier {
         let beeIdentity: BeeIdentityCoordinator
-        let ipfsIdentity: IpfsIdentityCoordinator
 
         func body(content: Content) -> some View {
             content
@@ -253,19 +266,6 @@ struct ContentView: View {
                 ) { _ in
                     Button("Retry") { beeIdentity.retry() }
                     Button("Cancel", role: .cancel) { beeIdentity.dismissError() }
-                } message: { message in
-                    Text(message)
-                }
-                .alert(
-                    "IPFS node update failed",
-                    isPresented: Binding(
-                        get: { ipfsIdentity.isFailed },
-                        set: { if !$0 { ipfsIdentity.dismissError() } }
-                    ),
-                    presenting: ipfsIdentity.failedMessage
-                ) { _ in
-                    Button("Retry") { ipfsIdentity.retry() }
-                    Button("Cancel", role: .cancel) { ipfsIdentity.dismissError() }
                 } message: { message in
                     Text(message)
                 }
@@ -329,7 +329,6 @@ struct ContentView: View {
                         swarmStatus: swarm.status,
                         swarmPeerCount: swarm.peerCount,
                         ipfsStatus: ipfs.status,
-                        ipfsPeerCount: ipfs.peerCount,
                         swarmStatsLine: swarmStatsLine,
                         ipfsStatsLine: ipfsStatsLine,
                         isURLBookmarked: isActiveURLBookmarked,
@@ -497,9 +496,15 @@ struct ContentView: View {
         nodeLine(prefix: "Swarm", running: swarm.status == .running, peerCount: swarm.peerCount, status: swarm.status.rawValue)
     }
 
-    /// "IPFS · 39 peers" / "IPFS · Off". Same shape as Swarm.
+    /// "IPFS · 12 blocks cached" / "IPFS · Off". The Rust reader has no
+    /// libp2p peer set — show cache health instead so the menu line
+    /// reflects something useful.
     private var ipfsStatsLine: String {
-        nodeLine(prefix: "IPFS", running: ipfs.status == .running, peerCount: ipfs.peerCount, status: ipfs.status.rawValue)
+        guard ipfs.status == .running else {
+            return "IPFS · \(ipfs.status.rawValue.capitalized)"
+        }
+        let blocks = ipfs.diagnostics?.stats.blockCount ?? 0
+        return "IPFS · \(blocks) block\(blocks == 1 ? "" : "s") cached"
     }
 
     private func nodeLine(prefix: String, running: Bool, peerCount: Int, status: String) -> String {
@@ -641,5 +646,60 @@ struct ContentView: View {
         exitEditMode()
         addressText = browserURL.url.absoluteString
         tabStore.navigateActive(to: browserURL)
+    }
+
+    /// Streams `NWPath` updates and pokes the Rust reader whenever the
+    /// active interface class flips (Wi-Fi ↔ cell ↔ none). The reader
+    /// drops in-flight DHT/HTTP-provider work and re-resolves on the
+    /// new path — without this, a Wi-Fi → cellular handoff would leave
+    /// stuck connections to peers that are no longer reachable.
+    ///
+    /// `path.availableInterfaces` is not the active route and its
+    /// order isn't stable, so we derive the active class from
+    /// `path.status` + `path.usesInterfaceType(...)`. The first
+    /// emission is treated as the baseline (whatever the reader
+    /// started on), not a transition to react to — otherwise every
+    /// cold launch would burn a `handleNetworkChange()` immediately
+    /// after the gateway came up.
+    private func observeIpfsNetworkChanges() async {
+        let monitor = NWPathMonitor()
+        let stream = AsyncStream<IpfsNetworkClass> { continuation in
+            monitor.pathUpdateHandler = { path in
+                continuation.yield(IpfsNetworkClass(path: path))
+            }
+            continuation.onTermination = { _ in monitor.cancel() }
+        }
+        monitor.start(queue: DispatchQueue.global(qos: .utility))
+        var last: IpfsNetworkClass?
+        for await current in stream {
+            defer { last = current }
+            guard last != nil else { continue } // baseline only
+            if current != last {
+                ipfs.handleNetworkChange()
+            }
+        }
+    }
+}
+
+/// Active-interface classification for `NWPathMonitor`. `none` covers
+/// both unsatisfied paths and paths whose type we don't model — the
+/// reader treats them the same (drop in-flight work, retry on the
+/// next satisfied path).
+private enum IpfsNetworkClass: Equatable {
+    case none
+    case wifi
+    case cellular
+    case wiredEthernet
+    case other
+    case loopback
+
+    init(path: NWPath) {
+        guard path.status == .satisfied else { self = .none; return }
+        if path.usesInterfaceType(.wifi) { self = .wifi }
+        else if path.usesInterfaceType(.cellular) { self = .cellular }
+        else if path.usesInterfaceType(.wiredEthernet) { self = .wiredEthernet }
+        else if path.usesInterfaceType(.loopback) { self = .loopback }
+        else if path.usesInterfaceType(.other) { self = .other }
+        else { self = .none }
     }
 }
