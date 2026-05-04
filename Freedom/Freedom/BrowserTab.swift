@@ -294,7 +294,6 @@ final class BrowserTab {
     /// changes (redirects, anchor clicks, pushState).
     private func loadInWebView(_ url: URL) {
         adblock.updateURL(url, for: contentController)
-        triggerIpfsPreload(for: url)
         webView.load(URLRequest(url: url))
     }
 
@@ -304,7 +303,16 @@ final class BrowserTab {
     /// so the scheme-handler request typically hits a hot block tree.
     /// Replaces any in-flight preload (one per tab); the previous
     /// task is cancelled.
-    private func triggerIpfsPreload(for url: URL) {
+    ///
+    /// Triggered from `WKNavigationDelegate.decidePolicyFor` rather
+    /// than from `loadInWebView` — that's the earliest hook that sees
+    /// every main-frame navigation, including WebKit-initiated ones
+    /// (in-page link clicks, JS-driven `location.href` assignments,
+    /// pushState navigations) which never reach `loadInWebView`.
+    /// Address-bar / ENS / tab-restore loads also flow through
+    /// `decidePolicyFor` (as `.other` navigation type) so coverage
+    /// is preserved without a second trigger site.
+    fileprivate func triggerIpfsPreload(for url: URL) {
         cancelActivePreload()
         guard let scheme = url.scheme?.lowercased(),
               scheme == "ipfs" || scheme == "ipns",
@@ -678,6 +686,31 @@ final class BrowserTab {
 
 private final class NavDelegate: NSObject, WKNavigationDelegate {
     weak var owner: BrowserTab?
+
+    /// Earliest navigation hook — fires before WebKit issues the
+    /// request, on every main-frame navigation regardless of how it
+    /// started (address bar via `webView.load`, ENS resolution, tab
+    /// restore, in-page link click, JS `location.href`, history
+    /// nav, reload). For `ipfs://` / `ipns://` we use it to warm
+    /// the Rust reader's routing/blocks ahead of the scheme handler
+    /// being asked. We never block the navigation — always
+    /// `.allow`.
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        if let url = navigationAction.request.url,
+           let scheme = url.scheme?.lowercased(),
+           (scheme == "ipfs" || scheme == "ipns"),
+           navigationAction.targetFrame?.isMainFrame == true
+        {
+            MainActor.assumeIsolated {
+                owner?.triggerIpfsPreload(for: url)
+            }
+        }
+        decisionHandler(.allow)
+    }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         // Fresh EIP-6963 UUID + idempotent swarm preload per page session.
