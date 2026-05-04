@@ -68,7 +68,7 @@ public struct IPFSConfig: Sendable {
         dataDir: URL,
         gatewayHost: String = "127.0.0.1",
         gatewayPort: Int = 0,
-        lowPower: Bool = true,
+        lowPower: Bool = false,
         routingMode: IPFSRoutingMode = .autoclient,
         offline: Bool = false,
         maxCacheBytes: UInt64 = 256 * 1024 * 1024,
@@ -97,16 +97,20 @@ public struct IPFSConfig: Sendable {
         }
     }
 
-    /// Shape both the request-concurrency and provider budgets from
-    /// the `lowPower` flag. The freedom-ipfs device-verification
-    /// runbook recommends 4 concurrent requests as the floor for
-    /// mobile — going below that produces "Service Unavailable —
-    /// gateway busy" 503s on real web pages, which fan out 10-20
-    /// parallel subresource requests at once. `lowPower` here is a
-    /// "tighter mobile budget", not "starve the gateway."
+    /// Request-concurrency budget shaped by the `lowPower` flag. The
+    /// freedom-ipfs latency-polish branch's mobile-web harness
+    /// validates 8 as the performant default — anything below 4
+    /// produces "Service Unavailable — gateway busy" 503s on real
+    /// web pages, which fan out 10-20 parallel subresource requests
+    /// at once. `lowPower` here is a "tighter mobile budget", not
+    /// "starve the gateway."
     public var maxConcurrentRequests: Int { lowPower ? 4 : 8 }
-    public var dhtMaxProviders: Int { lowPower ? 4 : 8 }
-    public var dhtQueryTimeoutSeconds: UInt64 { lowPower ? 10 : 15 }
+    /// DHT budgets are kept identical across modes for now — the
+    /// latency-polish profile uses 4 providers / 10s timeout
+    /// regardless of the request-concurrency budget. The handoff
+    /// flagged these as the measured performant numbers.
+    public var dhtMaxProviders: Int { 4 }
+    public var dhtQueryTimeoutSeconds: UInt64 { 10 }
 
 }
 

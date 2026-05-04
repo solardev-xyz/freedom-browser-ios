@@ -142,7 +142,7 @@ final class SettingsStore {
             Keys.beeNodeMode: BeeNodeMode.ultraLight.rawValue,
             Keys.hasCompletedPublishSetup: false,
             Keys.ipfsRoutingMode: IPFSRoutingMode.autoclient.rawValue,
-            Keys.ipfsLowPower: true,
+            Keys.ipfsLowPower: false,
             Keys.adblockAdsEnabled: true,
             Keys.adblockPrivacyEnabled: true,
             Keys.adblockCookiesEnabled: false,

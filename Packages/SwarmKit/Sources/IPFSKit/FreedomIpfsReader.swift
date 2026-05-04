@@ -25,6 +25,18 @@ public struct FreedomIpfsRetrievalCounters: Equatable, Sendable {
     public let cacheHits: UInt64
     public let httpProviderBlocks: UInt64
     public let bitswapBlocks: UInt64
+
+    public func delta(since previous: FreedomIpfsRetrievalCounters) -> FreedomIpfsRetrievalCounters {
+        FreedomIpfsRetrievalCounters(
+            cacheHits: Self.saturatingSubtract(cacheHits, previous.cacheHits),
+            httpProviderBlocks: Self.saturatingSubtract(httpProviderBlocks, previous.httpProviderBlocks),
+            bitswapBlocks: Self.saturatingSubtract(bitswapBlocks, previous.bitswapBlocks)
+        )
+    }
+
+    private static func saturatingSubtract(_ current: UInt64, _ previous: UInt64) -> UInt64 {
+        current >= previous ? current - previous : 0
+    }
 }
 
 public struct FreedomIpfsRoutingCounters: Equatable, Sendable {
@@ -34,10 +46,52 @@ public struct FreedomIpfsRoutingCounters: Equatable, Sendable {
     public let dhtProviderLookups: UInt64
     public let dhtProviderResults: UInt64
     public let dhtProviderErrors: UInt64
+
+    public func delta(since previous: FreedomIpfsRoutingCounters) -> FreedomIpfsRoutingCounters {
+        FreedomIpfsRoutingCounters(
+            delegatedProviderLookups: Self.saturatingSubtract(
+                delegatedProviderLookups,
+                previous.delegatedProviderLookups
+            ),
+            delegatedProviderResults: Self.saturatingSubtract(
+                delegatedProviderResults,
+                previous.delegatedProviderResults
+            ),
+            delegatedProviderErrors: Self.saturatingSubtract(
+                delegatedProviderErrors,
+                previous.delegatedProviderErrors
+            ),
+            dhtProviderLookups: Self.saturatingSubtract(dhtProviderLookups, previous.dhtProviderLookups),
+            dhtProviderResults: Self.saturatingSubtract(dhtProviderResults, previous.dhtProviderResults),
+            dhtProviderErrors: Self.saturatingSubtract(dhtProviderErrors, previous.dhtProviderErrors)
+        )
+    }
+
+    private static func saturatingSubtract(_ current: UInt64, _ previous: UInt64) -> UInt64 {
+        current >= previous ? current - previous : 0
+    }
 }
 
 public struct FreedomIpfsDiagnostics: Equatable, Sendable {
     public let stats: FreedomIpfsStats
+    public let retrievalStats: FreedomIpfsRetrievalCounters
+    public let routingStats: FreedomIpfsRoutingCounters
+    public let activePreloadCount: UInt64
+    public let isGatewayRunning: Bool
+    public let isBackgrounded: Bool
+
+    public func delta(since previous: FreedomIpfsDiagnostics) -> FreedomIpfsDiagnosticsDelta {
+        FreedomIpfsDiagnosticsDelta(
+            retrievalStats: retrievalStats.delta(since: previous.retrievalStats),
+            routingStats: routingStats.delta(since: previous.routingStats),
+            activePreloadCount: activePreloadCount,
+            isGatewayRunning: isGatewayRunning,
+            isBackgrounded: isBackgrounded
+        )
+    }
+}
+
+public struct FreedomIpfsDiagnosticsDelta: Equatable, Sendable {
     public let retrievalStats: FreedomIpfsRetrievalCounters
     public let routingStats: FreedomIpfsRoutingCounters
     public let activePreloadCount: UInt64
