@@ -113,12 +113,13 @@ final class SettingsStore {
         didSet { defaults.set(swarmNodeEnabled, forKey: Keys.swarmNodeEnabled) }
     }
     /// Whether the embedded IPFS reader should be running. User-
-    /// togglable from the IPFS node sheet. Default **false** so
-    /// upgrades from the old kubo-backed build don't auto-start the
-    /// reader before the user has seen its settings page. False means
-    /// the reader never starts on app launch and `ipfs://` / `ipns://`
-    /// page loads (including ENS-dispatched ones) fail until
-    /// re-enabled.
+    /// togglable from the IPFS node sheet. Default **true** — the
+    /// Rust reader is lightweight enough to run alongside Bee on
+    /// mobile without measurable user-visible cost, and starting it
+    /// on launch means `ipfs://` / `ipns://` loads (including the
+    /// ENS-dispatched paths) work immediately. Users who explicitly
+    /// toggled the setting in either direction keep their persisted
+    /// value via `UserDefaults`.
     var ipfsNodeEnabled: Bool {
         didSet { defaults.set(ipfsNodeEnabled, forKey: Keys.ipfsNodeEnabled) }
     }
@@ -149,7 +150,7 @@ final class SettingsStore {
             Keys.adblockAnnoyancesEnabled: false,
             Keys.adblockAllowlist: [String](),
             Keys.swarmNodeEnabled: true,
-            Keys.ipfsNodeEnabled: false,
+            Keys.ipfsNodeEnabled: true,
         ])
         self.enableEnsCustomRpc = defaults.bool(forKey: Keys.enableEnsCustomRpc)
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
