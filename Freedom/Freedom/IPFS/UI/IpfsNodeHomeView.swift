@@ -12,6 +12,8 @@ struct IpfsNodeHomeView: View {
     @Environment(IPFSNode.self) private var ipfs
     @Environment(SettingsStore.self) private var settings
 
+    @State private var isShowingClearCacheConfirm = false
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -21,6 +23,7 @@ struct IpfsNodeHomeView: View {
                     cacheCard
                     retrievalCard
                     routingCard
+                    debugCard
                     logsLink
                 }
             }
@@ -140,6 +143,48 @@ struct IpfsNodeHomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Advanced/debug actions for physical-device triage. Disabled
+    /// when the gateway isn't running because the underlying calls
+    /// are no-ops in that state.
+    private var debugCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Debug").font(.caption).foregroundStyle(.secondary)
+            Button {
+                ipfs.resetRoutingState()
+            } label: {
+                Label("Reset routing state", systemImage: "arrow.triangle.2.circlepath")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.bordered)
+            .disabled(ipfs.status != .running)
+
+            Button(role: .destructive) {
+                isShowingClearCacheConfirm = true
+            } label: {
+                Label("Clear cache", systemImage: "trash")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.bordered)
+            .disabled(ipfs.status != .running)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .confirmationDialog(
+            "Clear IPFS cache?",
+            isPresented: $isShowingClearCacheConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Clear cache", role: .destructive) {
+                _ = ipfs.clearCache()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes cached IPFS blocks. Future loads will start from a cold cache.")
+        }
     }
 
     private var diagnostics: FreedomIpfsDiagnostics? { ipfs.diagnostics }

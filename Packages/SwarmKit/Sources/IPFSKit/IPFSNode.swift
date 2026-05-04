@@ -354,6 +354,27 @@ public final class IPFSNode {
         _ = reader?.handleNetworkChange()
     }
 
+    // MARK: - Debug actions
+
+    /// Clears provider metadata and bad-provider markers in the Rust
+    /// reader. Verified cached blocks are preserved. Safe to call
+    /// while the gateway is running. Internally a `handleNetworkChange`
+    /// — the reader treats it as a routing-state reset. Surfaced under
+    /// a clearer name for the debug UI.
+    public func resetRoutingState() {
+        _ = reader?.handleNetworkChange()
+    }
+
+    /// Removes all cached IPFS blocks. Future loads will be cold.
+    /// Safe to call while the gateway is running. Returns `false` if
+    /// the reader isn't up.
+    @discardableResult
+    public func clearCache() -> Bool {
+        let ok = reader?.clearCache() ?? false
+        diagnostics = reader?.diagnostics
+        return ok
+    }
+
     // MARK: - Internals
 
     private func startPolling() {
