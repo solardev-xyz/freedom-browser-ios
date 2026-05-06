@@ -2,6 +2,43 @@ import Foundation
 import IPFSKit
 import WebKit
 
+/// Mutable per-tab state describing the current top-level
+/// `ipfs://` / `ipns://` navigation, if any. Owned by `BrowserTab`,
+/// shared with that tab's two scheme handlers (one for each scheme).
+/// The handlers stamp correlation headers on outgoing requests so
+/// the Rust gateway can group subresource progress events under
+/// their parent navigation in `progressSnapshot`.
+///
+/// `topLevelPath` is the gateway-style path
+/// (`/ipfs/<cid>/...` or `/ipns/<name>/...`) of the page WebKit is
+/// loading right now. `rootRequestID` is filled in by the scheme
+/// handler when it sees the request whose path matches
+/// `topLevelPath` — that id then becomes
+/// `X-Freedom-Parent-Request-ID` for every subresource.
+@MainActor
+final class IpfsNavContext {
+    private(set) var topLevelPath: String?
+    private(set) var rootRequestID: UInt64?
+
+    func begin(topLevelPath: String) {
+        self.topLevelPath = topLevelPath
+        rootRequestID = nil
+    }
+
+    func end() {
+        topLevelPath = nil
+        rootRequestID = nil
+    }
+
+    /// Called by the scheme handler when it sees the request whose
+    /// path matches `topLevelPath`. Subsequent subresource requests
+    /// for the same navigation stamp this id as
+    /// `X-Freedom-Parent-Request-ID`.
+    func recordRootRequestID(_ id: UInt64) {
+        rootRequestID = id
+    }
+}
+
 /// Custom scheme handler for `ipfs://` and `ipns://`. Translates each
 /// request the WKWebView issues against either scheme into an HTTP
 /// request against the running Rust IPFS gateway on a loopback address,
@@ -16,19 +53,28 @@ import WebKit
 ///    requests.
 /// 3. Streams response bytes incrementally via URLSession delegate
 ///    callbacks so large responses don't get buffered whole into RAM.
+/// 4. Stamps `X-Freedom-Request-ID` / `X-Freedom-Parent-Request-ID` /
+///    `X-Freedom-Top-Level-Path` correlation headers so the Rust
+///    gateway can group subresource progress events under their
+///    parent navigation.
 @MainActor
 final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     /// Weak ref — the node is owned by `FreedomApp` and outlives any
     /// individual tab. A weak ref keeps tabs from extending the node's
     /// lifetime past app teardown.
     private weak var node: IPFSNode?
+    /// Weak ref — the navigation context lives on `BrowserTab`. When
+    /// the tab is gone the handler still works, just without
+    /// correlation grouping.
+    private weak var navContext: IpfsNavContext?
 
     private var session: URLSession!
     private let delegateBox = SessionDelegate()
     private var active: [Int: PendingRequest] = [:]
 
-    init(node: IPFSNode) {
+    init(node: IPFSNode, navContext: IpfsNavContext? = nil) {
         self.node = node
+        self.navContext = navContext
         super.init()
         let config = URLSessionConfiguration.ephemeral
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -49,7 +95,12 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         guard let originalURL = task.request.url,
-              let httpURL = Self.localHTTPURL(for: originalURL, gateway: node?.gatewayURL)
+              let urlGatewayPath = Self.gatewayStylePath(for: originalURL),
+              let httpURL = Self.localHTTPURL(
+                originalURL: originalURL,
+                gatewayPath: urlGatewayPath,
+                gateway: node?.gatewayURL
+              )
         else {
             task.didFailWithError(URLError(.badURL))
             return
@@ -70,12 +121,40 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         // Strip Host — URLSession sets it from the URL.
         request.setValue(nil, forHTTPHeaderField: "Host")
 
+        stampCorrelationHeaders(on: &request, urlGatewayPath: urlGatewayPath)
+
         let dataTask = session.dataTask(with: request)
         active[dataTask.taskIdentifier] = PendingRequest(
             schemeTask: task,
             originalURL: originalURL
         )
         dataTask.resume()
+    }
+
+    /// Stamps `X-Freedom-Request-ID` on every outgoing request and,
+    /// when a top-level navigation context is available, also stamps
+    /// `X-Freedom-Top-Level-Path` and (for subresources)
+    /// `X-Freedom-Parent-Request-ID`. The Rust gateway uses these to
+    /// group subresource progress events under their parent
+    /// navigation in the snapshot.
+    private func stampCorrelationHeaders(on request: inout URLRequest, urlGatewayPath: String) {
+        guard let requestID = node?.nextGatewayRequestID() else { return }
+        request.setValue("\(requestID)", forHTTPHeaderField: "X-Freedom-Request-ID")
+        guard let context = navContext,
+              let topLevelPath = context.topLevelPath
+        else { return }
+        request.setValue(topLevelPath, forHTTPHeaderField: "X-Freedom-Top-Level-Path")
+        if urlGatewayPath == topLevelPath {
+            // Page's root request — record so subresource requests
+            // can stamp it as their parent.
+            context.recordRootRequestID(requestID)
+        } else if let parent = context.rootRequestID {
+            request.setValue("\(parent)", forHTTPHeaderField: "X-Freedom-Parent-Request-ID")
+        } else {
+            // Subresource arrived before the root request landed.
+            // Gateway tracks it as standalone; later subresources
+            // get correlated once the root lands.
+        }
     }
 
     func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
@@ -92,37 +171,44 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
-    /// Translate `ipfs://<cid>/<path>` → `http://<gateway>/ipfs/<cid>/<path>`,
-    /// and `ipns://<name>/<path>` → `http://<gateway>/ipns/<name>/<path>`.
-    /// Special case for nested fetches: when a JS app on an `ipfs://`
-    /// origin issues a relative `/ipfs/<other-cid>/…`, that arrives as
-    /// `ipfs://<this-cid>/ipfs/<other-cid>/…`. Pass that path through
-    /// directly so the gateway serves the referenced content rather
-    /// than nesting CIDs.
-    static func localHTTPURL(for url: URL, gateway: URL?) -> URL? {
+    /// Compute the gateway-style path for an `ipfs://` / `ipns://`
+    /// URL. Returns `/ipfs/<cid>/<path>` or `/ipns/<name>/<path>`,
+    /// with the nested-fetch passthrough: when a JS app on an
+    /// `ipfs://` origin issues a relative `/ipfs/<other-cid>/...`,
+    /// that arrives here as `ipfs://<this-cid>/ipfs/<other-cid>/...`
+    /// — we pass the inner path through unchanged so the gateway
+    /// serves the referenced content rather than nesting CIDs.
+    /// Returns `nil` for non-ipfs URLs.
+    static func gatewayStylePath(for url: URL) -> String? {
         guard let scheme = url.scheme?.lowercased(),
               scheme == "ipfs" || scheme == "ipns",
               let host = url.host else { return nil }
+        let path = url.path.isEmpty ? "/" : url.path
+        if path.hasPrefix("/ipfs/") || path.hasPrefix("/ipns/") {
+            return path
+        }
+        return "/\(scheme)/\(host)\(path)"
+    }
+
+    /// Translate `ipfs://<cid>/<path>` → `http://<gateway>/ipfs/<cid>/<path>`,
+    /// and `ipns://<name>/<path>` → `http://<gateway>/ipns/<name>/<path>`.
+    /// Callers compute `gatewayPath` once via `gatewayStylePath(for:)`
+    /// so we don't recompute it for both this and the correlation-
+    /// header stamping.
+    static func localHTTPURL(originalURL: URL, gatewayPath: String, gateway: URL?) -> URL? {
         guard let gateway,
               let gatewayHost = gateway.host,
               let gatewayPort = gateway.port,
               let gatewayScheme = gateway.scheme
         else { return nil }
 
-        let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false)
-
         var components = URLComponents()
         components.scheme = gatewayScheme
         components.host = gatewayHost
         components.port = gatewayPort
-
-        let path = url.path.isEmpty ? "/" : url.path
-        if path.hasPrefix("/ipfs/") || path.hasPrefix("/ipns/") {
-            components.path = path
-        } else {
-            components.path = "/\(scheme)/\(host)\(path)"
-        }
-        components.percentEncodedQuery = urlComponents?.percentEncodedQuery
+        components.path = gatewayPath
+        components.percentEncodedQuery =
+            URLComponents(url: originalURL, resolvingAgainstBaseURL: false)?.percentEncodedQuery
         return components.url
     }
 

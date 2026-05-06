@@ -127,6 +127,11 @@ final class BrowserTab {
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private let adblock: AdblockService
     @ObservationIgnored private let ipfs: IPFSNode
+    /// Shared with the tab's two `IpfsSchemeHandler` instances. Tracks
+    /// the current top-level `ipfs://`/`ipns://` navigation so the
+    /// scheme handler can stamp correlation headers and the Rust
+    /// gateway can group subresource progress under the parent.
+    @ObservationIgnored private let ipfsNavContext = IpfsNavContext()
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var lastScrollY: CGFloat = 0
     @ObservationIgnored private var bottomChromeProbeTask: Task<Void, Never>?
@@ -160,8 +165,14 @@ final class BrowserTab {
         // objects per scheme registration even when the implementation
         // is the same. Both schemes resolve through the same Rust
         // gateway, but each gets its own handler instance.
-        config.setURLSchemeHandler(IpfsSchemeHandler(node: ipfs), forURLScheme: "ipfs")
-        config.setURLSchemeHandler(IpfsSchemeHandler(node: ipfs), forURLScheme: "ipns")
+        config.setURLSchemeHandler(
+            IpfsSchemeHandler(node: ipfs, navContext: ipfsNavContext),
+            forURLScheme: "ipfs"
+        )
+        config.setURLSchemeHandler(
+            IpfsSchemeHandler(node: ipfs, navContext: ipfsNavContext),
+            forURLScheme: "ipns"
+        )
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         let contentController = WKUserContentController()
         config.userContentController = contentController
@@ -314,22 +325,38 @@ final class BrowserTab {
     /// is preserved without a second trigger site.
     fileprivate func triggerIpfsPreload(for url: URL) {
         cancelActivePreload()
-        guard let scheme = url.scheme?.lowercased(),
-              scheme == "ipfs" || scheme == "ipns",
-              let host = url.host else { return }
-        let path = url.path.isEmpty ? "/" : url.path
-        let gatewayPath: String =
-            (path.hasPrefix("/ipfs/") || path.hasPrefix("/ipns/"))
-            ? path
-            : "/\(scheme)/\(host)\(path)"
+        guard let gatewayPath = IpfsSchemeHandler.gatewayStylePath(for: url) else { return }
         let id = ipfs.preload(path: gatewayPath)
         activePreloadID = id
+    }
+
+    /// Begin a top-level navigation context for the scheme handler's
+    /// correlation-header stamping. Called from
+    /// `WKNavigationDelegate.decidePolicyFor` on every main-frame
+    /// `ipfs://` / `ipns://` navigation, alongside the preload
+    /// trigger.
+    fileprivate func beginIpfsNavContext(for url: URL) {
+        guard let path = IpfsSchemeHandler.gatewayStylePath(for: url) else { return }
+        ipfsNavContext.begin(topLevelPath: path)
+    }
+
+    fileprivate func endIpfsNavContext() {
+        ipfsNavContext.end()
     }
 
     fileprivate func cancelActivePreload() {
         guard activePreloadID != 0 else { return }
         _ = ipfs.cancelPreload(taskID: activePreloadID)
         activePreloadID = 0
+    }
+
+    /// Single chokepoint for tearing down the per-navigation IPFS
+    /// state — preload + correlation context. Keeps the two coupled
+    /// so a future failure callback can't cancel the preload but
+    /// forget to end the context (or vice versa).
+    fileprivate func tearDownActiveIpfsNavigation() {
+        cancelActivePreload()
+        endIpfsNavContext()
     }
 
     private func resetENSState() {
@@ -693,8 +720,9 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
     /// restore, in-page link click, JS `location.href`, history
     /// nav, reload). For `ipfs://` / `ipns://` we use it to warm
     /// the Rust reader's routing/blocks ahead of the scheme handler
-    /// being asked. We never block the navigation — always
-    /// `.allow`.
+    /// being asked, and to publish a navigation context the scheme
+    /// handler stamps onto correlation headers. We never block the
+    /// navigation — always `.allow`.
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
@@ -707,6 +735,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         {
             MainActor.assumeIsolated {
                 owner?.triggerIpfsPreload(for: url)
+                owner?.beginIpfsNavContext(for: url)
             }
         }
         decisionHandler(.allow)
@@ -730,7 +759,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // WKNavigationDelegate callbacks arrive on the main thread, same
         // pattern as the KVO observers in BrowserTab.
         MainActor.assumeIsolated {
-            owner?.cancelActivePreload()
+            owner?.tearDownActiveIpfsNavigation()
             owner?.onNavigationFinish?(url, title)
             owner?.extractThemeColor()
             owner?.detectBottomChromeMode()
@@ -739,7 +768,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         MainActor.assumeIsolated {
-            owner?.cancelActivePreload()
+            owner?.tearDownActiveIpfsNavigation()
         }
     }
 
@@ -749,7 +778,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         withError error: Error
     ) {
         MainActor.assumeIsolated {
-            owner?.cancelActivePreload()
+            owner?.tearDownActiveIpfsNavigation()
         }
     }
 }

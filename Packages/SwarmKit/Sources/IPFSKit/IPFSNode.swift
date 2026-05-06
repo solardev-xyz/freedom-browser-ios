@@ -149,6 +149,15 @@ public final class IPFSNode {
     /// `start`/`restart`) ran while we were waiting, and the freshly
     /// configured reader is torn down instead of being published.
     private var lifecycleGeneration: Int = 0
+    /// Monotonic counter for per-gateway-request correlation IDs.
+    /// Stamped onto outgoing `X-Freedom-Request-ID` headers from the
+    /// scheme handler so the Rust gateway groups subresources under
+    /// their parent navigation in the progress snapshot. Shared
+    /// across all tabs because Rust uses these as `target_id` in a
+    /// single global event log. Main-actor isolated; the increment
+    /// is safe because `IPFSNode` is `@MainActor` and every caller
+    /// runs on main.
+    private var requestIDCounter: UInt64 = 0
 
     public init() {}
 
@@ -405,6 +414,16 @@ public final class IPFSNode {
     /// places that don't want a typed model.
     public var progressSnapshotJSON: String? {
         reader?.progressSnapshotJSON
+    }
+
+    /// Allocate a fresh correlation ID for an outgoing gateway
+    /// request. The scheme handler stamps this onto
+    /// `X-Freedom-Request-ID`; the Rust gateway uses it as the
+    /// target id, which is the join key for parent / subresource
+    /// grouping in the progress snapshot.
+    public func nextGatewayRequestID() -> UInt64 {
+        requestIDCounter += 1
+        return requestIDCounter
     }
 
     // MARK: - Internals
