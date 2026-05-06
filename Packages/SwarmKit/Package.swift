@@ -29,17 +29,23 @@ let package = Package(
             url: "https://github.com/solardev-xyz/bee-lite-java/releases/download/ios-v0.1.2/Mobile.xcframework.zip",
             checksum: "1781deb5d0e1f61e51423313ee06bcc11e6bc9a435c00a923c27954979b6c3be"
         ),
-        // Rust read-only IPFS reader from solardev-xyz/freedom-ipfs.
-        // SHA256 is verified by SwiftPM before unpacking; bumps require
-        // a new tag, a new release, and a new checksum here. Built
-        // upstream from solardev-xyz/freedom-ipfs main at
-        // 113d2d9faa79c6002aabf443b5deccbdf9314f1c.
-        // Local-path development override: comment out the URL/checksum
-        // pair below and replace with `path: "../../../freedom-ipfs/target/ios-xcframework/FreedomIpfs.xcframework"`.
+        // Rust read-only IPFS reader from flotob/freedom-ipfs.
+        //
+        // This branch (`codex/ios-rust-ipfs-progress-correlation`)
+        // consumes the Rust agent's `codex/kubo-harness-consolidation`
+        // optimization-lab branch via a locally-built XCFramework. No
+        // public release exists for that branch yet — once the iOS
+        // smoke is good, the Rust side cuts a release and we swap
+        // back to a `url:` + `checksum:` pair, like the merge-ready
+        // `codex/ios-rust-ipfs-latency-polish` branch does.
+        //
+        // Build with:
+        //   cd ../../../freedom-ipfs
+        //   git switch codex/kubo-harness-consolidation
+        //   cargo run -p xtask -- build-xcframework
         .binaryTarget(
             name: "FreedomIpfs",
-            url: "https://github.com/solardev-xyz/freedom-ipfs/releases/download/ios-v0.1.0-rust-reader.1/FreedomIpfs.xcframework.zip",
-            checksum: "684fded04e125db58e1036cf28eace587e10a13d9b7305049faeb67224c88375"
+            path: "../../../freedom-ipfs/target/ios-xcframework/FreedomIpfs.xcframework"
         ),
         .target(
             name: "SwarmKit",

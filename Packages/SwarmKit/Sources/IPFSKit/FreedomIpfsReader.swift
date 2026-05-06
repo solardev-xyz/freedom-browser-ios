@@ -469,6 +469,21 @@ public final class FreedomIpfsReader {
         )
     }
 
+    public var progressSnapshotJSON: String {
+        guard let handle, let ptr = freedom_ipfs_node_progress_snapshot_json(handle) else {
+            return "{\"active\":[],\"events\":[]}"
+        }
+        defer { freedom_ipfs_string_free(ptr) }
+        return String(cString: ptr)
+    }
+
+    public func clearProgress() -> Bool {
+        guard let handle else {
+            return false
+        }
+        return freedom_ipfs_node_clear_progress(handle)
+    }
+
     public func clearCache() -> Bool {
         guard let handle else {
             return false
