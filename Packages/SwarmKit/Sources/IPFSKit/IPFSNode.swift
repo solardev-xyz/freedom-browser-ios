@@ -130,9 +130,17 @@ public final class IPFSNode {
     public private(set) var activeLowPower: Bool = true
     /// Latest snapshot from the polling loop. `nil` until first read.
     public private(set) var diagnostics: FreedomIpfsDiagnostics?
+    /// Latest decoded progress snapshot from the Rust gateway's
+    /// `progress_snapshot_json` API. `nil` while the node is
+    /// stopped or before the first poll completes. The polling loop
+    /// self-regulates: it ticks at ~300ms when there are active
+    /// targets, ~1s when idle. See `IpfsProgressSnapshot` and
+    /// `freedom-ipfs/docs/mobile-progress-api.md`.
+    public private(set) var progressSnapshot: IpfsProgressSnapshot?
 
     private var reader: FreedomIpfsReader?
     private var pollTask: Task<Void, Never>?
+    private var progressPollTask: Task<Void, Never>?
     private var activeConfig: IPFSConfig?
     /// Bumped on every state transition that should invalidate any
     /// in-flight `start` / `restart` detached task. After the slow Rust
@@ -295,9 +303,16 @@ public final class IPFSNode {
         append("shutting down…")
         pollTask?.cancel()
         pollTask = nil
+        progressPollTask?.cancel()
+        progressPollTask = nil
         let captured = reader
         self.reader = nil
         gatewayURL = nil
+        // Clear synchronously alongside `self.reader` — otherwise the
+        // detached `stopGateway()` hop below leaves a window where the
+        // UI sees the last in-flight progress targets while the node
+        // is reported as stopping.
+        progressSnapshot = nil
         Task.detached(priority: .userInitiated) { [weak self] in
             _ = captured.stopGateway()
             await MainActor.run {
@@ -375,6 +390,23 @@ public final class IPFSNode {
         return ok
     }
 
+    /// Clears the Rust progress event log + active-target tracking.
+    /// Safe to call any time. Resets the local `progressSnapshot` to
+    /// `.empty` immediately so the UI doesn't briefly hold stale
+    /// counts before the next poll cycle.
+    @discardableResult
+    public func clearProgress() -> Bool {
+        let ok = reader?.clearProgress() ?? false
+        progressSnapshot = .empty
+        return ok
+    }
+
+    /// Raw JSON snapshot string for debug logging or pass-through to
+    /// places that don't want a typed model.
+    public var progressSnapshotJSON: String? {
+        reader?.progressSnapshotJSON
+    }
+
     // MARK: - Internals
 
     private func startPolling() {
@@ -384,6 +416,26 @@ public final class IPFSNode {
                 let snapshot = reader.diagnostics
                 self.diagnostics = snapshot
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
+        progressPollTask = Task { [weak self] in
+            // 300ms while a target is in flight, 1s when idle.
+            let fastSleep: UInt64 =   300_000_000
+            let slowSleep: UInt64 = 1_000_000_000
+            while !Task.isCancelled {
+                guard let self, let reader = self.reader else { break }
+                let json = reader.progressSnapshotJSON
+                let decoded = try? IpfsProgressSnapshot.decoder.decode(
+                    IpfsProgressSnapshot.self,
+                    from: Data(json.utf8)
+                )
+                // Equality guard avoids burning a SwiftUI invalidation
+                // every tick during long idles where nothing changes.
+                if let decoded, decoded != self.progressSnapshot {
+                    self.progressSnapshot = decoded
+                }
+                let activeCount = decoded?.active.count ?? 0
+                try? await Task.sleep(nanoseconds: activeCount > 0 ? fastSleep : slowSleep)
             }
         }
     }
