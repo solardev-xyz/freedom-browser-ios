@@ -23,11 +23,11 @@ struct ContentView: View {
     // to satisfy a typed substring without materialising the whole table.
     @Query(Self.suggestionHistoryDescriptor) private var suggestionHistory: [HistoryEntry]
 
-    /// The status/error row above the progress bar. Only one is ever
-    /// visible at a time — input parse failures and ENS resolve failures
-    /// share the red channel; ENS "Resolving…" takes the info channel.
+    /// The error banner row above the URL pill — input parse failures
+    /// and ENS resolve failures share this red channel. The ENS
+    /// "Resolving…" state used to live here too but has been folded
+    /// into `LoadingPill` (driven by `BrowserTab.loadingState`).
     enum Banner: Equatable {
-        case resolving(name: String)
         case error(message: String)
     }
 
@@ -199,9 +199,10 @@ struct ContentView: View {
             banner = nil
         }
         .onChange(of: tabStore.activeTab?.ensStatus ?? .idle) { _, new in
+            // .resolving no longer drives a banner — the unified
+            // LoadingPill above the URL pill surfaces it instead.
             switch new {
-            case .idle: banner = nil
-            case .resolving(let name): banner = .resolving(name: name)
+            case .idle, .resolving: banner = nil
             case .failed(let message): banner = .error(message: message)
             }
         }
@@ -355,6 +356,19 @@ struct ContentView: View {
         }
         .padding(.horizontal, 32)
         .padding(.bottom, 0)
+        // Floating loading pill above the URL pill. Appears whenever
+        // the active tab has any in-flight loading step (ENS resolve,
+        // IPFS routing fan-out, gateway block fetch); auto-hides
+        // when the page is idle. Replaces both the old wide ENS
+        // resolution banner and the IPFS-only inline label.
+        .overlay(alignment: .top) {
+            if let text = tabStore.activeTab?.loadingState {
+                LoadingPill(text: text)
+                    .offset(y: -44)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.snappy(duration: 0.25), value: tabStore.activeTab?.loadingState)
     }
 
     /// Compact pill tap: just restore full chrome (same effect as
@@ -534,14 +548,6 @@ struct ContentView: View {
 
     @ViewBuilder private func bannerRow(_ banner: Banner) -> some View {
         switch banner {
-        case .resolving(let name):
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Resolving \(name)…").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Color(.secondarySystemBackground))
         case .error(let message):
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill")

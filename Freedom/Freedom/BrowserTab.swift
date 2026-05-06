@@ -123,6 +123,17 @@ final class BrowserTab {
     /// didFinish). Used by TabStore to feed the history store.
     var onNavigationFinish: ((URL, String) -> Void)?
 
+    /// Top-level path of the in-flight ipfs/ipns navigation, mirrored
+    /// from `ipfsNavContext.topLevelPath` as observable state so
+    /// SwiftUI views (URL pill) re-render when a navigation starts
+    /// or ends. `IpfsNavContext` itself stays non-`@Observable`
+    /// because `IpfsSchemeHandler` mutates its `rootRequestID` on
+    /// the URLSession delegate path — a hot per-subresource path
+    /// that shouldn't fan out SwiftUI invalidations. This mirror
+    /// keeps view tracking bounded to actual navigation
+    /// transitions on `BrowserTab` itself.
+    private(set) var activeIpfsTopLevelPath: String?
+
     @ObservationIgnored private let ensResolver: ENSResolver
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private let adblock: AdblockService
@@ -338,10 +349,59 @@ final class BrowserTab {
     fileprivate func beginIpfsNavContext(for url: URL) {
         guard let path = IpfsSchemeHandler.gatewayStylePath(for: url) else { return }
         ipfsNavContext.begin(topLevelPath: path)
+        if activeIpfsTopLevelPath != path {
+            activeIpfsTopLevelPath = path
+        }
     }
 
     fileprivate func endIpfsNavContext() {
         ipfsNavContext.end()
+        if activeIpfsTopLevelPath != nil {
+            activeIpfsTopLevelPath = nil
+        }
+    }
+
+    /// Pre-streaming loading-label for the URL pill, derived from the
+    /// Rust gateway's progress snapshot. Returns `nil` outside of an
+    /// `ipfs://` / `ipns://` navigation, and once the root request
+    /// reaches a terminal phase (streaming / completed / failed /
+    /// cancelled — at that point the existing fractional bar or the
+    /// page's own error UI is the right thing to show). Otherwise
+    /// returns a phase-derived display string using the mapping
+    /// documented in `freedom-ipfs/docs/mobile-progress-api.md`.
+    var ipfsLoadingLabel: String? {
+        guard let topLevelPath = activeIpfsTopLevelPath else { return nil }
+        guard let snapshot = ipfs.progressSnapshot else {
+            return IpfsProgressPhaseDisplay.fallbackText
+        }
+        // Prefer the root request (path matches the top-level path).
+        // Once the root completes and drops out of `active`, fall
+        // back to any active item the gateway has stamped with our
+        // navigation's `top_level_path` — those are subresources
+        // (CSS / JS / images) of the same page, and surfacing their
+        // phase keeps the pill informative through the whole load.
+        let target = snapshot.active.first { $0.path == topLevelPath }
+            ?? snapshot.active.first { $0.topLevelPath == topLevelPath }
+        guard let target, let phase = target.phase else {
+            return IpfsProgressPhaseDisplay.fallbackText
+        }
+        if IpfsProgressPhaseDisplay.isTerminal(phase) {
+            return nil
+        }
+        return target.displayPhase ?? IpfsProgressPhaseDisplay.fallbackText
+    }
+
+    /// Unified loading-pill text that surfaces whichever step is
+    /// currently in flight. ENS name resolution wins when active —
+    /// IPFS hasn't started yet at that point. After ENS finishes
+    /// (or for non-ENS navigations) this delegates to the IPFS
+    /// gateway's reported phase. Returns `nil` when the page is
+    /// idle / fully rendered, hiding the pill entirely.
+    var loadingState: String? {
+        if case .resolving(let name) = ensStatus {
+            return "Resolving \(name)…"
+        }
+        return ipfsLoadingLabel
     }
 
     fileprivate func cancelActivePreload() {

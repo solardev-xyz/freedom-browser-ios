@@ -123,14 +123,38 @@ public struct IpfsProgressEvent: Decodable, Sendable, Equatable, Identifiable {
     public let timestampMs: UInt64?
 }
 
-/// Phase-string → user-facing copy. The mapping is taken verbatim
-/// from `freedom-ipfs/docs/mobile-progress-api.md` so the iOS UI
-/// stays aligned with what the Rust gateway considers stable
-/// UI-facing phases. Returns `nil` for terminal states the UI
-/// shouldn't surface (`completed`, `cancelled`) or for unknown
-/// phases — callers should fall back to a neutral "Loading…" string
-/// in those cases.
+/// Phase-string → user-facing copy + classification helpers. The
+/// mapping is taken verbatim from
+/// `freedom-ipfs/docs/mobile-progress-api.md` so the iOS UI stays
+/// aligned with what the Rust gateway considers stable UI-facing
+/// phases.
 public enum IpfsProgressPhaseDisplay {
+    /// Generic placeholder for unknown phases or the pre-Rust
+    /// window (navigation has started, gateway hasn't reported a
+    /// phase yet). Callers can also use this as the `??` fallback
+    /// when `text(for:)` returns `nil`.
+    public static let fallbackText = "Loading…"
+
+    /// Phases that mean "stop showing the IPFS-specific loading
+    /// state and hand back to the layer below" — `completed`,
+    /// `failed`, and `cancelled` are the true terminals. `streaming`
+    /// is intentionally not in this set: the
+    /// `codex/kubo-harness-consolidation` branch emits
+    /// `phase=streaming` for `raw_phase=ipfs_path_parse` (the
+    /// path-parse step, before any bytes flow), so treating it as
+    /// terminal makes the label disappear prematurely. Callers use
+    /// WebKit's `estimatedProgress > 0` as the actual streaming-
+    /// handoff signal instead.
+    public static func isTerminal(_ phase: String?) -> Bool {
+        switch phase {
+        case "completed", "failed", "cancelled": return true
+        default: return false
+        }
+    }
+
+    /// Returns `nil` for terminal states the UI shouldn't surface
+    /// (`completed`, `cancelled`) or for unknown phases — callers
+    /// fall back to `fallbackText` in those cases.
     public static func text(for phase: String?) -> String? {
         guard let phase else { return nil }
         switch phase {
@@ -141,7 +165,12 @@ public enum IpfsProgressPhaseDisplay {
         case "checking_cache", "cache_hit": return "Checking local cache"
         case "provider_lookup",
              "providers_found",
-             "provider_diversity_low":
+             "provider_diversity_low",
+             // The kubo-harness branch's hedged provider lookup —
+             // emits as a non-terminal sub-phase while we're still
+             // racing multiple providers. Folds into the same UI
+             // bucket as the documented provider phases.
+             "delegated_provider_self_hedge":
             return "Finding providers"
         case "dht_fallback_started": return "Searching the network"
         case "fetching_bitswap": return "Fetching from IPFS peers"
