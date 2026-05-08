@@ -11,6 +11,7 @@ DerivedData/
 # Per-developer settings
 xcuserdata/
 *.xcworkspace/xcuserdata/
+.claude/
 
 # Swift Package Manager
 .swiftpm/
