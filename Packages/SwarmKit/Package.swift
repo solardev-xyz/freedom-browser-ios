@@ -31,17 +31,17 @@ let package = Package(
         ),
         // Rust read-only IPFS reader from flotob/freedom-ipfs.
         //
-        // This branch (`codex/ios-rust-ipfs-progress-correlation`)
-        // consumes the Rust agent's `codex/kubo-harness-consolidation`
-        // optimization-lab branch via a locally-built XCFramework. No
-        // public release exists for that branch yet — once the iOS
-        // smoke is good, the Rust side cuts a release and we swap
-        // back to a `url:` + `checksum:` pair, like the merge-ready
-        // `codex/ios-rust-ipfs-latency-polish` branch does.
+        // This branch consumes the Rust agent's
+        // `codex/kubo-session-rc-consolidation` performance branch via
+        // a locally-built XCFramework. No public release exists for
+        // that branch yet — once the iOS smoke is good, the Rust side
+        // cuts a release and we swap back to a `url:` + `checksum:`
+        // pair, like the merge-ready `codex/ios-rust-ipfs-latency-polish`
+        // branch does.
         //
         // Build with:
         //   cd ../../../freedom-ipfs
-        //   git switch codex/kubo-harness-consolidation
+        //   git switch codex/kubo-session-rc-consolidation
         //   cargo run -p xtask -- build-xcframework
         .binaryTarget(
             name: "FreedomIpfs",
