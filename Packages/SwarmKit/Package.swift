@@ -29,23 +29,22 @@ let package = Package(
             url: "https://github.com/solardev-xyz/bee-lite-java/releases/download/ios-v0.1.2/Mobile.xcframework.zip",
             checksum: "1781deb5d0e1f61e51423313ee06bcc11e6bc9a435c00a923c27954979b6c3be"
         ),
-        // Rust read-only IPFS reader from flotob/freedom-ipfs.
+        // Rust read-only IPFS reader from solardev-xyz/freedom-ipfs.
+        // Released artifact built from the
+        // `codex/kubo-session-rc-consolidation` performance branch
+        // (commit cfe2e3c). SHA256 is verified by SwiftPM before
+        // unpacking; bumps require a new tag, a new release, and a new
+        // checksum here.
         //
-        // This branch consumes the Rust agent's
-        // `codex/kubo-session-rc-consolidation` performance branch via
-        // a locally-built XCFramework. No public release exists for
-        // that branch yet — once the iOS smoke is good, the Rust side
-        // cuts a release and we swap back to a `url:` + `checksum:`
-        // pair, like the merge-ready `codex/ios-rust-ipfs-latency-polish`
-        // branch does.
-        //
-        // Build with:
-        //   cd ../../../freedom-ipfs
-        //   git switch codex/kubo-session-rc-consolidation
-        //   cargo run -p xtask -- build-xcframework
+        // Local-path development override: comment out the URL/checksum
+        // pair below and replace with
+        // `path: "../../../freedom-ipfs/target/ios-xcframework/FreedomIpfs.xcframework"`,
+        // then build the XCFramework with
+        // `cargo run -p xtask -- build-xcframework` from `freedom-ipfs`.
         .binaryTarget(
             name: "FreedomIpfs",
-            path: "../../../freedom-ipfs/target/ios-xcframework/FreedomIpfs.xcframework"
+            url: "https://github.com/solardev-xyz/freedom-ipfs/releases/download/ios-v0.2.0-rust-reader.1/FreedomIpfs.xcframework.zip",
+            checksum: "c2aa24aac4e51448a412aac050cf09718f532f32c34ebcddfe337ba20d5839a4"
         ),
         .target(
             name: "SwarmKit",
