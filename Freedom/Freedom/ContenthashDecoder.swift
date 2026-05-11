@@ -31,27 +31,31 @@ enum ContenthashDecoder {
         }
     }
 
-    /// Parse raw EIP-1577 contenthash bytes into a navigable URI.
-    /// Returns nil for unsupported protocols / malformed inputs.
-    static func decode(_ bytes: Data) -> (uri: URL, codec: ENSContentCodec)? {
+    /// Parse raw EIP-1577 contenthash bytes into a navigable URI plus
+    /// the decoded content reference (hex swarm ref or CID string).
+    /// Callers that need to re-form the URI later — e.g. a scheme
+    /// handler routing a name-host URL to the resolved content — use
+    /// `contentRef`. Returns nil for unsupported protocols / malformed
+    /// inputs.
+    static func decode(_ bytes: Data) -> (uri: URL, codec: ENSContentCodec, contentRef: String)? {
         // Swarm: namespace varint `e4 01` + CIDv1 (`01`) + swarm-manifest
         // codec varint (`fa 01`) + keccak256-32 multihash (`1b 20 + 32B`).
         // Total prefix 7B + 32B digest = 39B.
         if bytes.count == 7 + 32,
            bytes.starts(with: [0xe4, 0x01, 0x01, 0xfa, 0x01, 0x1b, 0x20]) {
             let hash = bytes.suffix(32).map { String(format: "%02hhx", $0) }.joined()
-            return (URL(string: "bzz://\(hash)")!, .bzz)
+            return (URL(string: "bzz://\(hash)")!, .bzz, hash)
         }
 
         // IPFS / IPNS share the same value structure (a CID). Strip the
         // 2-byte namespace varint, then decode the value as CIDv0 or CIDv1.
         if bytes.starts(with: [0xe3, 0x01]),
            let cid = encodeCID(bytes.dropFirst(2)) {
-            return (URL(string: "ipfs://\(cid)")!, .ipfs)
+            return (URL(string: "ipfs://\(cid)")!, .ipfs, cid)
         }
         if bytes.starts(with: [0xe5, 0x01]),
            let cid = encodeCID(bytes.dropFirst(2)) {
-            return (URL(string: "ipns://\(cid)")!, .ipns)
+            return (URL(string: "ipns://\(cid)")!, .ipns, cid)
         }
 
         return nil

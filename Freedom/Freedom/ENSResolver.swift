@@ -189,10 +189,12 @@ final class ENSResolver {
             if innerBytes.isEmpty {
                 return .failure(.notFound(reason: .emptyContenthash, trust: trust))
             }
-            guard let (uri, codec) = ContenthashDecoder.decode(innerBytes) else {
+            guard let (uri, codec, contentRef) = ContenthashDecoder.decode(innerBytes) else {
                 return .failure(.unsupportedCodec(rawBytes: innerBytes, trust: trust))
             }
-            return .success(ENSResolvedContent(name: normalized, uri: uri, codec: codec, trust: trust))
+            return .success(ENSResolvedContent(
+                name: normalized, uri: uri, contentRef: contentRef, codec: codec, trust: trust
+            ))
         case .notFound(let reason, let trust):
             return .failure(.notFound(reason: reason, trust: trust))
         case .conflict(let groups, let trust):

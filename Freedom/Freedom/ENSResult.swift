@@ -4,11 +4,28 @@ enum ENSContentCodec {
     case bzz
     case ipfs
     case ipns
+
+    /// URL scheme the codec maps to. Used by handlers when building
+    /// codec-mismatch error pages and when picking the expected codec
+    /// for a given request scheme.
+    var scheme: String {
+        switch self {
+        case .bzz: return "bzz"
+        case .ipfs: return "ipfs"
+        case .ipns: return "ipns"
+        }
+    }
 }
 
 struct ENSResolvedContent {
     let name: String
     let uri: URL
+    /// Decoded content reference — the hex swarm reference for `.bzz`,
+    /// the CID string (`Qm…` / `bafy…` / etc.) for `.ipfs`/`.ipns`.
+    /// Carried alongside `uri` so a scheme handler can route a
+    /// name-host URL (`bzz://swarm.eth/`) to the resolved content
+    /// without re-parsing the URI.
+    let contentRef: String
     let codec: ENSContentCodec
     let trust: ENSTrust
 }

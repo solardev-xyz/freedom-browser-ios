@@ -171,17 +171,17 @@ final class BrowserTab {
         self.adblock = adblock
         self.ipfs = ipfs
         let config = WKWebViewConfiguration()
-        config.setURLSchemeHandler(BzzSchemeHandler(), forURLScheme: "bzz")
+        config.setURLSchemeHandler(BzzSchemeHandler(ensResolver: ensResolver), forURLScheme: "bzz")
         // One handler instance per scheme — WKWebKit requires distinct
         // objects per scheme registration even when the implementation
         // is the same. Both schemes resolve through the same Rust
         // gateway, but each gets its own handler instance.
         config.setURLSchemeHandler(
-            IpfsSchemeHandler(node: ipfs, navContext: ipfsNavContext),
+            IpfsSchemeHandler(node: ipfs, ensResolver: ensResolver, navContext: ipfsNavContext),
             forURLScheme: "ipfs"
         )
         config.setURLSchemeHandler(
-            IpfsSchemeHandler(node: ipfs, navContext: ipfsNavContext),
+            IpfsSchemeHandler(node: ipfs, ensResolver: ensResolver, navContext: ipfsNavContext),
             forURLScheme: "ipns"
         )
         config.defaultWebpagePreferences.allowsContentJavaScript = true

@@ -1,6 +1,7 @@
 import Foundation
 import WebKit
 
+@MainActor
 final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
     static let beeAPIPort: Int = 1633
 
@@ -19,10 +20,21 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
     ]
 
     private let session = URLSession.shared
+    private let ensResolver: any ENSResolving
     private var active: [ObjectIdentifier: URLSessionDataTask] = [:]
+    /// Tracks scheme tasks whose ENS resolution is in flight. The
+    /// existing `active` dict is keyed by `dataTask.taskIdentifier`,
+    /// which doesn't exist yet at this stage — so `stop(_:)` needs a
+    /// separate place to mark the scheme task cancelled.
+    private var pendingResolutions: [ObjectIdentifier: PendingResolution] = [:]
+
+    init(ensResolver: any ENSResolving) {
+        self.ensResolver = ensResolver
+        super.init()
+    }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
-        guard let bzzURL = task.request.url, let httpURL = Self.localHTTPURL(for: bzzURL) else {
+        guard let bzzURL = task.request.url else {
             task.didFailWithError(URLError(.badURL))
             return
         }
@@ -43,42 +55,142 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
 
+        // ENS-named host (`bzz://swarm.eth/...`): resolve via ENS,
+        // verify codec, then form the upstream URL against the
+        // resolved swarm reference. Non-`.eth` hosts continue
+        // straight to the existing CID/hash path.
+        if let host = bzzURL.host?.lowercased(), host.hasSuffix(".eth") {
+            startWithENSResolution(originalURL: bzzURL, name: host, task: task)
+            return
+        }
+
+        guard let httpURL = Self.localHTTPURL(for: bzzURL) else {
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
+        startUpstreamFetch(upstreamURL: httpURL, responseURL: bzzURL, task: task)
+    }
+
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
         let key = ObjectIdentifier(task)
-        let dataTask = session.dataTask(with: httpURL) { [weak self] data, response, error in
+        if let pending = pendingResolutions.removeValue(forKey: key) {
+            pending.cancelled = true
+            return
+        }
+        active.removeValue(forKey: key)?.cancel()
+    }
+
+    // MARK: - ENS resolution
+
+    private func startWithENSResolution(originalURL: URL, name: String, task: WKURLSchemeTask) {
+        let key = ObjectIdentifier(task)
+        let pending = PendingResolution()
+        pendingResolutions[key] = pending
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.pendingResolutions.removeValue(forKey: key) }
+            do {
+                let resolved = try await self.ensResolver.resolveContent(name)
+                guard !pending.cancelled else { return }
+                self.handleENSResolved(originalURL: originalURL, resolved: resolved, task: task)
+            } catch {
+                guard !pending.cancelled else { return }
+                self.respondWithError(
+                    originalURL: originalURL,
+                    statusCode: 502,
+                    body: SchemeHandlerErrorPage.render(.resolutionFailed(
+                        name: name,
+                        message: ENSErrorFormatting.describe(error)
+                    )),
+                    task: task
+                )
+            }
+        }
+    }
+
+    private func handleENSResolved(originalURL: URL, resolved: ENSResolvedContent, task: WKURLSchemeTask) {
+        guard resolved.codec == .bzz else {
+            respondWithError(
+                originalURL: originalURL,
+                statusCode: 404,
+                body: SchemeHandlerErrorPage.render(.codecMismatch(
+                    requestedScheme: "bzz",
+                    resolvedScheme: resolved.codec.scheme,
+                    name: resolved.name
+                )),
+                task: task
+            )
+            return
+        }
+        guard let upstreamURL = Self.localHTTPURL(for: originalURL, resolvedTo: resolved.contentRef) else {
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
+        startUpstreamFetch(upstreamURL: upstreamURL, responseURL: originalURL, task: task)
+    }
+
+    // MARK: - Response paths
+
+    private func startUpstreamFetch(upstreamURL: URL, responseURL: URL, task: WKURLSchemeTask) {
+        let key = ObjectIdentifier(task)
+        let dataTask = session.dataTask(with: upstreamURL) { [weak self] data, response, error in
             DispatchQueue.main.async {
-                guard let self, self.active.removeValue(forKey: key) != nil else { return }
-                if let error {
-                    task.didFailWithError(error)
-                    return
+                MainActor.assumeIsolated {
+                    guard let self, self.active.removeValue(forKey: key) != nil else { return }
+                    if let error {
+                        task.didFailWithError(error)
+                        return
+                    }
+                    guard let http = response as? HTTPURLResponse, let data else {
+                        task.didFailWithError(URLError(.badServerResponse))
+                        return
+                    }
+                    // Rewrite the response URL back to the bzz:// scheme so WebKit
+                    // treats the response as same-origin with the requesting page,
+                    // and overlay permissive CORS headers so cross-origin
+                    // `bzz://<hex>/` fetches from other `bzz://` pages succeed.
+                    var headers = http.allHeaderFields as? [String: String] ?? [:]
+                    headers.merge(Self.corsResponseHeaders) { _, new in new }
+                    let rewritten = HTTPURLResponse(
+                        url: responseURL,
+                        statusCode: http.statusCode,
+                        httpVersion: "HTTP/1.1",
+                        headerFields: headers
+                    ) ?? http
+                    task.didReceive(rewritten)
+                    task.didReceive(data)
+                    task.didFinish()
                 }
-                guard let http = response as? HTTPURLResponse, let data else {
-                    task.didFailWithError(URLError(.badServerResponse))
-                    return
-                }
-                // Rewrite the response URL back to the bzz:// scheme so WebKit
-                // treats the response as same-origin with the requesting page,
-                // and overlay permissive CORS headers so cross-origin
-                // `bzz://<hex>/` fetches from other `bzz://` pages succeed.
-                var headers = http.allHeaderFields as? [String: String] ?? [:]
-                headers.merge(Self.corsResponseHeaders) { _, new in new }
-                let rewritten = HTTPURLResponse(
-                    url: bzzURL,
-                    statusCode: http.statusCode,
-                    httpVersion: "HTTP/1.1",
-                    headerFields: headers
-                ) ?? http
-                task.didReceive(rewritten)
-                task.didReceive(data)
-                task.didFinish()
             }
         }
         active[key] = dataTask
         dataTask.resume()
     }
 
-    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
-        active.removeValue(forKey: ObjectIdentifier(task))?.cancel()
+    private func respondWithError(
+        originalURL: URL,
+        statusCode: Int,
+        body: String,
+        task: WKURLSchemeTask
+    ) {
+        let data = Data(body.utf8)
+        var headers: [String: String] = [
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Length": "\(data.count)",
+        ]
+        headers.merge(Self.corsResponseHeaders) { _, new in new }
+        let response = HTTPURLResponse(
+            url: originalURL,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: headers
+        )!
+        task.didReceive(response)
+        task.didReceive(data)
+        task.didFinish()
     }
+
+    // MARK: - URL translation
 
     /// Translate a `bzz://` URL to its Bee HTTP API equivalent on localhost.
     /// When the path looks like a reserved Bee API route
@@ -86,7 +198,14 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
     /// /soc/<owner>/<topic>), route directly — this is how Swarm SPAs issue
     /// relative `fetch('/bzz/<ref>/')` calls. Otherwise treat the path as
     /// a subpath inside the current origin's manifest.
-    static func localHTTPURL(for bzzURL: URL) -> URL? {
+    ///
+    /// When `resolvedTo` is non-nil, the URL's host (an ENS name) is
+    /// replaced by the resolved swarm reference for the non-gateway-path
+    /// branch — so `bzz://swarm.eth/index.html` with `resolvedTo: <hex>`
+    /// becomes `/bzz/<hex>/index.html`. The gateway-path branch is
+    /// unaffected: `bzz://swarm.eth/bzz/<other-hex>/` still routes to
+    /// the explicitly-named ref, matching today's relative-fetch behavior.
+    static func localHTTPURL(for bzzURL: URL, resolvedTo contentRef: String? = nil) -> URL? {
         guard bzzURL.scheme == "bzz", let host = bzzURL.host else { return nil }
 
         var components = URLComponents()
@@ -94,11 +213,17 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
         components.host = "127.0.0.1"
         components.port = beeAPIPort
 
-        let path = bzzURL.path.isEmpty ? "/" : bzzURL.path
+        // `URL.path` strips trailing slashes (Foundation quirk); the
+        // percent-encoded accessor preserves them, so directory-shaped
+        // requests like `bzz://<ref>/foo/` actually reach Bee as
+        // `/bzz/<ref>/foo/` rather than the slash-stripped form.
+        let raw = bzzURL.path(percentEncoded: false)
+        let path = raw.isEmpty ? "/" : raw
         if isBeeGatewayPath(path) {
             components.path = path
         } else {
-            components.path = "/bzz/\(host)\(path)"
+            let effectiveHost = contentRef ?? host
+            components.path = "/bzz/\(effectiveHost)\(path)"
         }
         components.query = bzzURL.query
         return components.url

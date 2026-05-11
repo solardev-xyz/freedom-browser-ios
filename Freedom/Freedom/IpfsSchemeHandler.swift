@@ -78,13 +78,20 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     /// the tab is gone the handler still works, just without
     /// correlation grouping.
     private weak var navContext: IpfsNavContext?
+    private let ensResolver: any ENSResolving
 
     private var session: URLSession!
     private let delegateBox = SessionDelegate()
     private var active: [Int: PendingRequest] = [:]
+    /// Tracks scheme tasks whose ENS resolution is in flight. The
+    /// existing `active` dict is keyed by `dataTask.taskIdentifier`,
+    /// which doesn't exist yet at this stage — so `stop(_:)` needs a
+    /// separate place to mark the scheme task cancelled.
+    private var pendingResolutions: [ObjectIdentifier: PendingResolution] = [:]
 
-    init(node: IPFSNode, navContext: IpfsNavContext? = nil) {
+    init(node: IPFSNode, ensResolver: any ENSResolving, navContext: IpfsNavContext? = nil) {
         self.node = node
+        self.ensResolver = ensResolver
         self.navContext = navContext
         super.init()
         let config = URLSessionConfiguration.ephemeral
@@ -105,14 +112,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
-        guard let originalURL = task.request.url,
-              let urlGatewayPath = Self.gatewayStylePath(for: originalURL),
-              let httpURL = Self.localHTTPURL(
-                originalURL: originalURL,
-                gatewayPath: urlGatewayPath,
-                gateway: node?.gatewayURL
-              )
-        else {
+        guard let originalURL = task.request.url else {
             task.didFailWithError(URLError(.badURL))
             return
         }
@@ -133,29 +133,25 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
 
-        var request = URLRequest(url: httpURL)
-        request.httpMethod = task.request.httpMethod ?? "GET"
-        request.httpBody = task.request.httpBody
-        // Forward all WebKit-supplied headers — Range, If-None-Match,
-        // If-Modified-Since, Accept, Accept-Encoding, Cache-Control,
-        // etc. The localhost gateway can ignore anything it doesn't
-        // care about; dropping headers selectively risks breaking
-        // `<video>`/`<audio>` byte-range loads which the player
-        // negotiates via `Range`.
-        for (key, value) in (task.request.allHTTPHeaderFields ?? [:]) {
-            request.setValue(value, forHTTPHeaderField: key)
+        // ENS-named host (`ipfs://vitalik.eth/...`): resolve via ENS,
+        // verify codec, then form the gateway path against the
+        // resolved CID. Non-`.eth` hosts continue straight to the
+        // Rust gateway, which handles CID hosts and DNSLink/IPNS names.
+        if let host = originalURL.host?.lowercased(), host.hasSuffix(".eth") {
+            startWithENSResolution(originalURL: originalURL, name: host, task: task)
+            return
         }
-        // Strip Host — URLSession sets it from the URL.
-        request.setValue(nil, forHTTPHeaderField: "Host")
 
-        stampCorrelationHeaders(on: &request, urlGatewayPath: urlGatewayPath)
-
-        let dataTask = session.dataTask(with: request)
-        active[dataTask.taskIdentifier] = PendingRequest(
-            schemeTask: task,
-            originalURL: originalURL
+        guard let urlGatewayPath = Self.gatewayStylePath(for: originalURL) else {
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
+        startUpstreamFetch(
+            originalURL: originalURL,
+            gatewayPath: urlGatewayPath,
+            sourceRequest: task.request,
+            task: task
         )
-        dataTask.resume()
     }
 
     /// Stamps `X-Freedom-Request-ID` on every outgoing request and,
@@ -185,6 +181,10 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
+        if let pending = pendingResolutions.removeValue(forKey: ObjectIdentifier(task)) {
+            pending.cancelled = true
+            return
+        }
         // Find and cancel any in-flight URLSession data task pinned to
         // this scheme task. The session-level callback will see the
         // cancellation and clean up `active` on its own.
@@ -198,6 +198,136 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
+    // MARK: - ENS resolution
+
+    private func startWithENSResolution(originalURL: URL, name: String, task: WKURLSchemeTask) {
+        let key = ObjectIdentifier(task)
+        let pending = PendingResolution()
+        pendingResolutions[key] = pending
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.pendingResolutions.removeValue(forKey: key) }
+            do {
+                let resolved = try await self.ensResolver.resolveContent(name)
+                guard !pending.cancelled else { return }
+                self.handleENSResolved(originalURL: originalURL, resolved: resolved, task: task)
+            } catch {
+                guard !pending.cancelled else { return }
+                self.respondWithError(
+                    originalURL: originalURL,
+                    statusCode: 502,
+                    body: SchemeHandlerErrorPage.render(.resolutionFailed(
+                        name: name,
+                        message: ENSErrorFormatting.describe(error)
+                    )),
+                    task: task
+                )
+            }
+        }
+    }
+
+    private func handleENSResolved(originalURL: URL, resolved: ENSResolvedContent, task: WKURLSchemeTask) {
+        let requestScheme = originalURL.scheme?.lowercased() ?? ""
+        let expected: ENSContentCodec
+        switch requestScheme {
+        case "ipfs": expected = .ipfs
+        case "ipns": expected = .ipns
+        default:
+            // Handler is only registered for ipfs/ipns; any other
+            // scheme reaching here is a wiring bug rather than a
+            // user-visible codec mismatch.
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
+        guard resolved.codec == expected else {
+            respondWithError(
+                originalURL: originalURL,
+                statusCode: 404,
+                body: SchemeHandlerErrorPage.render(.codecMismatch(
+                    requestedScheme: requestScheme,
+                    resolvedScheme: resolved.codec.scheme,
+                    name: resolved.name
+                )),
+                task: task
+            )
+            return
+        }
+        guard let gatewayPath = Self.gatewayStylePath(for: originalURL, resolvedTo: resolved.contentRef) else {
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
+        startUpstreamFetch(
+            originalURL: originalURL,
+            gatewayPath: gatewayPath,
+            sourceRequest: task.request,
+            task: task
+        )
+    }
+
+    private func respondWithError(
+        originalURL: URL,
+        statusCode: Int,
+        body: String,
+        task: WKURLSchemeTask
+    ) {
+        let data = Data(body.utf8)
+        var headers: [String: String] = [
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Length": "\(data.count)",
+        ]
+        headers.merge(Self.corsResponseHeaders) { _, new in new }
+        let response = HTTPURLResponse(
+            url: originalURL,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: headers
+        )!
+        task.didReceive(response)
+        task.didReceive(data)
+        task.didFinish()
+    }
+
+    // MARK: - Upstream fetch (shared by CID-host and ENS-resolved paths)
+
+    private func startUpstreamFetch(
+        originalURL: URL,
+        gatewayPath: String,
+        sourceRequest: URLRequest,
+        task: WKURLSchemeTask
+    ) {
+        guard let httpURL = Self.localHTTPURL(
+            originalURL: originalURL,
+            gatewayPath: gatewayPath,
+            gateway: node?.gatewayURL
+        ) else {
+            task.didFailWithError(URLError(.badURL))
+            return
+        }
+        var request = URLRequest(url: httpURL)
+        request.httpMethod = sourceRequest.httpMethod ?? "GET"
+        request.httpBody = sourceRequest.httpBody
+        // Forward all WebKit-supplied headers — Range, If-None-Match,
+        // If-Modified-Since, Accept, Accept-Encoding, Cache-Control,
+        // etc. The localhost gateway can ignore anything it doesn't
+        // care about; dropping headers selectively risks breaking
+        // `<video>`/`<audio>` byte-range loads which the player
+        // negotiates via `Range`.
+        for (key, value) in (sourceRequest.allHTTPHeaderFields ?? [:]) {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        // Strip Host — URLSession sets it from the URL.
+        request.setValue(nil, forHTTPHeaderField: "Host")
+
+        stampCorrelationHeaders(on: &request, urlGatewayPath: gatewayPath)
+
+        let dataTask = session.dataTask(with: request)
+        active[dataTask.taskIdentifier] = PendingRequest(
+            schemeTask: task,
+            originalURL: originalURL
+        )
+        dataTask.resume()
+    }
+
     /// Compute the gateway-style path for an `ipfs://` / `ipns://`
     /// URL. Returns `/ipfs/<cid>/<path>` or `/ipns/<name>/<path>`,
     /// with the nested-fetch passthrough: when a JS app on an
@@ -206,15 +336,25 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     /// — we pass the inner path through unchanged so the gateway
     /// serves the referenced content rather than nesting CIDs.
     /// Returns `nil` for non-ipfs URLs.
-    static func gatewayStylePath(for url: URL) -> String? {
+    ///
+    /// When `resolvedTo` is non-nil, the URL's host (an ENS name) is
+    /// replaced by the resolved CID for the non-nested branch — so
+    /// `ipfs://vitalik.eth/foo` with `resolvedTo: <cid>` becomes
+    /// `/ipfs/<cid>/foo`. The nested-fetch branch is unaffected.
+    static func gatewayStylePath(for url: URL, resolvedTo contentRef: String? = nil) -> String? {
         guard let scheme = url.scheme?.lowercased(),
               scheme == "ipfs" || scheme == "ipns",
               let host = url.host else { return nil }
-        let path = url.path.isEmpty ? "/" : url.path
+        // `URL.path` strips trailing slashes; the percent-encoded
+        // accessor preserves them, so directory-shaped requests reach
+        // the Rust gateway as `/<scheme>/<ref>/foo/` rather than the
+        // slash-stripped form.
+        let raw = url.path(percentEncoded: false)
+        let path = raw.isEmpty ? "/" : raw
         if path.hasPrefix("/ipfs/") || path.hasPrefix("/ipns/") {
             return path
         }
-        return "/\(scheme)/\(host)\(path)"
+        return "/\(scheme)/\(contentRef ?? host)\(path)"
     }
 
     /// Translate `ipfs://<cid>/<path>` → `http://<gateway>/ipfs/<cid>/<path>`,
