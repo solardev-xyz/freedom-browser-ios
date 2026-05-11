@@ -27,8 +27,8 @@ enum BrowserURL: Hashable {
         case "http", "https":
             // A `.eth` hostname has no DNS equivalent — treat as ENS,
             // regardless of scheme the user happened to type.
-            if url.isENSNamedHost, let host = url.host {
-                return .ens(name: host.lowercased())
+            if let name = url.ensName {
+                return .ens(name: name)
             }
             return .web(url)
         case "ens":

@@ -19,9 +19,11 @@ final class FaviconStore {
     private(set) var images: [String: UIImage] = [:]
 
     @ObservationIgnored private let context: ModelContext
+    @ObservationIgnored private let ensResolver: any ENSResolving
 
-    init(context: ModelContext) {
+    init(context: ModelContext, ensResolver: any ENSResolving) {
         self.context = context
+        self.ensResolver = ensResolver
         loadAll()
     }
 
@@ -71,15 +73,34 @@ final class FaviconStore {
     private func download(_ url: URL) async -> Data? {
         // For bzz:// URLs, reach into the Bee HTTP gateway directly.
         // URLSession doesn't route through our WKURLSchemeHandler, so we
-        // translate the URL to localhost:1633 ourselves.
+        // translate the URL to localhost:1633 ourselves. ENS-named hosts
+        // get resolved first (the scheme handler does this for WebKit-
+        // initiated requests, but URLSession-initiated favicon fetches
+        // bypass the handler).
         let fetchURL: URL
         if url.scheme == "bzz" {
-            guard let translated = BzzSchemeHandler.localHTTPURL(for: url) else { return nil }
+            let resolvedRef: String?
+            if let name = url.ensName {
+                do {
+                    let resolved = try await ensResolver.resolveContent(name)
+                    guard resolved.codec == .bzz else { return nil }
+                    resolvedRef = resolved.contentRef
+                } catch {
+                    log.debug("favicon ENS resolve failed for \(name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    return nil
+                }
+            } else {
+                resolvedRef = nil
+            }
+            guard let translated = BzzSchemeHandler.localHTTPURL(for: url, resolvedTo: resolvedRef) else {
+                return nil
+            }
             fetchURL = translated
         } else if url.scheme == "https" {
             fetchURL = url
         } else {
             // http:// falls afoul of ATS; skip rather than adding exceptions.
+            // ipfs/ipns favicons aren't supported by this path today.
             return nil
         }
 

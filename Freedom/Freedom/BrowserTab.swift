@@ -469,8 +469,8 @@ final class BrowserTab {
     /// resolve every time, matching the "pull-to-refresh = bypass cache"
     /// contract.
     func reload() {
-        if let url, url.isENSNamedHost, let host = url.host?.lowercased() {
-            navigate(to: .ens(name: host))
+        if let name = url?.ensName {
+            navigate(to: .ens(name: name))
         } else {
             webView.reload()
         }

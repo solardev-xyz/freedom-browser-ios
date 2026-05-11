@@ -40,10 +40,10 @@ struct FreedomApp: App {
             self.modelContainer = container
             let history = HistoryStore(context: container.mainContext)
             let bookmarks = BookmarkStore(context: container.mainContext)
-            let favicons = FaviconStore(context: container.mainContext)
             let settings = SettingsStore()
             let pool = EthereumRPCPool(settings: settings)
             let resolver = ENSResolver(pool: pool, settings: settings)
+            let favicons = FaviconStore(context: container.mainContext, ensResolver: resolver)
             self._historyStore = State(wrappedValue: history)
             self._bookmarkStore = State(wrappedValue: bookmarks)
             self._faviconStore = State(wrappedValue: favicons)

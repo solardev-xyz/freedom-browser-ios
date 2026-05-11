@@ -7,13 +7,14 @@ extension URL {
         host ?? absoluteString
     }
 
-    /// True when the URL's host is an ENS name (`.eth` suffix). Used by
-    /// the scheme handlers to decide whether to run ENS resolution
-    /// before forming the upstream fetch, and by BrowserTab.reload to
-    /// re-trigger ENS resolution on pull-to-refresh. Lowercases before
-    /// the suffix check because custom schemes (bzz/ipfs/ipns) preserve
-    /// host case where standard schemes (http/https) normalize it.
-    var isENSNamedHost: Bool {
-        host?.lowercased().hasSuffix(".eth") ?? false
+    /// Lowercased ENS name if the URL's host is `.eth`-suffixed, nil
+    /// otherwise. Used by the scheme handlers + favicon store +
+    /// BrowserTab.reload to detect ENS-origin URLs and bind the name in
+    /// one step. Lowercases internally because custom schemes
+    /// (bzz/ipfs/ipns) preserve host case where standard schemes
+    /// (http/https) normalize it.
+    var ensName: String? {
+        let lowered = host?.lowercased()
+        return (lowered?.hasSuffix(".eth") ?? false) ? lowered : nil
     }
 }

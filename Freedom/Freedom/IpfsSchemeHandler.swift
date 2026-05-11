@@ -137,8 +137,8 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         // verify codec, then form the gateway path against the
         // resolved CID. Non-`.eth` hosts continue straight to the
         // Rust gateway, which handles CID hosts and DNSLink/IPNS names.
-        if originalURL.isENSNamedHost, let host = originalURL.host?.lowercased() {
-            startWithENSResolution(originalURL: originalURL, name: host, task: task)
+        if let name = originalURL.ensName {
+            startWithENSResolution(originalURL: originalURL, name: name, task: task)
             return
         }
 
