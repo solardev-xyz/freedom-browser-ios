@@ -60,7 +60,11 @@ final class ENSResolverTests: XCTestCase {
             clock: { [unowned self] in self.clock.now }
         )
         let result = try await resolver.resolveContent("swarmit.eth")
-        XCTAssertEqual(result.uri.absoluteString, "bzz://\(sampleHashHex)")
+        // Origin = ENS name (storage survives contenthash rotation).
+        // The decoded swarm reference rides along on `contentRef` for
+        // handler routing.
+        XCTAssertEqual(result.uri.absoluteString, "bzz://swarmit.eth")
+        XCTAssertEqual(result.contentRef, sampleHashHex)
         XCTAssertEqual(result.codec, .bzz)
         XCTAssertEqual(result.trust.level, .verified)
     }

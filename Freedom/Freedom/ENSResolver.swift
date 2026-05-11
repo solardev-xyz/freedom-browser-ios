@@ -189,7 +189,26 @@ final class ENSResolver {
             if innerBytes.isEmpty {
                 return .failure(.notFound(reason: .emptyContenthash, trust: trust))
             }
-            guard let (uri, codec, contentRef) = ContenthashDecoder.decode(innerBytes) else {
+            guard let (_, codec, contentRef) = ContenthashDecoder.decode(innerBytes) else {
+                return .failure(.unsupportedCodec(rawBytes: innerBytes, trust: trust))
+            }
+            // Construct the URI from the ENS name, not from the decoded
+            // content reference — `vitalik.eth` resolves to
+            // `ipfs://vitalik.eth`, not `ipfs://<cid>`. The handlers
+            // re-resolve on each request (cheap cache hit) and use
+            // `contentRef` to route the upstream fetch. Keeping the
+            // origin tied to the name means storage / cookies /
+            // localStorage survive contenthash rotation by the record
+            // owner, matching desktop Freedom's standard-scheme model.
+            //
+            // `URLComponents` over `URL(string:)` because ENSIP-15
+            // normalization can produce non-ASCII hosts (emoji.eth,
+            // IDN labels) — `URL(string:)` rejects those, `URLComponents`
+            // handles the percent/IDN encoding.
+            var components = URLComponents()
+            components.scheme = codec.scheme
+            components.host = normalized
+            guard let uri = components.url else {
                 return .failure(.unsupportedCodec(rawBytes: innerBytes, trust: trust))
             }
             return .success(ENSResolvedContent(

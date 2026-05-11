@@ -89,8 +89,16 @@ final class BrowserTab {
     /// cleared by dismissGate() or continuePastGate().
     var pendingGate: Gate?
 
-    /// URL the UI presents — ENS form if set, otherwise the live webview URL.
-    var displayURL: URL? { ensURL ?? url }
+    /// URL the UI presents. During the in-flight resolve phase (before
+    /// WebKit has the resolved URL) the pseudo `ens://` form keeps the
+    /// address bar locked on the user-typed name; once resolution
+    /// hands off to WebKit, `url` (now `<codec>://name/`) is what the
+    /// address bar shows, matching desktop Freedom's resolved-transport
+    /// display.
+    var displayURL: URL? {
+        if case .resolving = ensStatus { return ensURL }
+        return url ?? ensURL
+    }
 
     /// Parked approval. The bridge awaits `ApprovalResolver`; the sheet
     /// presents via ContentView. Call `resolvePendingApproval` from any
@@ -456,9 +464,13 @@ final class BrowserTab {
     func goForward() { webView.goForward() }
     /// Re-resolves ENS-origin pages so a rotated content-hash is picked up;
     /// otherwise delegates to WKWebView.reload which re-fetches the current URL.
+    /// The handler's own ENS cache would honor `webView.reload()` until its
+    /// TTL expires — routing through `navigate(.ens)` forces a fresh
+    /// resolve every time, matching the "pull-to-refresh = bypass cache"
+    /// contract.
     func reload() {
-        if let ensURL, case .ens(let name) = BrowserURL.classify(ensURL) {
-            navigate(to: .ens(name: name))
+        if let url, url.isENSNamedHost, let host = url.host?.lowercased() {
+            navigate(to: .ens(name: host))
         } else {
             webView.reload()
         }

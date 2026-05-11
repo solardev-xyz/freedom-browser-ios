@@ -59,7 +59,7 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
         // verify codec, then form the upstream URL against the
         // resolved swarm reference. Non-`.eth` hosts continue
         // straight to the existing CID/hash path.
-        if let host = bzzURL.host?.lowercased(), host.hasSuffix(".eth") {
+        if bzzURL.isENSNamedHost, let host = bzzURL.host?.lowercased() {
             startWithENSResolution(originalURL: bzzURL, name: host, task: task)
             return
         }
