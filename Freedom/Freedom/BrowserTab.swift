@@ -10,7 +10,11 @@ import WebKit
 final class BrowserTab {
     enum ENSStatus: Equatable {
         case idle
-        case resolving(name: String)
+        /// In-flight ENS resolution. `url` is the pseudo `ens://<name>`
+        /// form that drives the address bar until WebKit takes over —
+        /// stays the source of truth for `displayURL` while `url` is
+        /// still the prior page's address (or nil on a cold tab).
+        case resolving(name: String, url: URL)
         case failed(message: String)
     }
 
@@ -71,12 +75,6 @@ final class BrowserTab {
     var bottomNavColor: UIColor?
     private(set) var hasNavigated: Bool = false
 
-    /// Pseudo-URL for the originating ENS name when the page was loaded
-    /// via ENS resolution. Kept alongside `url` (the resolved bzz://
-    /// WebKit actually loaded) so the address bar, history and bookmarks
-    /// can store the ens:// form — revisits re-resolve and pick up any
-    /// content-hash rotation by the ENS record owner.
-    var ensURL: URL?
     var ensStatus: ENSStatus = .idle
 
     /// Trust metadata from the last ENS resolution. The address-bar
@@ -89,15 +87,15 @@ final class BrowserTab {
     /// cleared by dismissGate() or continuePastGate().
     var pendingGate: Gate?
 
-    /// URL the UI presents. During the in-flight resolve phase (before
-    /// WebKit has the resolved URL) the pseudo `ens://` form keeps the
+    /// URL the UI presents. During the in-flight resolve phase the
+    /// pseudo `ens://<name>` form carried on `.resolving` keeps the
     /// address bar locked on the user-typed name; once resolution
     /// hands off to WebKit, `url` (now `<codec>://name/`) is what the
     /// address bar shows, matching desktop Freedom's resolved-transport
     /// display.
     var displayURL: URL? {
-        if case .resolving = ensStatus { return ensURL }
-        return url ?? ensURL
+        if case .resolving(_, let resolvingURL) = ensStatus { return resolvingURL }
+        return url
     }
 
     /// Parked approval. The bridge awaits `ApprovalResolver`; the sheet
@@ -311,8 +309,7 @@ final class BrowserTab {
         case .bzz(let target), .ipfs(let target), .ipns(let target), .web(let target):
             loadInWebView(target)
         case .ens(let name):
-            ensURL = browserURL.url
-            ensStatus = .resolving(name: name)
+            ensStatus = .resolving(name: name, url: browserURL.url)
             activeResolveTask = Task { await resolveAndLoad(name: name) }
         }
     }
@@ -406,7 +403,7 @@ final class BrowserTab {
     /// gateway's reported phase. Returns `nil` when the page is
     /// idle / fully rendered, hiding the pill entirely.
     var loadingState: String? {
-        if case .resolving(let name) = ensStatus {
+        if case .resolving(let name, _) = ensStatus {
             return "Resolving \(name)…"
         }
         return ipfsLoadingLabel
@@ -428,7 +425,6 @@ final class BrowserTab {
     }
 
     private func resetENSState() {
-        ensURL = nil
         ensStatus = .idle
         currentTrust = nil
         pendingGate = nil
@@ -450,7 +446,6 @@ final class BrowserTab {
         // what's actually on screen (whether that's the prior webview
         // content or the home page).
         pendingGate = nil
-        ensURL = nil
         ensStatus = .idle
         currentTrust = nil
         if webView.canGoBack {

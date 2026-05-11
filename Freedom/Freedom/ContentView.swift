@@ -171,7 +171,13 @@ struct ContentView: View {
             }
         }
         .onChange(of: tabStore.activeTab?.displayURL) { _, new in
-            guard !addressFocused else { return }
+            // `isEditing` (synchronous, flipped by exitEditMode at submit)
+            // rather than `addressFocused` (asynchronous @FocusState — drops
+            // on next render after Go), so the post-submit displayURL flip
+            // from `ens://name` → `<codec>://name/` actually lands in the
+            // TextField instead of being skipped while focus hasn't yet
+            // propagated.
+            guard !isEditing else { return }
             addressText = new?.absoluteString ?? ""
         }
         .onChange(of: addressFocused) { _, focused in
