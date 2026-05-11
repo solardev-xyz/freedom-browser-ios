@@ -59,6 +59,17 @@ final class IpfsNavContext {
 ///    parent navigation.
 @MainActor
 final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
+    /// Permissive CORS so cross-content `fetch('ipfs://<cid>/')` from an
+    /// `ipfs://` page works, matching desktop's `corsEnabled: true`
+    /// scheme registration.
+    static let corsResponseHeaders: [String: String] = [
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Range",
+        "Access-Control-Max-Age": "600",
+        "Access-Control-Expose-Headers": "Content-Length, Content-Range",
+    ]
+
     /// Weak ref — the node is owned by `FreedomApp` and outlives any
     /// individual tab. A weak ref keeps tabs from extending the node's
     /// lifetime past app teardown.
@@ -103,6 +114,22 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
               )
         else {
             task.didFailWithError(URLError(.badURL))
+            return
+        }
+
+        // Short-circuit OPTIONS preflights at the handler. The Rust
+        // reader serves verified GET/HEAD only; a passthrough OPTIONS
+        // would error out and the actual request would never run.
+        if (task.request.httpMethod ?? "GET").uppercased() == "OPTIONS" {
+            let response = HTTPURLResponse(
+                url: originalURL,
+                statusCode: 204,
+                httpVersion: "HTTP/1.1",
+                headerFields: Self.corsResponseHeaders
+            )!
+            task.didReceive(response)
+            task.didReceive(Data()) // WKURLSchemeTask contract: body call required before didFinish
+            task.didFinish()
             return
         }
 
@@ -243,12 +270,16 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         }
         // Rewrite the response URL back to the original `ipfs://` /
         // `ipns://` so WebKit treats the response as same-origin with
-        // the requesting page.
+        // the requesting page, and overlay permissive CORS headers so
+        // cross-content `ipfs://<other-cid>/` fetches from other
+        // `ipfs://` pages succeed.
+        var headers = http.allHeaderFields as? [String: String] ?? [:]
+        headers.merge(Self.corsResponseHeaders) { _, new in new }
         let rewritten = HTTPURLResponse(
             url: pending.originalURL,
             statusCode: http.statusCode,
             httpVersion: "HTTP/1.1",
-            headerFields: http.allHeaderFields as? [String: String]
+            headerFields: headers
         ) ?? http
         do {
             pending.schemeTask.didReceive(rewritten)
