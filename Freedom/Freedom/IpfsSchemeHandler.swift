@@ -598,13 +598,25 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
+    /// Returns a structured error from Rust's response metadata, but
+    /// only if the metadata's own state is terminal. See
+    /// `NativeResponseMetadata.State.isTerminal`.
+    nonisolated fileprivate static func nativeMetadataTerminalError(
+        handle: any NativeGatewayHandleProtocol
+    ) -> Error? {
+        guard let json = try? handle.responseJSON(timeoutMilliseconds: 0),
+              let meta = try? decodeNativeResponseMetadata(json),
+              meta.state.isTerminal
+        else { return nil }
+        return nativeError(from: meta)
+    }
+
     nonisolated fileprivate static func nativeReadError(
-        handle: NativeGatewayHandle,
+        handle: any NativeGatewayHandleProtocol,
         status: FreedomIpfsNativeGatewayReadStatus
     ) -> Error {
-        if let json = try? handle.responseJSON(timeoutMilliseconds: 0),
-           let meta = try? decodeNativeResponseMetadata(json) {
-            return nativeError(from: meta)
+        if let metaError = nativeMetadataTerminalError(handle: handle) {
+            return metaError
         }
         switch status {
         case .cancelled:     return URLError(.cancelled)
@@ -615,6 +627,16 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     nonisolated fileprivate static func nativeError(from metadata: NativeResponseMetadata) -> Error {
+        // WebKit's error-page UX treats `URLError(.cancelled)` as a
+        // user-initiated cancel (no page shown). Surfacing terminal
+        // metadata for `.cancelled` as a generic FreedomIPFSNativeGateway
+        // NSError instead would render a "request cancelled" error page
+        // for every back-button / new-navigation cancel. The .failed
+        // branch keeps the structured diagnostic info — failures DO
+        // want a visible error.
+        if metadata.state == .cancelled {
+            return URLError(.cancelled)
+        }
         let message = metadata.error?.message ?? "native gateway request \(metadata.state.rawValue)"
         let code = metadata.error?.code ?? "unknown"
         return NSError(
@@ -653,6 +675,12 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     struct NativeResponseMetadata: Decodable, Equatable {
         enum State: String, Decodable {
             case pending, streaming, completed, cancelled, failed
+
+            /// Rust only populates the structured error fields once the
+            /// request has reached a terminal state — using metadata for
+            /// errors in any other state produces misleading messages
+            /// like "native gateway request pending".
+            var isTerminal: Bool { self == .failed || self == .cancelled }
         }
 
         let state: State
@@ -776,6 +804,29 @@ final class PendingRequest {
     }
 }
 
+/// Protocol seam for `NativePending`'s back-pointer to the scheme
+/// handler. Returns `true` iff the handle was still registered (so a
+/// `webView(_:stop:)` racing in mid-delivery is the same observable
+/// state as "already terminated"). Tests stub this so they can drive
+/// `NativePending` without standing up a real `IpfsSchemeHandler`
+/// (which would need a real `IPFSNode`).
+@MainActor
+protocol NativePendingOwner: AnyObject {
+    func nativePendingClaimDelivery(handleID: UInt64) -> Bool
+    func nativePendingRemove(handleID: UInt64) -> Bool
+}
+
+extension IpfsSchemeHandler: NativePendingOwner {
+    func nativePendingClaimDelivery(handleID: UInt64) -> Bool {
+        activeNative[handleID] != nil
+    }
+
+    @discardableResult
+    func nativePendingRemove(handleID: UInt64) -> Bool {
+        activeNative.removeValue(forKey: handleID) != nil
+    }
+}
+
 /// Sink for the node-level event multiplexer. Receives events on the
 /// `NativeGatewayDispatcher` worker thread, does the FFI work there,
 /// and hops to main only for WK callbacks. Owned by `IpfsSchemeHandler`
@@ -784,8 +835,8 @@ final class PendingRequest {
 final class NativePending: NativeRequestSink, @unchecked Sendable {
     let schemeTask: WKURLSchemeTask
     let originalURL: URL
-    let handle: NativeGatewayHandle
-    weak var owner: IpfsSchemeHandler?
+    let handle: any NativeGatewayHandleProtocol
+    weak var owner: (any NativePendingOwner)?
 
     private let stateLock = NSLock()
     private var responseDelivered = false
@@ -794,8 +845,8 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
     init(
         schemeTask: WKURLSchemeTask,
         originalURL: URL,
-        handle: NativeGatewayHandle,
-        owner: IpfsSchemeHandler
+        handle: any NativeGatewayHandleProtocol,
+        owner: any NativePendingOwner
     ) {
         self.schemeTask = schemeTask
         self.originalURL = originalURL
@@ -813,6 +864,10 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
     }
 
     func nativeRequestReceivedEvent(_ event: FreedomIpfsNativeGatewayEvent) {
+        // Defense-in-depth: the dispatcher routes by handle id, but a
+        // mis-routed event would otherwise free `self.handle` for a
+        // request that isn't ours.
+        guard event.requestHandle == handle.id else { return }
         if isTerminated { return }
         let flags = event.events
         if flags.contains(.failed) || flags.contains(.cancelled) || flags.contains(.handleFreed) {
@@ -943,9 +998,8 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
     }
 
     private func nativeTerminalError(flags: FreedomIpfsNativeGatewayEventFlags) -> Error {
-        if let json = try? handle.responseJSON(timeoutMilliseconds: 0),
-           let meta = try? IpfsSchemeHandler.decodeNativeResponseMetadata(json) {
-            return IpfsSchemeHandler.nativeError(from: meta)
+        if let metaError = IpfsSchemeHandler.nativeMetadataTerminalError(handle: handle) {
+            return metaError
         }
         if flags.contains(.cancelled) {
             return URLError(.cancelled)
@@ -979,7 +1033,7 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
         DispatchQueue.main.async { [weak self, weak owner] in
             MainActor.assumeIsolated {
                 guard let self, let owner else { return }
-                guard owner.activeNative.removeValue(forKey: id) != nil else { return }
+                guard owner.nativePendingRemove(handleID: id) else { return }
                 if let error {
                     self.schemeTask.didFailWithError(error)
                 } else {
@@ -997,7 +1051,7 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
         DispatchQueue.main.async { [weak self, weak owner] in
             MainActor.assumeIsolated {
                 guard let self, let owner else { return }
-                guard owner.activeNative[self.handle.id] != nil else { return }
+                guard owner.nativePendingClaimDelivery(handleID: self.handle.id) else { return }
                 body(self.schemeTask)
             }
         }

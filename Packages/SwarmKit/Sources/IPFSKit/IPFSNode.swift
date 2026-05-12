@@ -518,10 +518,29 @@ public final class IPFSNode {
     }
 }
 
+/// Protocol seam for `NativeGatewayHandle` so the scheme handler's
+/// `NativePending` can be unit-tested against a fake handle without a
+/// running Rust reader. Production conformance is the struct below.
+public protocol NativeGatewayHandleProtocol: Sendable {
+    var id: UInt64 { get }
+    /// Block up to `timeoutMilliseconds` waiting for response metadata.
+    /// Pass `0` for nonblocking semantics.
+    func responseJSON(timeoutMilliseconds: UInt64) throws -> String
+    /// Block up to `timeoutMilliseconds` waiting for body bytes,
+    /// completion, cancellation, or failure. Pass `0` for nonblocking
+    /// semantics. Buffer remains caller-owned.
+    func read(
+        into buffer: UnsafeMutableRawBufferPointer,
+        timeoutMilliseconds: UInt64
+    ) throws -> FreedomIpfsNativeGatewayReadResult
+    @discardableResult func cancel() -> Bool
+    @discardableResult func free() -> Bool
+}
+
 /// Handle for an in-flight native gateway request. Bundles the Rust
 /// request id with a strong `FreedomIpfsReader` ref so the caller can
 /// drive the FFI off the main actor without going through `IPFSNode`.
-public struct NativeGatewayHandle: Sendable {
+public struct NativeGatewayHandle: NativeGatewayHandleProtocol {
     public let id: UInt64
     private let reader: FreedomIpfsReader
 
@@ -530,8 +549,6 @@ public struct NativeGatewayHandle: Sendable {
         self.reader = reader
     }
 
-    /// Block up to `timeoutMilliseconds` waiting for response metadata.
-    /// Pass `0` for nonblocking semantics.
     public func responseJSON(timeoutMilliseconds: UInt64) throws -> String {
         try reader.nativeGatewayResponseJSON(
             requestHandle: id,
@@ -539,9 +556,6 @@ public struct NativeGatewayHandle: Sendable {
         )
     }
 
-    /// Block up to `timeoutMilliseconds` waiting for body bytes,
-    /// completion, cancellation, or failure. Pass `0` for nonblocking
-    /// semantics. Buffer remains caller-owned.
     public func read(
         into buffer: UnsafeMutableRawBufferPointer,
         timeoutMilliseconds: UInt64

@@ -108,13 +108,16 @@ final class NativeGatewayDispatcherTests: XCTestCase {
         dispatcher.stop()
 
         // Both sinks should have received a synthetic cancel+handleFreed
-        // event so they can clean up their WK state.
+        // event stamped with their own handle id so the sink's
+        // boundary check accepts the drain.
         let aEvents = try waitForEvents(sink: sinkA, count: 1)
         let bEvents = try waitForEvents(sink: sinkB, count: 1)
         XCTAssertEqual(aEvents.first?.status, .gatewayStopped)
+        XCTAssertEqual(aEvents.first?.requestHandle, 1)
         XCTAssertTrue(aEvents.first!.events.contains(.cancelled))
         XCTAssertTrue(aEvents.first!.events.contains(.handleFreed))
         XCTAssertEqual(bEvents.first?.status, .gatewayStopped)
+        XCTAssertEqual(bEvents.first?.requestHandle, 2)
     }
 
     func testRegisterAfterStopImmediatelyDrains() throws {

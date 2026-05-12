@@ -64,24 +64,27 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         logger.info("dispatcher started")
     }
 
-    /// Idempotent. Drained sinks receive a synthetic cancelled event.
+    /// Idempotent. Drained sinks receive a synthetic cancelled event
+    /// stamped with their registered handle id — so the sink's own
+    /// boundary check (`event.requestHandle == handle.id`) doesn't
+    /// reject the drain.
     public func stop() {
-        let drainedSinks: [NativeRequestSink]
+        let drained: [(UInt64, NativeRequestSink)]
         lock.lock()
         if state.stopped { lock.unlock(); return }
         state.stopped = true
-        drainedSinks = Array(state.sinks.values)
+        drained = state.sinks.map { ($0.key, $0.value) }
         state.sinks.removeAll()
         state.stashedEvents.removeAll()
         state.tombstones.removeAll()
         lock.unlock()
-        logger.info("dispatcher stop drained=\(drainedSinks.count, privacy: .public)")
-        for sink in drainedSinks {
+        logger.info("dispatcher stop drained=\(drained.count, privacy: .public)")
+        for (handleID, sink) in drained {
             sink.nativeRequestReceivedEvent(
                 FreedomIpfsNativeGatewayEvent(
                     status: .gatewayStopped,
                     events: [.cancelled, .handleFreed],
-                    requestHandle: 0
+                    requestHandle: handleID
                 )
             )
         }
