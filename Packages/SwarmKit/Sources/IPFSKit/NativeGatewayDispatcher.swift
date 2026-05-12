@@ -52,7 +52,6 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         self.eventSource = eventSource
     }
 
-    /// Start the worker thread. Idempotent.
     public func start() {
         lock.lock()
         guard worker == nil, !state.stopped else { lock.unlock(); return }
@@ -65,9 +64,7 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         logger.info("dispatcher started")
     }
 
-    /// Stop the worker, drain the registry, and notify any
-    /// outstanding sinks with a synthetic cancelled event so they
-    /// can clean up. Idempotent.
+    /// Idempotent. Drained sinks receive a synthetic cancelled event.
     public func stop() {
         let drainedSinks: [NativeRequestSink]
         lock.lock()
@@ -118,9 +115,7 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         }
     }
 
-    /// Tombstone the handle: drop the sink and any stashed events,
-    /// and silence future events for this handle until Rust emits
-    /// `.handleFreed`. Used by `webView(_:stop:)`-style cancellations.
+    /// Tombstone until Rust emits `.handleFreed`.
     public func unregister(handleID: UInt64) {
         lock.lock()
         state.sinks.removeValue(forKey: handleID)
@@ -129,8 +124,6 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         lock.unlock()
         logger.debug("unregister handle=\(handleID, privacy: .public)")
     }
-
-    // MARK: - Worker
 
     private func runLoop() {
         logger.info("worker started")
@@ -182,15 +175,14 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
             state.stashedEvents[handleID, default: []].append(event)
             return .stash
         }
-        let flags = NativeGatewayDispatcher.flagsDescription(event.events)
         switch action {
         case .invoke(let sink):
-            logger.debug("event handle=\(handleID, privacy: .public) flags=\(flags, privacy: .public) action=route")
+            logger.debug("event handle=\(handleID, privacy: .public) flags=\(NativeGatewayDispatcher.flagsDescription(event.events), privacy: .public) action=route")
             sink.nativeRequestReceivedEvent(event)
         case .stash:
-            logger.debug("event handle=\(handleID, privacy: .public) flags=\(flags, privacy: .public) action=stash")
+            logger.debug("event handle=\(handleID, privacy: .public) flags=\(NativeGatewayDispatcher.flagsDescription(event.events), privacy: .public) action=stash")
         case .tombstoneDrop:
-            logger.debug("event handle=\(handleID, privacy: .public) flags=\(flags, privacy: .public) action=drop")
+            logger.debug("event handle=\(handleID, privacy: .public) flags=\(NativeGatewayDispatcher.flagsDescription(event.events), privacy: .public) action=drop")
         }
     }
 
@@ -209,13 +201,5 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         case invoke(NativeRequestSink)
         case stash
         case tombstoneDrop
-    }
-}
-
-private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
-        lock()
-        defer { unlock() }
-        return body()
     }
 }

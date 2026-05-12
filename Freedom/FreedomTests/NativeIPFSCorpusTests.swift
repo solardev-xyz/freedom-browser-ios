@@ -303,17 +303,16 @@ private final class NavCapture: NSObject, WKNavigationDelegate {
     }
 
     private var continuation: CheckedContinuation<Outcome, Never>?
+    private var timeoutTask: Task<Void, Never>?
     private var fired = false
 
     func waitForOutcome(timeout: TimeInterval) async -> Outcome {
         let outcome = await withCheckedContinuation { (cont: CheckedContinuation<Outcome, Never>) in
             self.continuation = cont
-            // Timeout fallback.
-            Task { [weak self] in
+            self.timeoutTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                await MainActor.run {
-                    self?.fire(.timeout)
-                }
+                guard !Task.isCancelled else { return }
+                await MainActor.run { self?.fire(.timeout) }
             }
         }
         return outcome
@@ -322,6 +321,8 @@ private final class NavCapture: NSObject, WKNavigationDelegate {
     private func fire(_ outcome: Outcome) {
         guard !fired else { return }
         fired = true
+        timeoutTask?.cancel()
+        timeoutTask = nil
         continuation?.resume(returning: outcome)
         continuation = nil
     }

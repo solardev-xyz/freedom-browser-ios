@@ -98,7 +98,7 @@ final class NativeGatewayDispatcherTests: XCTestCase {
         let source = FakeEventSource()
         let dispatcher = NativeGatewayDispatcher(eventSource: source)
         dispatcher.start()
-        defer { source.shutdown() }
+        defer { dispatcher.stop(); source.shutdown() }
 
         let sinkA = RecordingSink()
         let sinkB = RecordingSink()
@@ -121,7 +121,7 @@ final class NativeGatewayDispatcherTests: XCTestCase {
         let source = FakeEventSource()
         let dispatcher = NativeGatewayDispatcher(eventSource: source)
         dispatcher.start()
-        defer { source.shutdown() }
+        defer { dispatcher.stop(); source.shutdown() }
 
         dispatcher.stop()
 
