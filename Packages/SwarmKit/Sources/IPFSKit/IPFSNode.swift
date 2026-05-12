@@ -427,35 +427,15 @@ public final class IPFSNode {
     }
 
     // MARK: - Native gateway request FFI (experimental)
-    // Throws IPFSError.notRunning when the node is stopped; otherwise
-    // forwards to the reader. See freedom-ipfs/docs/native-gateway-api.md.
+    // Throws IPFSError.notRunning when the node is stopped. The
+    // returned handle bundles a strong `FreedomIpfsReader` ref so the
+    // caller can drive the wait/read/cancel/free FFI off the main
+    // actor without a hop. See freedom-ipfs/docs/native-gateway-api.md.
 
-    public func startNativeGatewayRequest(json: String) throws -> UInt64 {
+    public func startNativeGatewayRequest(json: String) throws -> NativeGatewayHandle {
         guard let reader else { throw IPFSError.notRunning }
-        return try reader.startNativeGatewayRequest(json: json)
-    }
-
-    public func nativeGatewayResponseJSON(requestHandle: UInt64) throws -> String {
-        guard let reader else { throw IPFSError.notRunning }
-        return try reader.nativeGatewayResponseJSON(requestHandle: requestHandle)
-    }
-
-    public func readNativeGatewayRequest(
-        _ requestHandle: UInt64,
-        into buffer: UnsafeMutableRawBufferPointer
-    ) throws -> FreedomIpfsNativeGatewayReadResult {
-        guard let reader else { throw IPFSError.notRunning }
-        return try reader.readNativeGatewayRequest(requestHandle, into: buffer)
-    }
-
-    @discardableResult
-    public func cancelNativeGatewayRequest(_ requestHandle: UInt64) -> Bool {
-        reader?.cancelNativeGatewayRequest(requestHandle) ?? false
-    }
-
-    @discardableResult
-    public func freeNativeGatewayRequest(_ requestHandle: UInt64) -> Bool {
-        reader?.freeNativeGatewayRequest(requestHandle) ?? false
+        let id = try reader.startNativeGatewayRequest(json: json)
+        return NativeGatewayHandle(id: id, reader: reader)
     }
 
     // MARK: - Internals
@@ -495,5 +475,51 @@ public final class IPFSNode {
         let ts = Date().formatted(date: .omitted, time: .standard)
         log.append("\(ts)  \(line)")
         if log.count > 500 { log.removeFirst(log.count - 500) }
+    }
+}
+
+/// Handle for an in-flight native gateway request. Bundles the Rust
+/// request id with a strong `FreedomIpfsReader` ref so the caller can
+/// drive the FFI off the main actor without going through `IPFSNode`.
+public struct NativeGatewayHandle: Sendable {
+    public let id: UInt64
+    private let reader: FreedomIpfsReader
+
+    fileprivate init(id: UInt64, reader: FreedomIpfsReader) {
+        self.id = id
+        self.reader = reader
+    }
+
+    /// Block up to `timeoutMilliseconds` waiting for response metadata.
+    /// Pass `0` for nonblocking semantics.
+    public func responseJSON(timeoutMilliseconds: UInt64) throws -> String {
+        try reader.nativeGatewayResponseJSON(
+            requestHandle: id,
+            timeoutMilliseconds: timeoutMilliseconds
+        )
+    }
+
+    /// Block up to `timeoutMilliseconds` waiting for body bytes,
+    /// completion, cancellation, or failure. Pass `0` for nonblocking
+    /// semantics. Buffer remains caller-owned.
+    public func read(
+        into buffer: UnsafeMutableRawBufferPointer,
+        timeoutMilliseconds: UInt64
+    ) throws -> FreedomIpfsNativeGatewayReadResult {
+        try reader.readNativeGatewayRequest(
+            id,
+            into: buffer,
+            timeoutMilliseconds: timeoutMilliseconds
+        )
+    }
+
+    @discardableResult
+    public func cancel() -> Bool {
+        reader.cancelNativeGatewayRequest(id)
+    }
+
+    @discardableResult
+    public func free() -> Bool {
+        reader.freeNativeGatewayRequest(id)
     }
 }

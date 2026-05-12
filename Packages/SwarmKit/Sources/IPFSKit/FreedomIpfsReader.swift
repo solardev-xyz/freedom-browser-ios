@@ -333,6 +333,24 @@ public final class FreedomIpfsReader {
         return String(cString: ptr)
     }
 
+    public func nativeGatewayResponseJSON(
+        requestHandle: UInt64,
+        timeoutMilliseconds: UInt64
+    ) throws -> String {
+        guard let handle else {
+            throw FreedomIpfsReaderError.invalidNode
+        }
+        guard let ptr = freedom_ipfs_gateway_request_response_json_wait(
+            handle,
+            requestHandle,
+            timeoutMilliseconds
+        ) else {
+            throw FreedomIpfsReaderError.invalidNativeGatewayRequest
+        }
+        defer { freedom_ipfs_string_free(ptr) }
+        return String(cString: ptr)
+    }
+
     public func readNativeGatewayRequest(
         _ requestHandle: UInt64,
         into buffer: UnsafeMutableRawBufferPointer
@@ -348,6 +366,28 @@ public final class FreedomIpfsReader {
             requestHandle,
             baseAddress.assumingMemoryBound(to: UInt8.self),
             buffer.count
+        )
+        let status = FreedomIpfsNativeGatewayReadStatus(rawValue: result.status) ?? .failed
+        return FreedomIpfsNativeGatewayReadResult(status: status, bytesRead: Int(result.bytes_read))
+    }
+
+    public func readNativeGatewayRequest(
+        _ requestHandle: UInt64,
+        into buffer: UnsafeMutableRawBufferPointer,
+        timeoutMilliseconds: UInt64
+    ) throws -> FreedomIpfsNativeGatewayReadResult {
+        guard let handle else {
+            throw FreedomIpfsReaderError.invalidNode
+        }
+        guard let baseAddress = buffer.baseAddress, buffer.count > 0 else {
+            throw FreedomIpfsReaderError.invalidNativeGatewayRequest
+        }
+        let result = freedom_ipfs_gateway_request_read_wait(
+            handle,
+            requestHandle,
+            baseAddress.assumingMemoryBound(to: UInt8.self),
+            buffer.count,
+            timeoutMilliseconds
         )
         let status = FreedomIpfsNativeGatewayReadStatus(rawValue: result.status) ?? .failed
         return FreedomIpfsNativeGatewayReadResult(status: status, bytesRead: Int(result.bytes_read))
