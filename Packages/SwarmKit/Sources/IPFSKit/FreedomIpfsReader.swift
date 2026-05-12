@@ -7,6 +7,8 @@ public enum FreedomIpfsReaderError: Error, Equatable {
     case startGatewayFailed
     case importCarFailed
     case exportCarFailed
+    case nativeGatewayRequestFailed
+    case invalidNativeGatewayRequest
 }
 
 public enum FreedomIpfsRoutingMode: UInt32, Sendable {
@@ -14,6 +16,20 @@ public enum FreedomIpfsRoutingMode: UInt32, Sendable {
     case delegated = 1
     case lightDht = 2
     case offline = 3
+}
+
+public enum FreedomIpfsNativeGatewayReadStatus: UInt32, Sendable {
+    case pending = 0
+    case bytes = 1
+    case end = 2
+    case cancelled = 3
+    case failed = 4
+    case invalidHandle = 5
+}
+
+public struct FreedomIpfsNativeGatewayReadResult: Equatable, Sendable {
+    public let status: FreedomIpfsNativeGatewayReadStatus
+    public let bytesRead: Int
 }
 
 public struct FreedomIpfsStats: Equatable, Sendable {
@@ -291,6 +307,66 @@ public final class FreedomIpfsReader {
         }
         defer { freedom_ipfs_string_free(ptr) }
         return URL(string: String(cString: ptr))
+    }
+
+    public func startNativeGatewayRequest(json: String) throws -> UInt64 {
+        guard let handle else {
+            throw FreedomIpfsReaderError.invalidNode
+        }
+        let requestHandle = json.withCString { requestPtr in
+            freedom_ipfs_gateway_request_start(handle, requestPtr)
+        }
+        guard requestHandle != 0 else {
+            throw FreedomIpfsReaderError.nativeGatewayRequestFailed
+        }
+        return requestHandle
+    }
+
+    public func nativeGatewayResponseJSON(requestHandle: UInt64) throws -> String {
+        guard let handle else {
+            throw FreedomIpfsReaderError.invalidNode
+        }
+        guard let ptr = freedom_ipfs_gateway_request_response_json(handle, requestHandle) else {
+            throw FreedomIpfsReaderError.invalidNativeGatewayRequest
+        }
+        defer { freedom_ipfs_string_free(ptr) }
+        return String(cString: ptr)
+    }
+
+    public func readNativeGatewayRequest(
+        _ requestHandle: UInt64,
+        into buffer: UnsafeMutableRawBufferPointer
+    ) throws -> FreedomIpfsNativeGatewayReadResult {
+        guard let handle else {
+            throw FreedomIpfsReaderError.invalidNode
+        }
+        guard let baseAddress = buffer.baseAddress, buffer.count > 0 else {
+            throw FreedomIpfsReaderError.invalidNativeGatewayRequest
+        }
+        let result = freedom_ipfs_gateway_request_read(
+            handle,
+            requestHandle,
+            baseAddress.assumingMemoryBound(to: UInt8.self),
+            buffer.count
+        )
+        let status = FreedomIpfsNativeGatewayReadStatus(rawValue: result.status) ?? .failed
+        return FreedomIpfsNativeGatewayReadResult(status: status, bytesRead: Int(result.bytes_read))
+    }
+
+    @discardableResult
+    public func cancelNativeGatewayRequest(_ requestHandle: UInt64) -> Bool {
+        guard let handle else {
+            return false
+        }
+        return freedom_ipfs_gateway_request_cancel(handle, requestHandle)
+    }
+
+    @discardableResult
+    public func freeNativeGatewayRequest(_ requestHandle: UInt64) -> Bool {
+        guard let handle else {
+            return false
+        }
+        return freedom_ipfs_gateway_request_free(handle, requestHandle)
     }
 
     public func localGatewayURL(for address: String) -> URL? {

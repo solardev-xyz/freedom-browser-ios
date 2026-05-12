@@ -426,6 +426,38 @@ public final class IPFSNode {
         return requestIDCounter
     }
 
+    // MARK: - Native gateway request FFI (experimental)
+    // Throws IPFSError.notRunning when the node is stopped; otherwise
+    // forwards to the reader. See freedom-ipfs/docs/native-gateway-api.md.
+
+    public func startNativeGatewayRequest(json: String) throws -> UInt64 {
+        guard let reader else { throw IPFSError.notRunning }
+        return try reader.startNativeGatewayRequest(json: json)
+    }
+
+    public func nativeGatewayResponseJSON(requestHandle: UInt64) throws -> String {
+        guard let reader else { throw IPFSError.notRunning }
+        return try reader.nativeGatewayResponseJSON(requestHandle: requestHandle)
+    }
+
+    public func readNativeGatewayRequest(
+        _ requestHandle: UInt64,
+        into buffer: UnsafeMutableRawBufferPointer
+    ) throws -> FreedomIpfsNativeGatewayReadResult {
+        guard let reader else { throw IPFSError.notRunning }
+        return try reader.readNativeGatewayRequest(requestHandle, into: buffer)
+    }
+
+    @discardableResult
+    public func cancelNativeGatewayRequest(_ requestHandle: UInt64) -> Bool {
+        reader?.cancelNativeGatewayRequest(requestHandle) ?? false
+    }
+
+    @discardableResult
+    public func freeNativeGatewayRequest(_ requestHandle: UInt64) -> Bool {
+        reader?.freeNativeGatewayRequest(requestHandle) ?? false
+    }
+
     // MARK: - Internals
 
     private func startPolling() {

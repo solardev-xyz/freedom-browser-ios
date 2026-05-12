@@ -30,22 +30,29 @@ let package = Package(
             checksum: "1781deb5d0e1f61e51423313ee06bcc11e6bc9a435c00a923c27954979b6c3be"
         ),
         // Rust read-only IPFS reader from solardev-xyz/freedom-ipfs.
-        // Released artifact built from the
-        // `codex/kubo-session-rc-consolidation` performance branch
-        // (commit cfe2e3c). SHA256 is verified by SwiftPM before
-        // unpacking; bumps require a new tag, a new release, and a new
-        // checksum here.
         //
-        // Local-path development override: comment out the URL/checksum
-        // pair below and replace with
-        // `path: "../../../freedom-ipfs/target/ios-xcframework/FreedomIpfs.xcframework"`,
-        // then build the XCFramework with
-        // `cargo run -p xtask -- build-xcframework` from `freedom-ipfs`.
+        // PROTOTYPE OVERRIDE — `feature/ipfs-rust-native-api` branch.
+        // Pinned to a locally-built XCFramework from the
+        // `codex/native-gateway-core-20260511` Rust branch (head
+        // `a505dac`), which adds the native gateway request FFI used
+        // by the experimental `nativeFFI` transport in
+        // `IpfsSchemeHandler`. Build the XCFramework with
+        // `cargo run -p xtask -- build-xcframework` from
+        // `../freedom-ipfs` before resolving SwiftPM dependencies.
+        // Do not merge this override to `main` — restore the released
+        // URL/checksum pair (kept commented below) once a tagged
+        // release containing the native FFI exists.
         .binaryTarget(
             name: "FreedomIpfs",
-            url: "https://github.com/solardev-xyz/freedom-ipfs/releases/download/ios-v0.2.0-rust-reader.1/FreedomIpfs.xcframework.zip",
-            checksum: "c2aa24aac4e51448a412aac050cf09718f532f32c34ebcddfe337ba20d5839a4"
+            path: "../../../freedom-ipfs/target/ios-xcframework/FreedomIpfs.xcframework"
         ),
+        // Released production target. Restore once the native gateway
+        // FFI lands in a tagged release:
+        // .binaryTarget(
+        //     name: "FreedomIpfs",
+        //     url: "https://github.com/solardev-xyz/freedom-ipfs/releases/download/ios-v0.2.0-rust-reader.1/FreedomIpfs.xcframework.zip",
+        //     checksum: "c2aa24aac4e51448a412aac050cf09718f532f32c34ebcddfe337ba20d5839a4"
+        // ),
         .target(
             name: "SwarmKit",
             dependencies: ["Mobile"],

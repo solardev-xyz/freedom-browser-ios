@@ -183,11 +183,21 @@ final class BrowserTab {
         // is the same. Both schemes resolve through the same Rust
         // gateway, but each gets its own handler instance.
         config.setURLSchemeHandler(
-            IpfsSchemeHandler(node: ipfs, ensResolver: ensResolver, navContext: ipfsNavContext),
+            IpfsSchemeHandler(
+                node: ipfs,
+                ensResolver: ensResolver,
+                navContext: ipfsNavContext,
+                settings: settings
+            ),
             forURLScheme: "ipfs"
         )
         config.setURLSchemeHandler(
-            IpfsSchemeHandler(node: ipfs, ensResolver: ensResolver, navContext: ipfsNavContext),
+            IpfsSchemeHandler(
+                node: ipfs,
+                ensResolver: ensResolver,
+                navContext: ipfsNavContext,
+                settings: settings
+            ),
             forURLScheme: "ipns"
         )
         config.defaultWebpagePreferences.allowsContentJavaScript = true

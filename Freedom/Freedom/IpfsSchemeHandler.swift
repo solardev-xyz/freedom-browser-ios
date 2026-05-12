@@ -79,6 +79,9 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     /// correlation grouping.
     private weak var navContext: IpfsNavContext?
     private let ensResolver: any ENSResolving
+    /// Weak so the handler can outlive the store; defaults to
+    /// `.loopbackHTTP` when the ref is gone or wasn't injected.
+    private weak var settings: SettingsStore?
 
     private var session: URLSession!
     private let delegateBox = SessionDelegate()
@@ -88,11 +91,18 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     /// which doesn't exist yet at this stage — so `stop(_:)` needs a
     /// separate place to mark the scheme task cancelled.
     private var pendingResolutions: [ObjectIdentifier: PendingResolution] = [:]
+    private var activeNative: [UInt64: NativePending] = [:]
 
-    init(node: IPFSNode, ensResolver: any ENSResolving, navContext: IpfsNavContext? = nil) {
+    init(
+        node: IPFSNode,
+        ensResolver: any ENSResolving,
+        navContext: IpfsNavContext? = nil,
+        settings: SettingsStore? = nil
+    ) {
         self.node = node
         self.ensResolver = ensResolver
         self.navContext = navContext
+        self.settings = settings
         super.init()
         let config = URLSessionConfiguration.ephemeral
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -121,12 +131,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         // reader serves verified GET/HEAD only; a passthrough OPTIONS
         // would error out and the actual request would never run.
         if (task.request.httpMethod ?? "GET").uppercased() == "OPTIONS" {
-            let response = HTTPURLResponse(
-                url: originalURL,
-                statusCode: 204,
-                httpVersion: "HTTP/1.1",
-                headerFields: Self.corsResponseHeaders
-            )!
+            let response = Self.sameOriginResponse(url: originalURL, status: 204, headers: [:])!
             task.didReceive(response)
             task.didReceive(Data()) // WKURLSchemeTask contract: body call required before didFinish
             task.didFinish()
@@ -195,6 +200,14 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
                     t.cancel()
                 }
             }
+        }
+        // Mark cancelled before tearing down the Rust handle so the
+        // driver's post-FFI guards see the flag before any WK callback
+        // would fire after stop has been delivered.
+        for (handle, native) in activeNative where native.schemeTask === task {
+            native.cancelled = true
+            native.driverTask?.cancel()
+            _ = node?.cancelNativeGatewayRequest(handle)
         }
     }
 
@@ -271,16 +284,13 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         task: WKURLSchemeTask
     ) {
         let data = Data(body.utf8)
-        var headers: [String: String] = [
-            "Content-Type": "text/html; charset=utf-8",
-            "Content-Length": "\(data.count)",
-        ]
-        headers.merge(Self.corsResponseHeaders) { _, new in new }
-        let response = HTTPURLResponse(
+        let response = Self.sameOriginResponse(
             url: originalURL,
-            statusCode: statusCode,
-            httpVersion: "HTTP/1.1",
-            headerFields: headers
+            status: statusCode,
+            headers: [
+                "Content-Type": "text/html; charset=utf-8",
+                "Content-Length": "\(data.count)",
+            ]
         )!
         task.didReceive(response)
         task.didReceive(data)
@@ -290,6 +300,30 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     // MARK: - Upstream fetch (shared by CID-host and ENS-resolved paths)
 
     private func startUpstreamFetch(
+        originalURL: URL,
+        gatewayPath: String,
+        sourceRequest: URLRequest,
+        task: WKURLSchemeTask
+    ) {
+        switch settings?.ipfsGatewayTransport ?? .loopbackHTTP {
+        case .loopbackHTTP:
+            startLoopbackUpstream(
+                originalURL: originalURL,
+                gatewayPath: gatewayPath,
+                sourceRequest: sourceRequest,
+                task: task
+            )
+        case .nativeFFI:
+            startNativeUpstream(
+                originalURL: originalURL,
+                gatewayPath: gatewayPath,
+                sourceRequest: sourceRequest,
+                task: task
+            )
+        }
+    }
+
+    private func startLoopbackUpstream(
         originalURL: URL,
         gatewayPath: String,
         sourceRequest: URLRequest,
@@ -379,6 +413,26 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         return components.url
     }
 
+    /// Build an `HTTPURLResponse` whose URL is the original `ipfs://`
+    /// / `ipns://` (so WebKit treats it as same-origin with the page)
+    /// and whose headers include the permissive CORS overlay so
+    /// cross-content `ipfs://<other-cid>/` fetches from other
+    /// `ipfs://` pages succeed.
+    static func sameOriginResponse(
+        url: URL,
+        status: Int,
+        headers: [String: String]
+    ) -> HTTPURLResponse? {
+        var merged = headers
+        merged.merge(corsResponseHeaders) { _, new in new }
+        return HTTPURLResponse(
+            url: url,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: merged
+        )
+    }
+
     // MARK: - Per-task state
 
     final class PendingRequest {
@@ -408,24 +462,14 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
             completion(.cancel)
             return
         }
-        // Rewrite the response URL back to the original `ipfs://` /
-        // `ipns://` so WebKit treats the response as same-origin with
-        // the requesting page, and overlay permissive CORS headers so
-        // cross-content `ipfs://<other-cid>/` fetches from other
-        // `ipfs://` pages succeed.
-        var headers = http.allHeaderFields as? [String: String] ?? [:]
-        headers.merge(Self.corsResponseHeaders) { _, new in new }
-        let rewritten = HTTPURLResponse(
+        let rewritten = Self.sameOriginResponse(
             url: pending.originalURL,
-            statusCode: http.statusCode,
-            httpVersion: "HTTP/1.1",
-            headerFields: headers
+            status: http.statusCode,
+            headers: http.allHeaderFields as? [String: String] ?? [:]
         ) ?? http
-        do {
-            pending.schemeTask.didReceive(rewritten)
-            pending.didReceiveResponse = true
-            completion(.allow)
-        }
+        pending.schemeTask.didReceive(rewritten)
+        pending.didReceiveResponse = true
+        completion(.allow)
     }
 
     fileprivate func handleData(for taskID: Int, data: Data) {
@@ -447,6 +491,319 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         pending.schemeTask.didFinish()
+    }
+
+    // MARK: - Native FFI flow (experimental)
+
+    /// 64 KiB sits in the 32-256 KiB band recommended by the
+    /// native-gateway handoff.
+    private static let nativeReadBufferBytes = 64 * 1024
+    /// 5 ms — short enough that a `pending` -> `streaming` transition
+    /// shows up promptly, long enough that an idle handle isn't
+    /// hammering the FFI.
+    private static let nativePollNanoseconds: UInt64 = 5_000_000
+
+    private static let nativeEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }()
+    private static let nativeDecoder = JSONDecoder()
+
+    private final class NativePending {
+        let schemeTask: WKURLSchemeTask
+        let originalURL: URL
+        let handle: UInt64
+        /// Set on the main actor by `webView(_:stop:)` before the
+        /// driver's next iteration; lets the post-FFI `if !cancelled`
+        /// guards short-circuit before calling any WKURLSchemeTask
+        /// method, which is illegal once stop has been delivered.
+        var cancelled = false
+        var driverTask: Task<Void, Never>?
+
+        init(schemeTask: WKURLSchemeTask, originalURL: URL, handle: UInt64) {
+            self.schemeTask = schemeTask
+            self.originalURL = originalURL
+            self.handle = handle
+        }
+    }
+
+    private func startNativeUpstream(
+        originalURL: URL,
+        gatewayPath: String,
+        sourceRequest: URLRequest,
+        task: WKURLSchemeTask
+    ) {
+        guard let node else {
+            task.didFailWithError(URLError(.cannotConnectToHost))
+            return
+        }
+
+        let requestID = node.nextGatewayRequestID()
+        var parentRequestID: UInt64?
+        var topLevelPath: String?
+        if let context = navContext, let topPath = context.topLevelPath {
+            topLevelPath = topPath
+            if gatewayPath == topPath {
+                context.recordRootRequestID(requestID)
+            } else {
+                parentRequestID = context.rootRequestID
+            }
+        }
+
+        let json: String
+        do {
+            json = try Self.buildNativeRequestJSON(
+                method: sourceRequest.httpMethod ?? "GET",
+                gatewayPath: gatewayPath,
+                headers: sourceRequest.allHTTPHeaderFields ?? [:],
+                requestID: requestID,
+                parentRequestID: parentRequestID,
+                topLevelPath: topLevelPath
+            )
+        } catch {
+            task.didFailWithError(error)
+            return
+        }
+
+        let handle: UInt64
+        do {
+            handle = try node.startNativeGatewayRequest(json: json)
+        } catch {
+            task.didFailWithError(error)
+            return
+        }
+
+        let pending = NativePending(schemeTask: task, originalURL: originalURL, handle: handle)
+        activeNative[handle] = pending
+        pending.driverTask = Task { @MainActor [weak self] in
+            await self?.driveNative(pending)
+        }
+    }
+
+    private func driveNative(_ pending: NativePending) async {
+        defer {
+            activeNative[pending.handle] = nil
+            _ = node?.freeNativeGatewayRequest(pending.handle)
+        }
+
+        let metadata: NativeResponseMetadata
+        do {
+            metadata = try await waitForNativeMetadata(handle: pending.handle, pending: pending)
+        } catch is CancellationError {
+            return
+        } catch {
+            if !pending.cancelled {
+                pending.schemeTask.didFailWithError(error)
+            }
+            return
+        }
+        if pending.cancelled { return }
+
+        switch metadata.state {
+        case .failed, .cancelled:
+            pending.schemeTask.didFailWithError(Self.nativeError(from: metadata))
+            return
+        case .pending, .streaming, .completed:
+            break
+        }
+
+        guard let status = metadata.status else {
+            pending.schemeTask.didFailWithError(URLError(.badServerResponse))
+            return
+        }
+
+        let responseHeaders = Dictionary(
+            (metadata.headers ?? []).map { ($0.name, $0.value) },
+            uniquingKeysWith: { _, new in new }
+        )
+        guard let response = Self.sameOriginResponse(
+            url: pending.originalURL,
+            status: status,
+            headers: responseHeaders
+        ) else {
+            pending.schemeTask.didFailWithError(URLError(.badServerResponse))
+            return
+        }
+        pending.schemeTask.didReceive(response)
+
+        var buffer = [UInt8](unsafeUninitializedCapacity: Self.nativeReadBufferBytes) { _, count in
+            count = Self.nativeReadBufferBytes
+        }
+        while !pending.cancelled {
+            guard let node else {
+                pending.schemeTask.didFailWithError(URLError(.cannotConnectToHost))
+                return
+            }
+            let result: FreedomIpfsNativeGatewayReadResult
+            do {
+                result = try buffer.withUnsafeMutableBytes { bytes in
+                    try node.readNativeGatewayRequest(pending.handle, into: bytes)
+                }
+            } catch {
+                if !pending.cancelled {
+                    pending.schemeTask.didFailWithError(error)
+                }
+                return
+            }
+            switch result.status {
+            case .bytes:
+                if result.bytesRead > 0, !pending.cancelled {
+                    let chunk = buffer.withUnsafeBytes { raw in
+                        Data(bytes: raw.baseAddress!, count: result.bytesRead)
+                    }
+                    pending.schemeTask.didReceive(chunk)
+                }
+            case .pending:
+                do {
+                    try await Task.sleep(nanoseconds: Self.nativePollNanoseconds)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    return
+                }
+            case .end:
+                if !pending.cancelled {
+                    pending.schemeTask.didFinish()
+                }
+                return
+            case .cancelled, .failed, .invalidHandle:
+                if !pending.cancelled {
+                    pending.schemeTask.didFailWithError(
+                        nativeReadError(handle: pending.handle, status: result.status)
+                    )
+                }
+                return
+            }
+        }
+    }
+
+    private func waitForNativeMetadata(
+        handle: UInt64,
+        pending: NativePending
+    ) async throws -> NativeResponseMetadata {
+        while !pending.cancelled {
+            guard let node else { throw URLError(.cannotConnectToHost) }
+            let json = try node.nativeGatewayResponseJSON(requestHandle: handle)
+            let metadata = try Self.decodeNativeResponseMetadata(json)
+            if metadata.state != .pending {
+                return metadata
+            }
+            try await Task.sleep(nanoseconds: Self.nativePollNanoseconds)
+        }
+        throw CancellationError()
+    }
+
+    private func nativeReadError(
+        handle: UInt64,
+        status: FreedomIpfsNativeGatewayReadStatus
+    ) -> Error {
+        if let node,
+           let json = try? node.nativeGatewayResponseJSON(requestHandle: handle),
+           let meta = try? Self.decodeNativeResponseMetadata(json) {
+            return Self.nativeError(from: meta)
+        }
+        switch status {
+        case .cancelled:     return URLError(.cancelled)
+        case .failed:        return URLError(.badServerResponse)
+        case .invalidHandle: return URLError(.badServerResponse)
+        default:             return URLError(.unknown)
+        }
+    }
+
+    private static func nativeError(from metadata: NativeResponseMetadata) -> Error {
+        let message = metadata.error?.message ?? "native gateway request \(metadata.state.rawValue)"
+        let code = metadata.error?.code ?? "unknown"
+        return NSError(
+            domain: "FreedomIPFSNativeGateway",
+            code: -1,
+            userInfo: [
+                NSLocalizedDescriptionKey: message,
+                "FreedomIPFSNativeErrorCode": code,
+            ]
+        )
+    }
+
+    // MARK: - Native request/response JSON
+
+    private struct NativeRequestPayload: Encodable, Equatable {
+        let method: String
+        let path: String
+        let headers: [Header]
+        let requestID: UInt64?
+        let parentRequestID: UInt64?
+        let topLevelPath: String?
+
+        enum CodingKeys: String, CodingKey {
+            case method, path, headers
+            case requestID = "request_id"
+            case parentRequestID = "parent_request_id"
+            case topLevelPath = "top_level_path"
+        }
+
+        struct Header: Encodable, Equatable {
+            let name: String
+            let value: String
+        }
+    }
+
+    struct NativeResponseMetadata: Decodable, Equatable {
+        enum State: String, Decodable {
+            case pending, streaming, completed, cancelled, failed
+        }
+
+        let state: State
+        let status: Int?
+        let headers: [Header]?
+        let completed: Bool?
+        let cancelled: Bool?
+        let error: ErrorPayload?
+
+        struct Header: Decodable, Equatable {
+            let name: String
+            let value: String
+        }
+
+        struct ErrorPayload: Decodable, Equatable {
+            let code: String?
+            let message: String?
+        }
+    }
+
+    /// Build the request JSON the Rust native gateway expects.
+    /// `X-Freedom-*` correlation headers are stamped by Rust from the
+    /// top-level `request_id` / `parent_request_id` / `top_level_path`
+    /// fields, so we omit them from `headers` to avoid a double-stamp.
+    static func buildNativeRequestJSON(
+        method: String,
+        gatewayPath: String,
+        headers: [String: String],
+        requestID: UInt64?,
+        parentRequestID: UInt64?,
+        topLevelPath: String?
+    ) throws -> String {
+        var forwarded = headers
+        forwarded.removeValue(forKey: "Host")
+        forwarded.removeValue(forKey: "host")
+        forwarded.removeValue(forKey: "X-Freedom-Request-ID")
+        forwarded.removeValue(forKey: "X-Freedom-Parent-Request-ID")
+        forwarded.removeValue(forKey: "X-Freedom-Top-Level-Path")
+        let payload = NativeRequestPayload(
+            method: method.uppercased(),
+            path: gatewayPath,
+            headers: forwarded
+                .map { NativeRequestPayload.Header(name: $0.key, value: $0.value) }
+                .sorted(by: { $0.name.lowercased() < $1.name.lowercased() }),
+            requestID: requestID,
+            parentRequestID: parentRequestID,
+            topLevelPath: topLevelPath
+        )
+        let data = try nativeEncoder.encode(payload)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func decodeNativeResponseMetadata(_ json: String) throws -> NativeResponseMetadata {
+        try nativeDecoder.decode(NativeResponseMetadata.self, from: Data(json.utf8))
     }
 }
 
