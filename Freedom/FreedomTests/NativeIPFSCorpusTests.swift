@@ -67,14 +67,12 @@ final class NativeIPFSCorpusTests: XCTestCase {
         try writeResults(results, transport: transport, outputPath: outputPath)
     }
 
-    /// Long-lived `@MainActor` objects (`IPFSNode`, `EthereumRPCPool`,
-    /// `ENSResolver`, `SettingsStore`) are deliberately leaked across
-    /// the corpus run because releasing them on iOS-17-target builds
-    /// crashes inside Swift's back-deployed
-    /// `swift_task_deinitOnExecutor` → `~StopLookupScope` runtime
-    /// helper. The leak is acceptable for an opt-in test harness;
-    /// the production app reuses one set of these for the process
-    /// lifetime and rarely tears them down.
+    /// `@MainActor` dependencies (`IPFSNode`, `ENSResolver`, etc.)
+    /// are deliberately leaked across the corpus run. Even on iOS 18
+    /// targets, Swift's `swift_task_deinitOnExecutor` machinery
+    /// crashes in `~StopLookupScope` when these are released
+    /// per-iteration. Acceptable for an opt-in test harness; the
+    /// production app reuses one set of these for the process lifetime.
     nonisolated(unsafe) private static var leakedDependencies: [AnyObject] = []
 
     /// Fresh `IPFSNode` per URL — cold-cache scenario.
@@ -86,8 +84,7 @@ final class NativeIPFSCorpusTests: XCTestCase {
         let node = IPFSNode()
         node.start(settings.ipfsConfig(dataDir: dataDir))
         guard await waitForNodeRunning(node) else {
-            Self.leakedDependencies.append(node)
-            Self.leakedDependencies.append(settings)
+            Self.leakedDependencies.append(contentsOf: [node, settings] as [AnyObject])
             return RunResult.failure(url: urlString, transport: transport, message: "node failed to start within \(Self.nodeStartTimeoutSeconds)s")
         }
 
@@ -136,10 +133,6 @@ final class NativeIPFSCorpusTests: XCTestCase {
 
         navContext.end()
         await drainHandlers(webView: webView, handlers: [handlerIpfs, handlerIpns])
-        // Don't tear down the node — it (and the resolver/pool) are
-        // leaked in `leakedDependencies` to dodge the iOS-17 Swift
-        // back-deploy `deinit-on-executor` crash. They'll be reaped
-        // when the test process exits.
         Self.leakedDependencies.append(contentsOf: [webView, handlerIpfs, handlerIpns, delegate] as [AnyObject])
 
         return RunResult(
@@ -155,9 +148,8 @@ final class NativeIPFSCorpusTests: XCTestCase {
         )
     }
 
-    /// Quiesces scheme handlers without releasing them — see the
-    /// note on `leakedDependencies` for why we don't tear down the
-    /// rest of the per-iteration graph.
+    /// Quiesce in-flight scheme tasks before leaking the handlers.
+    /// Doesn't tear down the node — see `leakedDependencies`.
     private func drainHandlers(
         webView: WKWebView,
         handlers: [IpfsSchemeHandler]

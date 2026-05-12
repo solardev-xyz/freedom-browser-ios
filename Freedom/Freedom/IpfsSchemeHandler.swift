@@ -711,14 +711,14 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
 }
 
 /// URLSession delegate. Bridges streaming callbacks back to the
-/// scheme handler. We dispatch through `Task { @MainActor in }`
-/// rather than `MainActor.assumeIsolated` to avoid Swift's
-/// back-deploy `swift_task_deinitOnExecutor` path, which crashes
-/// in `~StopLookupScope` when a class instance is released inside
-/// an `assumeIsolated` scope on this iOS-17-target build.
-/// `completionHandler` from the response callback must be invoked
-/// synchronously per Apple's contract, so the handler returns the
-/// disposition for the bridge to call.
+/// scheme handler via `Task { @MainActor in }` rather than
+/// `MainActor.assumeIsolated` — the latter triggers Swift's
+/// `swift_task_deinitOnExecutor` → `~StopLookupScope` crash when
+/// `PendingRequest` is released inside the assumed-isolated scope.
+/// The dispatch costs one Task allocation per callback but
+/// sidesteps the runtime bug. `didReceive(response:)` must invoke
+/// its completion handler, so the handler method returns the
+/// disposition for the bridge to forward.
 private final class SessionDelegate: NSObject, URLSessionDataDelegate {
     weak var handler: IpfsSchemeHandler?
 
@@ -729,10 +729,6 @@ private final class SessionDelegate: NSObject, URLSessionDataDelegate {
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
         let id = dataTask.taskIdentifier
-        // didReceive must call completionHandler quickly; the handler
-        // method does its work synchronously, returning the
-        // disposition. The Task hop runs the same-pass body on the
-        // main actor without the assumeIsolated runtime bug.
         Task { @MainActor [weak handler] in
             let disposition = handler?.handleResponseAndDecide(for: id, response: response) ?? .cancel
             completionHandler(disposition)
@@ -762,16 +758,13 @@ private final class SessionDelegate: NSObject, URLSessionDataDelegate {
     }
 }
 
-/// Per-task state for the loopback (URLSession) transport. File
-/// scope (not nested in the `@MainActor` handler) and `schemeTask`
-/// is `weak` — WKWebView retains the task strongly while it's
-/// alive, so a weak ref is safe and we don't auto-release it from
-/// `PendingRequest.deinit`. The strong-ref version crashes inside
-/// Swift's back-deploy `swift_task_deinitOnExecutor` when the
-/// release fires from a `MainActor.assumeIsolated` URLSession
-/// completion delivery — that path collides with WKURLSchemeTask's
-/// `@MainActor` annotation in the WebKit interface.
-final class PendingRequest: @unchecked Sendable {
+/// Per-task state for the loopback (URLSession) transport.
+/// `schemeTask` is `weak` to dodge Swift's
+/// `swift_task_deinitOnExecutor` → `~StopLookupScope` crash when
+/// the strong ref is released from URLSession's completion delivery
+/// (WKURLSchemeTask is `@MainActor` in WebKit's interface). WKWebView
+/// retains the task while it's live, so the weak ref is safe.
+final class PendingRequest {
     weak var schemeTask: WKURLSchemeTask?
     let originalURL: URL
     var didReceiveResponse = false
