@@ -28,7 +28,7 @@ final class NativeIPFSCorpusTests: XCTestCase {
         "ipfs://daicowtf.eth/",
         "ipfs://jthor.eth/",
         "ipfs://cowswap.eth/",
-        "ipfs://ipfs.tech/",
+        "ipns://ipfs.tech/",
         // Known-hard retrievability case: delegated routers
         // typically return no providers for this CID, so retrieval
         // falls back to the DHT and times out. Useful as a regression
