@@ -29,6 +29,11 @@ final class NativeIPFSCorpusTests: XCTestCase {
         "ipfs://jthor.eth/",
         "ipfs://cowswap.eth/",
         "ipfs://ipfs.tech/",
+        // Known-hard retrievability case: delegated routers
+        // typically return no providers for this CID, so retrieval
+        // falls back to the DHT and times out. Useful as a regression
+        // canary for the 504 / "Gateway Timeout" error-page path.
+        "ipfs://tornadocash-ipfs.eth/",
     ]
 
     private static let nodeStartTimeoutSeconds: TimeInterval = 30
