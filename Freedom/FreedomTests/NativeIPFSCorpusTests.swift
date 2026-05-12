@@ -6,11 +6,13 @@ import XCTest
 /// Browser smoke harness — drives the production `IpfsSchemeHandler`
 /// through a corpus of ipfs:// URLs, captures per-load metrics, and
 /// writes a JSON report. Disabled by default; opt in via
-/// `FREEDOM_CORPUS=1`. Network-dependent (real ENS + IPFS retrieval).
+/// `TEST_RUNNER_FREEDOM_CORPUS=1`. Network-dependent (real ENS + IPFS
+/// retrieval). The `TEST_RUNNER_` prefix is required so xcodebuild
+/// forwards the env var into the simulator test runner.
 ///
 /// Run native:
 ///
-///   FREEDOM_CORPUS=1 xcodebuild test \
+///   TEST_RUNNER_FREEDOM_CORPUS=1 xcodebuild test \
 ///     -project Freedom/Freedom.xcodeproj \
 ///     -scheme Freedom \
 ///     -destination 'id=<sim-udid>' \
@@ -36,7 +38,7 @@ final class NativeIPFSCorpusTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         if ProcessInfo.processInfo.environment["FREEDOM_CORPUS"] != "1" {
-            throw XCTSkip("Set FREEDOM_CORPUS=1 to run the IPFS corpus harness")
+            throw XCTSkip("Set TEST_RUNNER_FREEDOM_CORPUS=1 to run the IPFS corpus harness")
         }
     }
 
@@ -65,6 +67,16 @@ final class NativeIPFSCorpusTests: XCTestCase {
         try writeResults(results, transport: transport, outputPath: outputPath)
     }
 
+    /// Long-lived `@MainActor` objects (`IPFSNode`, `EthereumRPCPool`,
+    /// `ENSResolver`, `SettingsStore`) are deliberately leaked across
+    /// the corpus run because releasing them on iOS-17-target builds
+    /// crashes inside Swift's back-deployed
+    /// `swift_task_deinitOnExecutor` → `~StopLookupScope` runtime
+    /// helper. The leak is acceptable for an opt-in test harness;
+    /// the production app reuses one set of these for the process
+    /// lifetime and rarely tears them down.
+    nonisolated(unsafe) private static var leakedDependencies: [AnyObject] = []
+
     /// Fresh `IPFSNode` per URL — cold-cache scenario.
     private func loadOnce(urlString: String, transport: IPFSGatewayTransport) async -> RunResult {
         let dataDir = makeTemporaryDataDir()
@@ -74,29 +86,32 @@ final class NativeIPFSCorpusTests: XCTestCase {
         let node = IPFSNode()
         node.start(settings.ipfsConfig(dataDir: dataDir))
         guard await waitForNodeRunning(node) else {
+            Self.leakedDependencies.append(node)
+            Self.leakedDependencies.append(settings)
             return RunResult.failure(url: urlString, transport: transport, message: "node failed to start within \(Self.nodeStartTimeoutSeconds)s")
         }
 
         let pool = EthereumRPCPool(settings: settings)
         let resolver = ENSResolver(pool: pool, settings: settings)
         let navContext = IpfsNavContext()
+        Self.leakedDependencies.append(contentsOf: [node, settings, pool, resolver, navContext] as [AnyObject])
 
+        let handlerIpfs = IpfsSchemeHandler(
+            node: node, ensResolver: resolver, navContext: navContext, settings: settings
+        )
+        let handlerIpns = IpfsSchemeHandler(
+            node: node, ensResolver: resolver, navContext: navContext, settings: settings
+        )
         let config = WKWebViewConfiguration()
-        config.setURLSchemeHandler(
-            IpfsSchemeHandler(node: node, ensResolver: resolver, navContext: navContext, settings: settings),
-            forURLScheme: "ipfs"
-        )
-        config.setURLSchemeHandler(
-            IpfsSchemeHandler(node: node, ensResolver: resolver, navContext: navContext, settings: settings),
-            forURLScheme: "ipns"
-        )
+        config.setURLSchemeHandler(handlerIpfs, forURLScheme: "ipfs")
+        config.setURLSchemeHandler(handlerIpns, forURLScheme: "ipns")
 
         let webView = WKWebView(frame: .zero, configuration: config)
         let delegate = NavCapture()
         webView.navigationDelegate = delegate
 
         guard let url = URL(string: urlString) else {
-            await teardown(node)
+            Self.leakedDependencies.append(contentsOf: [webView, handlerIpfs, handlerIpns, delegate] as [AnyObject])
             return RunResult.failure(url: urlString, transport: transport, message: "invalid URL")
         }
         if let path = IpfsSchemeHandler.gatewayStylePath(for: url) {
@@ -120,7 +135,12 @@ final class NativeIPFSCorpusTests: XCTestCase {
         let progressJSON = node.progressSnapshotJSON ?? "{}"
 
         navContext.end()
-        await teardown(node)
+        await drainHandlers(webView: webView, handlers: [handlerIpfs, handlerIpns])
+        // Don't tear down the node — it (and the resolver/pool) are
+        // leaked in `leakedDependencies` to dodge the iOS-17 Swift
+        // back-deploy `deinit-on-executor` crash. They'll be reaped
+        // when the test process exits.
+        Self.leakedDependencies.append(contentsOf: [webView, handlerIpfs, handlerIpns, delegate] as [AnyObject])
 
         return RunResult(
             url: urlString,
@@ -135,6 +155,25 @@ final class NativeIPFSCorpusTests: XCTestCase {
         )
     }
 
+    /// Quiesces scheme handlers without releasing them — see the
+    /// note on `leakedDependencies` for why we don't tear down the
+    /// rest of the per-iteration graph.
+    private func drainHandlers(
+        webView: WKWebView,
+        handlers: [IpfsSchemeHandler]
+    ) async {
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        let drainDeadline = Date(timeIntervalSinceNow: 3)
+        while Date() < drainDeadline, handlers.contains(where: { $0.inFlightRequestCount > 0 }) {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        for handler in handlers {
+            handler.invalidate()
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+
     private func waitForNodeRunning(_ node: IPFSNode) async -> Bool {
         let deadline = Date(timeIntervalSinceNow: Self.nodeStartTimeoutSeconds)
         while Date() < deadline {
@@ -143,14 +182,6 @@ final class NativeIPFSCorpusTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
         return node.status == .running
-    }
-
-    private func teardown(_ node: IPFSNode) async {
-        node.stop()
-        let deadline = Date(timeIntervalSinceNow: 10)
-        while Date() < deadline, node.status != .stopped {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
     }
 
     private func makeTemporaryDataDir() -> URL {

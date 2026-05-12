@@ -210,6 +210,39 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         cancelActiveNative(matching: task)
     }
 
+    /// Count of in-flight requests across all transports. Useful for
+    /// test teardown drain loops; production code reacts per-task via
+    /// `webView(_:stop:)` and doesn't need an aggregate.
+    var inFlightRequestCount: Int {
+        active.count + activeNative.count + pendingResolutions.count
+    }
+
+    /// Synchronously cancel every in-flight request and invalidate the
+    /// loopback URLSession. After this returns, no further
+    /// URLSession or native dispatcher callback will touch a
+    /// `WKURLSchemeTask` on this handler. Intended for test teardown
+    /// where the WKWebView and scheme handlers are about to be
+    /// deallocated while subresource requests are still racing —
+    /// production tabs drain through `webView(_:stop:)` per task.
+    func invalidate() {
+        for pending in pendingResolutions.values {
+            pending.cancelled = true
+        }
+        pendingResolutions.removeAll()
+        for pending in active.values {
+            pending.cancelled = true
+        }
+        active.removeAll()
+        session.invalidateAndCancel()
+        for (id, pending) in activeNative {
+            pending.markTerminated()
+            node?.unregisterNativeGatewaySink(handleID: id)
+            _ = pending.handle.cancel()
+            _ = pending.handle.free()
+        }
+        activeNative.removeAll()
+    }
+
     // MARK: - ENS resolution
 
     private func startWithENSResolution(originalURL: URL, name: String, task: WKURLSchemeTask) {
@@ -432,64 +465,50 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         )
     }
 
-    // MARK: - Per-task state
-
-    final class PendingRequest {
-        let schemeTask: WKURLSchemeTask
-        let originalURL: URL
-        var didReceiveResponse = false
-        var cancelled = false
-
-        init(schemeTask: WKURLSchemeTask, originalURL: URL) {
-            self.schemeTask = schemeTask
-            self.originalURL = originalURL
-        }
-    }
-
-    fileprivate func handleResponse(
+    fileprivate func handleResponseAndDecide(
         for taskID: Int,
-        response: URLResponse,
-        completion: @escaping (URLSession.ResponseDisposition) -> Void
-    ) {
-        guard let pending = active[taskID], !pending.cancelled else {
-            completion(.cancel)
-            return
+        response: URLResponse
+    ) -> URLSession.ResponseDisposition {
+        guard let pending = active[taskID], !pending.cancelled, let schemeTask = pending.schemeTask else {
+            return .cancel
         }
         guard let http = response as? HTTPURLResponse else {
-            pending.schemeTask.didFailWithError(URLError(.badServerResponse))
+            schemeTask.didFailWithError(URLError(.badServerResponse))
             active[taskID] = nil
-            completion(.cancel)
-            return
+            return .cancel
         }
         let rewritten = Self.sameOriginResponse(
             url: pending.originalURL,
             status: http.statusCode,
             headers: http.allHeaderFields as? [String: String] ?? [:]
         ) ?? http
-        pending.schemeTask.didReceive(rewritten)
+        schemeTask.didReceive(rewritten)
         pending.didReceiveResponse = true
-        completion(.allow)
+        return .allow
     }
 
     fileprivate func handleData(for taskID: Int, data: Data) {
-        guard let pending = active[taskID], !pending.cancelled, pending.didReceiveResponse else {
-            return
-        }
-        pending.schemeTask.didReceive(data)
+        guard let pending = active[taskID],
+              !pending.cancelled,
+              pending.didReceiveResponse,
+              let schemeTask = pending.schemeTask
+        else { return }
+        schemeTask.didReceive(data)
     }
 
     fileprivate func handleCompletion(for taskID: Int, error: Error?) {
         guard let pending = active.removeValue(forKey: taskID) else { return }
         if pending.cancelled { return }
+        guard let schemeTask = pending.schemeTask else { return }
         if let error {
-            pending.schemeTask.didFailWithError(error)
+            schemeTask.didFailWithError(error)
             return
         }
         if !pending.didReceiveResponse {
-            pending.schemeTask.didFailWithError(URLError(.badServerResponse))
+            schemeTask.didFailWithError(URLError(.badServerResponse))
             return
         }
-        pending.schemeTask.didFinish()
+        schemeTask.didFinish()
     }
 
     // MARK: - Native FFI flow (experimental)
@@ -692,9 +711,14 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
 }
 
 /// URLSession delegate. Bridges streaming callbacks back to the
-/// scheme handler, which forwards them to the WKURLSchemeTask. Lives
-/// on `OperationQueue.main` so every callback is already main-actor
-/// when the bridge runs.
+/// scheme handler. We dispatch through `Task { @MainActor in }`
+/// rather than `MainActor.assumeIsolated` to avoid Swift's
+/// back-deploy `swift_task_deinitOnExecutor` path, which crashes
+/// in `~StopLookupScope` when a class instance is released inside
+/// an `assumeIsolated` scope on this iOS-17-target build.
+/// `completionHandler` from the response callback must be invoked
+/// synchronously per Apple's contract, so the handler returns the
+/// disposition for the bridge to call.
 private final class SessionDelegate: NSObject, URLSessionDataDelegate {
     weak var handler: IpfsSchemeHandler?
 
@@ -705,8 +729,13 @@ private final class SessionDelegate: NSObject, URLSessionDataDelegate {
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
         let id = dataTask.taskIdentifier
-        MainActor.assumeIsolated {
-            handler?.handleResponse(for: id, response: response, completion: completionHandler)
+        // didReceive must call completionHandler quickly; the handler
+        // method does its work synchronously, returning the
+        // disposition. The Task hop runs the same-pass body on the
+        // main actor without the assumeIsolated runtime bug.
+        Task { @MainActor [weak handler] in
+            let disposition = handler?.handleResponseAndDecide(for: id, response: response) ?? .cancel
+            completionHandler(disposition)
         }
     }
 
@@ -716,7 +745,7 @@ private final class SessionDelegate: NSObject, URLSessionDataDelegate {
         didReceive data: Data
     ) {
         let id = dataTask.taskIdentifier
-        MainActor.assumeIsolated {
+        Task { @MainActor [weak handler] in
             handler?.handleData(for: id, data: data)
         }
     }
@@ -727,9 +756,30 @@ private final class SessionDelegate: NSObject, URLSessionDataDelegate {
         didCompleteWithError error: Error?
     ) {
         let id = task.taskIdentifier
-        MainActor.assumeIsolated {
+        Task { @MainActor [weak handler] in
             handler?.handleCompletion(for: id, error: error)
         }
+    }
+}
+
+/// Per-task state for the loopback (URLSession) transport. File
+/// scope (not nested in the `@MainActor` handler) and `schemeTask`
+/// is `weak` — WKWebView retains the task strongly while it's
+/// alive, so a weak ref is safe and we don't auto-release it from
+/// `PendingRequest.deinit`. The strong-ref version crashes inside
+/// Swift's back-deploy `swift_task_deinitOnExecutor` when the
+/// release fires from a `MainActor.assumeIsolated` URLSession
+/// completion delivery — that path collides with WKURLSchemeTask's
+/// `@MainActor` annotation in the WebKit interface.
+final class PendingRequest: @unchecked Sendable {
+    weak var schemeTask: WKURLSchemeTask?
+    let originalURL: URL
+    var didReceiveResponse = false
+    var cancelled = false
+
+    init(schemeTask: WKURLSchemeTask, originalURL: URL) {
+        self.schemeTask = schemeTask
+        self.originalURL = originalURL
     }
 }
 
