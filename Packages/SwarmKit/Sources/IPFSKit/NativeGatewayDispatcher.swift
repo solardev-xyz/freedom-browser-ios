@@ -1,4 +1,9 @@
 import Foundation
+import os.log
+
+/// Capture during smoke with:
+/// `log stream --predicate 'subsystem == "com.browser.Freedom.native"' --style ndjson`
+private let logger = Logger(subsystem: "com.browser.Freedom.native", category: "dispatcher")
 
 /// Sink that receives native gateway events for a single in-flight
 /// request. Invoked off the main actor by the dispatcher worker — do
@@ -57,6 +62,7 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         thread.qualityOfService = .userInitiated
         worker = thread
         thread.start()
+        logger.info("dispatcher started")
     }
 
     /// Stop the worker, drain the registry, and notify any
@@ -72,6 +78,7 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         state.stashedEvents.removeAll()
         state.tombstones.removeAll()
         lock.unlock()
+        logger.info("dispatcher stop drained=\(drainedSinks.count, privacy: .public)")
         for sink in drainedSinks {
             sink.nativeRequestReceivedEvent(
                 FreedomIpfsNativeGatewayEvent(
@@ -92,6 +99,7 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         lock.lock()
         if state.stopped {
             lock.unlock()
+            logger.info("register handle=\(handleID, privacy: .public) afterStop=true")
             sink.nativeRequestReceivedEvent(
                 FreedomIpfsNativeGatewayEvent(
                     status: .gatewayStopped,
@@ -104,6 +112,7 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         state.sinks[handleID] = sink
         replay = state.stashedEvents.removeValue(forKey: handleID) ?? []
         lock.unlock()
+        logger.debug("register handle=\(handleID, privacy: .public) replay=\(replay.count, privacy: .public)")
         for event in replay {
             sink.nativeRequestReceivedEvent(event)
         }
@@ -118,19 +127,25 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         state.stashedEvents.removeValue(forKey: handleID)
         state.tombstones.insert(handleID)
         lock.unlock()
+        logger.debug("unregister handle=\(handleID, privacy: .public)")
     }
 
     // MARK: - Worker
 
     private func runLoop() {
+        logger.info("worker started")
         while true {
             let stopped = lock.withLock { state.stopped }
-            if stopped { return }
+            if stopped {
+                logger.info("worker exit reason=stopped")
+                return
+            }
             let event: FreedomIpfsNativeGatewayEvent
             do {
                 event = try eventSource.waitNextNativeGatewayEvent(timeoutMilliseconds: 200)
             } catch {
                 lock.withLock { state.stopped = true }
+                logger.error("worker exit reason=waitError")
                 return
             }
             switch event.status {
@@ -138,6 +153,7 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
                 continue
             case .invalidNode, .gatewayStopped:
                 lock.withLock { state.stopped = true }
+                logger.info("worker exit reason=\(String(describing: event.status), privacy: .public)")
                 return
             case .ok:
                 route(event)
@@ -161,19 +177,38 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
                 if isHandleFreed {
                     state.tombstones.remove(handleID)
                 }
-                return .drop
+                return .tombstoneDrop
             }
             state.stashedEvents[handleID, default: []].append(event)
-            return .drop
+            return .stash
         }
-        if case .invoke(let sink) = action {
+        let flags = NativeGatewayDispatcher.flagsDescription(event.events)
+        switch action {
+        case .invoke(let sink):
+            logger.debug("event handle=\(handleID, privacy: .public) flags=\(flags, privacy: .public) action=route")
             sink.nativeRequestReceivedEvent(event)
+        case .stash:
+            logger.debug("event handle=\(handleID, privacy: .public) flags=\(flags, privacy: .public) action=stash")
+        case .tombstoneDrop:
+            logger.debug("event handle=\(handleID, privacy: .public) flags=\(flags, privacy: .public) action=drop")
         }
+    }
+
+    private static func flagsDescription(_ flags: FreedomIpfsNativeGatewayEventFlags) -> String {
+        var parts: [String] = []
+        if flags.contains(.responseReady) { parts.append("responseReady") }
+        if flags.contains(.bodyReady) { parts.append("bodyReady") }
+        if flags.contains(.end) { parts.append("end") }
+        if flags.contains(.failed) { parts.append("failed") }
+        if flags.contains(.cancelled) { parts.append("cancelled") }
+        if flags.contains(.handleFreed) { parts.append("handleFreed") }
+        return parts.isEmpty ? "none" : parts.joined(separator: "|")
     }
 
     private enum RouteAction {
         case invoke(NativeRequestSink)
-        case drop
+        case stash
+        case tombstoneDrop
     }
 }
 

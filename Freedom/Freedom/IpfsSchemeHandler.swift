@@ -1,6 +1,12 @@
 import Foundation
 import IPFSKit
+import os.log
 import WebKit
+
+/// Subsystem-shared with `NativeGatewayDispatcher` so a single
+/// `log stream --predicate 'subsystem == "com.browser.Freedom.native"'`
+/// catches the full event sequence for a native FFI request.
+private let nativeLogger = Logger(subsystem: "com.browser.Freedom.native", category: "sink")
 
 /// Mutable per-tab state describing the current top-level
 /// `ipfs://` / `ipns://` navigation, if any. Owned by `BrowserTab`,
@@ -547,7 +553,11 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
                 )
             }
             activeNative[handle.id] = pending
+            nativeLogger.info(
+                "start handle=\(handle.id, privacy: .public) path=\(gatewayPath, privacy: .public) requestID=\(requestID, privacy: .public) parent=\(parentRequestID.map(String.init) ?? "-", privacy: .public)"
+            )
         } catch {
+            nativeLogger.error("start failed path=\(gatewayPath, privacy: .public) error=\(String(describing: error), privacy: .public)")
             task.didFailWithError(error)
         }
     }
@@ -561,6 +571,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         let keys = activeNative.compactMap { $0.value.schemeTask === task ? $0.key : nil }
         for id in keys {
             guard let pending = activeNative.removeValue(forKey: id) else { continue }
+            nativeLogger.info("cancel handle=\(id, privacy: .public) reason=webViewStop")
             pending.markTerminated()
             node?.unregisterNativeGatewaySink(handleID: id)
             _ = pending.handle.cancel()
@@ -833,6 +844,9 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
         responseDelivered = true
         stateLock.unlock()
 
+        nativeLogger.info(
+            "response handle=\(self.handle.id, privacy: .public) status=\(status, privacy: .public)"
+        )
         deliverOnMain { $0.didReceive(response) }
     }
 
@@ -866,11 +880,12 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
                     let chunk = buffer.withUnsafeBytes { raw in
                         Data(bytes: raw.baseAddress!, count: result.bytesRead)
                     }
+                    nativeLogger.debug(
+                        "chunk handle=\(self.handle.id, privacy: .public) bytes=\(result.bytesRead, privacy: .public)"
+                    )
                     deliverOnMain { $0.didReceive(chunk) }
                 }
             case .pending:
-                // No more chunks right now; the dispatcher will fire
-                // another `.bodyReady` or `.end` event when there is.
                 return
             case .end:
                 terminate(with: nil)
@@ -911,6 +926,13 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
         _ = handle.free()
 
         let id = handle.id
+        if let error {
+            nativeLogger.info(
+                "terminate handle=\(id, privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
+        } else {
+            nativeLogger.info("finish handle=\(id, privacy: .public)")
+        }
         DispatchQueue.main.async { [weak self, weak owner] in
             MainActor.assumeIsolated {
                 guard let self, let owner else { return }
