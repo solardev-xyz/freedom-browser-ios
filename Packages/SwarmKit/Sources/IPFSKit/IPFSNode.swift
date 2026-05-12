@@ -222,7 +222,7 @@ public final class IPFSNode {
                         return
                     }
                     self.reader = reader
-                    let dispatcher = NativeGatewayDispatcher(reader: reader)
+                    let dispatcher = NativeGatewayDispatcher(eventSource: reader)
                     dispatcher.start()
                     self.nativeDispatcher = dispatcher
                     self.gatewayURL = resolvedURL

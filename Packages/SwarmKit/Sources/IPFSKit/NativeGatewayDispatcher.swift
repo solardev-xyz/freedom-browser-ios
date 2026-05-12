@@ -7,6 +7,14 @@ public protocol NativeRequestSink: AnyObject, Sendable {
     func nativeRequestReceivedEvent(_ event: FreedomIpfsNativeGatewayEvent)
 }
 
+/// Source of native gateway events. `FreedomIpfsReader` conforms; tests
+/// inject a fake to drive the dispatcher without a real Rust node.
+public protocol NativeGatewayEventSource: Sendable {
+    func waitNextNativeGatewayEvent(timeoutMilliseconds: UInt64) throws -> FreedomIpfsNativeGatewayEvent
+}
+
+extension FreedomIpfsReader: NativeGatewayEventSource {}
+
 /// Routes events from the Rust node-level event multiplexer
 /// (`freedom_ipfs_gateway_wait_next_event`) to per-request sinks.
 /// One dispatcher per `IPFSNode` lifecycle.
@@ -19,7 +27,7 @@ public protocol NativeRequestSink: AnyObject, Sendable {
 /// - On stop, registered sinks receive a synthetic cancelled event
 ///   so they can clean up their WebKit-side state.
 public final class NativeGatewayDispatcher: @unchecked Sendable {
-    private let reader: FreedomIpfsReader
+    private let eventSource: NativeGatewayEventSource
     private let lock = NSLock()
     private var state = State()
     private var worker: Thread?
@@ -35,8 +43,8 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
         var stopped: Bool = false
     }
 
-    public init(reader: FreedomIpfsReader) {
-        self.reader = reader
+    public init(eventSource: NativeGatewayEventSource) {
+        self.eventSource = eventSource
     }
 
     /// Start the worker thread. Idempotent.
@@ -120,7 +128,7 @@ public final class NativeGatewayDispatcher: @unchecked Sendable {
             if stopped { return }
             let event: FreedomIpfsNativeGatewayEvent
             do {
-                event = try reader.waitNextNativeGatewayEvent(timeoutMilliseconds: 200)
+                event = try eventSource.waitNextNativeGatewayEvent(timeoutMilliseconds: 200)
             } catch {
                 lock.withLock { state.stopped = true }
                 return
