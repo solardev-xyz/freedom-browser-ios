@@ -13,7 +13,7 @@ import PackageDescription
 // no longer needed now that kubo is gone.
 let package = Package(
     name: "SwarmKit",
-    platforms: [.iOS(.v17)],
+    platforms: [.iOS("18.0")],
     products: [
         .library(name: "SwarmKit", targets: ["SwarmKit"]),
         .library(name: "IPFSKit", targets: ["IPFSKit"]),
