@@ -38,7 +38,11 @@ final class NativeIPFSCorpusTests: XCTestCase {
 
     private static let nodeStartTimeoutSeconds: TimeInterval = 30
     private static let perLoadTimeoutSeconds: TimeInterval = 60
-    private static let postLoadSettleSeconds: TimeInterval = 1.5
+    /// Cap for the post-`didFinish` quiesce wait. The harness polls
+    /// the progress snapshot every 250ms and proceeds as soon as
+    /// `active` is empty, or after this cap if subresources keep
+    /// arriving (SPAs like cowswap).
+    private static let postLoadSettleCapSeconds: TimeInterval = 5
 
     override func setUp() async throws {
         try await super.setUp()
@@ -105,6 +109,10 @@ final class NativeIPFSCorpusTests: XCTestCase {
             node: node, ensResolver: resolver, navContext: navContext, settings: settings
         )
         let config = WKWebViewConfiguration()
+        // Ephemeral WK state per iteration so cold-cache comparisons
+        // aren't contaminated by HTTP cache / cookies / IndexedDB
+        // left over from previous URLs.
+        config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(handlerIpfs, forURLScheme: "ipfs")
         config.setURLSchemeHandler(handlerIpns, forURLScheme: "ipns")
 
@@ -120,20 +128,23 @@ final class NativeIPFSCorpusTests: XCTestCase {
             navContext.begin(topLevelPath: path)
         }
 
-        let baselineDiagnostics = node.diagnostics
+        let baselineDiagnostics = node.snapshotDiagnostics()
         let started = Date()
         webView.load(URLRequest(url: url))
         let outcome = await delegate.waitForOutcome(timeout: Self.perLoadTimeoutSeconds)
         let finished = Date()
 
-        try? await Task.sleep(nanoseconds: UInt64(Self.postLoadSettleSeconds * 1_000_000_000))
+        let activeAtSettle = await waitForProgressQuiesce(
+            node: node,
+            cap: Self.postLoadSettleCapSeconds
+        )
 
         let title = (try? await webView.evaluateJavaScript("document.title")) as? String ?? ""
         let bodyLength = (try? await webView.evaluateJavaScript(
             "document.body ? document.body.innerText.length : 0"
         )) as? Int ?? 0
 
-        let finalDiagnostics = node.diagnostics
+        let finalDiagnostics = node.snapshotDiagnostics()
         let progressJSON = node.progressSnapshotJSON ?? "{}"
 
         navContext.end()
@@ -148,9 +159,24 @@ final class NativeIPFSCorpusTests: XCTestCase {
             durationMs: Int(finished.timeIntervalSince(started) * 1000),
             title: title,
             bodyTextLength: bodyLength,
+            activeProgressTargetsAtCapture: activeAtSettle,
             diagnostics: DiagnosticsSnapshot(before: baselineDiagnostics, after: finalDiagnostics),
             progressSnapshotJSON: progressJSON
         )
+    }
+
+    /// Polls the progress snapshot every 250ms until `active` is
+    /// empty or the cap expires. Returns the active count at the
+    /// moment of return (`0` if quiesced, `>0` if the cap fired).
+    private func waitForProgressQuiesce(node: IPFSNode, cap: TimeInterval) async -> Int {
+        let deadline = Date(timeIntervalSinceNow: cap)
+        var lastActive = 0
+        while Date() < deadline {
+            lastActive = node.snapshotProgress()?.active.count ?? 0
+            if lastActive == 0 { return 0 }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        return lastActive
     }
 
     /// Quiesce in-flight scheme tasks before leaking the handlers.
@@ -227,6 +253,11 @@ private struct RunResult: Encodable {
     let durationMs: Int
     let title: String
     let bodyTextLength: Int
+    /// Number of in-flight progress targets when metrics were captured.
+    /// `0` means the page (including subresources) quiesced within the
+    /// settle cap. `>0` means the cap fired with requests still running
+    /// — typical for SPAs that keep loading after `didFinish`.
+    let activeProgressTargetsAtCapture: Int
     let diagnostics: DiagnosticsSnapshot
     let progressSnapshotJSON: String
 
@@ -239,6 +270,7 @@ private struct RunResult: Encodable {
             durationMs: 0,
             title: "",
             bodyTextLength: 0,
+            activeProgressTargetsAtCapture: 0,
             diagnostics: DiagnosticsSnapshot.empty,
             progressSnapshotJSON: "{}"
         )

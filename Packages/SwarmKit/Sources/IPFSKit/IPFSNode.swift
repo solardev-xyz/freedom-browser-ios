@@ -423,6 +423,25 @@ public final class IPFSNode {
         reader?.progressSnapshotJSON
     }
 
+    /// Fresh sample bypassing the 5-second cached `diagnostics`
+    /// property. Use when before/after deltas need to be tighter
+    /// than the poll interval (e.g. test harnesses around a single
+    /// short page load).
+    public func snapshotDiagnostics() -> FreedomIpfsDiagnostics? {
+        reader?.diagnostics
+    }
+
+    /// Fresh decoded sample bypassing the 300ms-1s cached
+    /// `progressSnapshot` property. Same use case as
+    /// `snapshotDiagnostics()`.
+    public func snapshotProgress() -> IpfsProgressSnapshot? {
+        guard let json = reader?.progressSnapshotJSON else { return nil }
+        return try? IpfsProgressSnapshot.decoder.decode(
+            IpfsProgressSnapshot.self,
+            from: Data(json.utf8)
+        )
+    }
+
     /// Allocate a fresh correlation ID for an outgoing gateway
     /// request. The scheme handler stamps this onto
     /// `X-Freedom-Request-ID`; the Rust gateway uses it as the
