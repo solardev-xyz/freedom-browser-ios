@@ -139,6 +139,7 @@ public final class IPFSNode {
     public private(set) var progressSnapshot: IpfsProgressSnapshot?
 
     private var reader: FreedomIpfsReader?
+    private var nativeDispatcher: NativeGatewayDispatcher?
     private var pollTask: Task<Void, Never>?
     private var progressPollTask: Task<Void, Never>?
     private var activeConfig: IPFSConfig?
@@ -221,6 +222,9 @@ public final class IPFSNode {
                         return
                     }
                     self.reader = reader
+                    let dispatcher = NativeGatewayDispatcher(reader: reader)
+                    dispatcher.start()
+                    self.nativeDispatcher = dispatcher
                     self.gatewayURL = resolvedURL
                     self.diagnostics = snapshot
                     self.status = .running
@@ -315,6 +319,8 @@ public final class IPFSNode {
         progressPollTask?.cancel()
         progressPollTask = nil
         let captured = reader
+        let capturedDispatcher = nativeDispatcher
+        nativeDispatcher = nil
         self.reader = nil
         gatewayURL = nil
         // Clear synchronously alongside `self.reader` — otherwise the
@@ -323,6 +329,7 @@ public final class IPFSNode {
         // is reported as stopping.
         progressSnapshot = nil
         Task.detached(priority: .userInitiated) { [weak self] in
+            capturedDispatcher?.stop()
             _ = captured.stopGateway()
             await MainActor.run {
                 guard let self else { return }
@@ -427,15 +434,29 @@ public final class IPFSNode {
     }
 
     // MARK: - Native gateway request FFI (experimental)
-    // Throws IPFSError.notRunning when the node is stopped. The
-    // returned handle bundles a strong `FreedomIpfsReader` ref so the
-    // caller can drive the wait/read/cancel/free FFI off the main
-    // actor without a hop. See freedom-ipfs/docs/native-gateway-api.md.
+    // Throws IPFSError.notRunning when the node is stopped. The sink
+    // is registered with the node's shared event dispatcher before
+    // this function returns, so an event emitted between start and
+    // register cannot land before the sink is ready. See
+    // freedom-ipfs/docs/native-gateway-api.md.
 
-    public func startNativeGatewayRequest(json: String) throws -> NativeGatewayHandle {
-        guard let reader else { throw IPFSError.notRunning }
+    public func startNativeGatewayRequest<Sink: NativeRequestSink>(
+        json: String,
+        makeSink: (NativeGatewayHandle) -> Sink
+    ) throws -> (handle: NativeGatewayHandle, sink: Sink) {
+        guard let reader, let dispatcher = nativeDispatcher else { throw IPFSError.notRunning }
         let id = try reader.startNativeGatewayRequest(json: json)
-        return NativeGatewayHandle(id: id, reader: reader)
+        let handle = NativeGatewayHandle(id: id, reader: reader)
+        let sink = makeSink(handle)
+        dispatcher.register(handleID: id, sink: sink)
+        return (handle, sink)
+    }
+
+    /// Tombstones the handle in the dispatcher — future events are
+    /// dropped until Rust emits `.handleFreed`. Call from scheme-handler
+    /// stop / cancel paths after `handle.cancel()`.
+    public func unregisterNativeGatewaySink(handleID: UInt64) {
+        nativeDispatcher?.unregister(handleID: handleID)
     }
 
     // MARK: - Internals

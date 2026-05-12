@@ -91,7 +91,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     /// which doesn't exist yet at this stage — so `stop(_:)` needs a
     /// separate place to mark the scheme task cancelled.
     private var pendingResolutions: [ObjectIdentifier: PendingResolution] = [:]
-    private var activeNative: [UInt64: NativePending] = [:]
+    fileprivate var activeNative: [UInt64: NativePending] = [:]
 
     init(
         node: IPFSNode,
@@ -490,43 +490,14 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
 
     /// 64 KiB sits in the 32-256 KiB band recommended by the
     /// native-gateway handoff.
-    private static let nativeReadBufferBytes = 64 * 1024
-    /// 200ms balances "idle handles don't hot-loop" against
-    /// "cancellation latency stays low even if direct wake is missed."
-    private static let nativeWaitTimeoutMilliseconds: UInt64 = 200
+    fileprivate static let nativeReadBufferBytes = 64 * 1024
 
-    /// Each driver pins one underlying thread in a blocking C wait;
-    /// GCD grows the worker pool as needed. A cap belongs *before*
-    /// `startNativeGatewayRequest` (so Swift's driver concurrency
-    /// also bounds Rust submissions) — capping only the driver
-    /// dispatch creates backpressure asymmetry that stalls pages
-    /// with many subresources. Keep unbounded until that refactor.
-    private static let nativeDriverQueue = DispatchQueue(
-        label: "freedom.ipfs.native-driver",
-        qos: .userInitiated,
-        attributes: .concurrent
-    )
-
-    private static let nativeEncoder: JSONEncoder = {
+    fileprivate static let nativeEncoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return encoder
     }()
-    private static let nativeDecoder = JSONDecoder()
-
-    /// `@unchecked Sendable` is safe because `schemeTask` is only
-    /// method-called from the main actor via `deliverOnMain`.
-    private final class NativePending: @unchecked Sendable {
-        let schemeTask: WKURLSchemeTask
-        let originalURL: URL
-        let handle: NativeGatewayHandle
-
-        init(schemeTask: WKURLSchemeTask, originalURL: URL, handle: NativeGatewayHandle) {
-            self.schemeTask = schemeTask
-            self.originalURL = originalURL
-            self.handle = handle
-        }
-    }
+    fileprivate static let nativeDecoder = JSONDecoder()
 
     private func startNativeUpstream(
         originalURL: URL,
@@ -566,149 +537,38 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
 
-        let gateway: NativeGatewayHandle
         do {
-            gateway = try node.startNativeGatewayRequest(json: json)
+            let (handle, pending) = try node.startNativeGatewayRequest(json: json) { handle in
+                NativePending(
+                    schemeTask: task,
+                    originalURL: originalURL,
+                    handle: handle,
+                    owner: self
+                )
+            }
+            activeNative[handle.id] = pending
         } catch {
             task.didFailWithError(error)
-            return
-        }
-
-        let pending = NativePending(schemeTask: task, originalURL: originalURL, handle: gateway)
-        activeNative[gateway.id] = pending
-        Self.nativeDriverQueue.async { [weak self] in
-            self?.driveNative(pending)
         }
     }
 
-    /// Removes entries first so the driver's main-actor delivery hops
-    /// observe absence and skip; then cancels the Rust handle.
-    private func cancelActiveNative(matching task: WKURLSchemeTask) {
+    /// Synchronously tear down any native request whose scheme task
+    /// matches `task`. Marks the pending terminated (silences the
+    /// sink), tombstones the dispatcher registration, cancels and
+    /// frees the Rust handle. Any events that fired between start and
+    /// here land in the dispatcher's tombstone path and get dropped.
+    fileprivate func cancelActiveNative(matching task: WKURLSchemeTask) {
         let keys = activeNative.compactMap { $0.value.schemeTask === task ? $0.key : nil }
         for id in keys {
-            if let pending = activeNative.removeValue(forKey: id) {
-                _ = pending.handle.cancel()
-            }
+            guard let pending = activeNative.removeValue(forKey: id) else { continue }
+            pending.markTerminated()
+            node?.unregisterNativeGatewaySink(handleID: id)
+            _ = pending.handle.cancel()
+            _ = pending.handle.free()
         }
     }
 
-    nonisolated private func driveNative(_ pending: NativePending) {
-        defer { _ = pending.handle.free() }
-
-        let metadata: NativeResponseMetadata
-        do {
-            metadata = try waitForNativeMetadataBlocking(handle: pending.handle)
-        } catch {
-            deliverOnMain(pending: pending, terminal: true) { $0.didFailWithError(error) }
-            return
-        }
-
-        switch metadata.state {
-        case .failed, .cancelled:
-            let err = Self.nativeError(from: metadata)
-            deliverOnMain(pending: pending, terminal: true) { $0.didFailWithError(err) }
-            return
-        case .pending, .streaming, .completed:
-            break
-        }
-
-        guard let status = metadata.status else {
-            deliverOnMain(pending: pending, terminal: true) {
-                $0.didFailWithError(URLError(.badServerResponse))
-            }
-            return
-        }
-
-        let responseHeaders = Dictionary(
-            (metadata.headers ?? []).map { ($0.name, $0.value) },
-            uniquingKeysWith: { _, new in new }
-        )
-        guard let response = Self.sameOriginResponse(
-            url: pending.originalURL,
-            status: status,
-            headers: responseHeaders
-        ) else {
-            deliverOnMain(pending: pending, terminal: true) {
-                $0.didFailWithError(URLError(.badServerResponse))
-            }
-            return
-        }
-        deliverOnMain(pending: pending, terminal: false) { $0.didReceive(response) }
-
-        var buffer = [UInt8](unsafeUninitializedCapacity: Self.nativeReadBufferBytes) { _, count in
-            count = Self.nativeReadBufferBytes
-        }
-        while true {
-            let result: FreedomIpfsNativeGatewayReadResult
-            do {
-                result = try buffer.withUnsafeMutableBytes { bytes in
-                    try pending.handle.read(
-                        into: bytes,
-                        timeoutMilliseconds: Self.nativeWaitTimeoutMilliseconds
-                    )
-                }
-            } catch {
-                deliverOnMain(pending: pending, terminal: true) { $0.didFailWithError(error) }
-                return
-            }
-            switch result.status {
-            case .bytes:
-                if result.bytesRead > 0 {
-                    let chunk = buffer.withUnsafeBytes { raw in
-                        Data(bytes: raw.baseAddress!, count: result.bytesRead)
-                    }
-                    deliverOnMain(pending: pending, terminal: false) { $0.didReceive(chunk) }
-                }
-            case .pending:
-                continue
-            case .end:
-                deliverOnMain(pending: pending, terminal: true) { $0.didFinish() }
-                return
-            case .cancelled, .failed, .invalidHandle:
-                let err = Self.nativeReadError(handle: pending.handle, status: result.status)
-                deliverOnMain(pending: pending, terminal: true) { $0.didFailWithError(err) }
-                return
-            }
-        }
-    }
-
-    nonisolated private func waitForNativeMetadataBlocking(
-        handle: NativeGatewayHandle
-    ) throws -> NativeResponseMetadata {
-        while true {
-            let json = try handle.responseJSON(
-                timeoutMilliseconds: Self.nativeWaitTimeoutMilliseconds
-            )
-            let metadata = try Self.decodeNativeResponseMetadata(json)
-            if metadata.state != .pending {
-                return metadata
-            }
-        }
-    }
-
-    /// Hops to main and runs `body` on the scheme task — but only if
-    /// the request is still in `activeNative`. `webView(_:stop:)`
-    /// removes entries before cancelling the Rust handle, so any
-    /// delivery racing in after stop short-circuits safely. Terminal
-    /// hops also remove the entry so subsequent deliveries are no-ops.
-    nonisolated private func deliverOnMain(
-        pending: NativePending,
-        terminal: Bool,
-        _ body: @escaping @MainActor (WKURLSchemeTask) -> Void
-    ) {
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let live = terminal
-                    ? self.activeNative.removeValue(forKey: pending.handle.id) != nil
-                    : self.activeNative[pending.handle.id] != nil
-                guard live else { return }
-                body(pending.schemeTask)
-            }
-        }
-    }
-
-    nonisolated private static func nativeReadError(
+    nonisolated fileprivate static func nativeReadError(
         handle: NativeGatewayHandle,
         status: FreedomIpfsNativeGatewayReadStatus
     ) -> Error {
@@ -724,7 +584,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
-    nonisolated private static func nativeError(from metadata: NativeResponseMetadata) -> Error {
+    nonisolated fileprivate static func nativeError(from metadata: NativeResponseMetadata) -> Error {
         let message = metadata.error?.message ?? "native gateway request \(metadata.state.rawValue)"
         let code = metadata.error?.code ?? "unknown"
         return NSError(
@@ -858,6 +718,223 @@ private final class SessionDelegate: NSObject, URLSessionDataDelegate {
         let id = task.taskIdentifier
         MainActor.assumeIsolated {
             handler?.handleCompletion(for: id, error: error)
+        }
+    }
+}
+
+/// Sink for the node-level event multiplexer. Receives events on the
+/// `NativeGatewayDispatcher` worker thread, does the FFI work there,
+/// and hops to main only for WK callbacks. Owned by `IpfsSchemeHandler`
+/// via the `activeNative` dict; removed on terminal event or on
+/// `webView(_:stop:)`.
+final class NativePending: NativeRequestSink, @unchecked Sendable {
+    let schemeTask: WKURLSchemeTask
+    let originalURL: URL
+    let handle: NativeGatewayHandle
+    weak var owner: IpfsSchemeHandler?
+
+    private let stateLock = NSLock()
+    private var responseDelivered = false
+    private var terminated = false
+
+    init(
+        schemeTask: WKURLSchemeTask,
+        originalURL: URL,
+        handle: NativeGatewayHandle,
+        owner: IpfsSchemeHandler
+    ) {
+        self.schemeTask = schemeTask
+        self.originalURL = originalURL
+        self.handle = handle
+        self.owner = owner
+    }
+
+    /// Called by the owner on `webView(_:stop:)` to silence any future
+    /// sink processing. Idempotent. Caller is responsible for
+    /// cancel/free; this only sets the flag.
+    func markTerminated() {
+        stateLock.lock()
+        terminated = true
+        stateLock.unlock()
+    }
+
+    func nativeRequestReceivedEvent(_ event: FreedomIpfsNativeGatewayEvent) {
+        if isTerminated { return }
+        let flags = event.events
+        if flags.contains(.failed) || flags.contains(.cancelled) || flags.contains(.handleFreed) {
+            terminate(with: nativeTerminalError(flags: flags))
+            return
+        }
+        if flags.contains(.responseReady) {
+            deliverResponseIfNeeded()
+        }
+        if flags.contains(.bodyReady) || flags.contains(.end) {
+            drainBody()
+        }
+    }
+
+    private var isTerminated: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return terminated
+    }
+
+    private func deliverResponseIfNeeded() {
+        stateLock.lock()
+        if responseDelivered || terminated {
+            stateLock.unlock()
+            return
+        }
+        stateLock.unlock()
+
+        let metadata: IpfsSchemeHandler.NativeResponseMetadata
+        do {
+            let json = try handle.responseJSON(timeoutMilliseconds: 0)
+            metadata = try IpfsSchemeHandler.decodeNativeResponseMetadata(json)
+        } catch {
+            terminate(with: error)
+            return
+        }
+
+        switch metadata.state {
+        case .failed, .cancelled:
+            terminate(with: IpfsSchemeHandler.nativeError(from: metadata))
+            return
+        case .pending:
+            // metadata not actually ready despite the event — wait for
+            // the next responseReady tick
+            return
+        case .streaming, .completed:
+            break
+        }
+
+        guard let status = metadata.status else {
+            terminate(with: URLError(.badServerResponse))
+            return
+        }
+
+        let headers = Dictionary(
+            (metadata.headers ?? []).map { ($0.name, $0.value) },
+            uniquingKeysWith: { _, new in new }
+        )
+        guard let response = IpfsSchemeHandler.sameOriginResponse(
+            url: originalURL,
+            status: status,
+            headers: headers
+        ) else {
+            terminate(with: URLError(.badServerResponse))
+            return
+        }
+
+        stateLock.lock()
+        if terminated {
+            stateLock.unlock()
+            return
+        }
+        responseDelivered = true
+        stateLock.unlock()
+
+        deliverOnMain { $0.didReceive(response) }
+    }
+
+    private func drainBody() {
+        stateLock.lock()
+        if !responseDelivered || terminated {
+            stateLock.unlock()
+            return
+        }
+        stateLock.unlock()
+
+        var buffer = [UInt8](
+            unsafeUninitializedCapacity: IpfsSchemeHandler.nativeReadBufferBytes
+        ) { _, count in
+            count = IpfsSchemeHandler.nativeReadBufferBytes
+        }
+
+        while !isTerminated {
+            let result: FreedomIpfsNativeGatewayReadResult
+            do {
+                result = try buffer.withUnsafeMutableBytes { bytes in
+                    try handle.read(into: bytes, timeoutMilliseconds: 0)
+                }
+            } catch {
+                terminate(with: error)
+                return
+            }
+            switch result.status {
+            case .bytes:
+                if result.bytesRead > 0 {
+                    let chunk = buffer.withUnsafeBytes { raw in
+                        Data(bytes: raw.baseAddress!, count: result.bytesRead)
+                    }
+                    deliverOnMain { $0.didReceive(chunk) }
+                }
+            case .pending:
+                // No more chunks right now; the dispatcher will fire
+                // another `.bodyReady` or `.end` event when there is.
+                return
+            case .end:
+                terminate(with: nil)
+                return
+            case .cancelled, .failed, .invalidHandle:
+                terminate(
+                    with: IpfsSchemeHandler.nativeReadError(handle: handle, status: result.status)
+                )
+                return
+            }
+        }
+    }
+
+    private func nativeTerminalError(flags: FreedomIpfsNativeGatewayEventFlags) -> Error {
+        if let json = try? handle.responseJSON(timeoutMilliseconds: 0),
+           let meta = try? IpfsSchemeHandler.decodeNativeResponseMetadata(json) {
+            return IpfsSchemeHandler.nativeError(from: meta)
+        }
+        if flags.contains(.cancelled) {
+            return URLError(.cancelled)
+        }
+        return URLError(.badServerResponse)
+    }
+
+    /// Mark terminated, free the Rust handle, hop to main to deliver
+    /// the terminal WK callback and remove ourselves from the owner's
+    /// `activeNative`. `error == nil` ⇒ `didFinish()`; non-nil ⇒
+    /// `didFailWithError`.
+    private func terminate(with error: Error?) {
+        stateLock.lock()
+        if terminated {
+            stateLock.unlock()
+            return
+        }
+        terminated = true
+        stateLock.unlock()
+
+        _ = handle.free()
+
+        let id = handle.id
+        DispatchQueue.main.async { [weak self, weak owner] in
+            MainActor.assumeIsolated {
+                guard let self, let owner else { return }
+                guard owner.activeNative.removeValue(forKey: id) != nil else { return }
+                if let error {
+                    self.schemeTask.didFailWithError(error)
+                } else {
+                    self.schemeTask.didFinish()
+                }
+            }
+        }
+    }
+
+    /// Hop to main and run `body` on the scheme task — non-terminal,
+    /// keeps the entry in `activeNative`. `webView(_:stop:)` removes
+    /// the entry before cancelling, so any delivery racing in after
+    /// stop short-circuits via the containment check.
+    private func deliverOnMain(_ body: @escaping @MainActor (WKURLSchemeTask) -> Void) {
+        DispatchQueue.main.async { [weak self, weak owner] in
+            MainActor.assumeIsolated {
+                guard let self, let owner else { return }
+                guard owner.activeNative[self.handle.id] != nil else { return }
+                body(self.schemeTask)
+            }
         }
     }
 }

@@ -32,6 +32,34 @@ public struct FreedomIpfsNativeGatewayReadResult: Equatable, Sendable {
     public let bytesRead: Int
 }
 
+public enum FreedomIpfsNativeGatewayEventStatus: UInt32, Sendable {
+    case ok = 0
+    case timeout = 1
+    case invalidNode = 2
+    case gatewayStopped = 3
+}
+
+public struct FreedomIpfsNativeGatewayEventFlags: OptionSet, Sendable {
+    public let rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    public static let responseReady = FreedomIpfsNativeGatewayEventFlags(rawValue: 1 << 0)
+    public static let bodyReady = FreedomIpfsNativeGatewayEventFlags(rawValue: 1 << 1)
+    public static let end = FreedomIpfsNativeGatewayEventFlags(rawValue: 1 << 2)
+    public static let failed = FreedomIpfsNativeGatewayEventFlags(rawValue: 1 << 3)
+    public static let cancelled = FreedomIpfsNativeGatewayEventFlags(rawValue: 1 << 4)
+    public static let handleFreed = FreedomIpfsNativeGatewayEventFlags(rawValue: 1 << 5)
+}
+
+public struct FreedomIpfsNativeGatewayEvent: Equatable, Sendable {
+    public let status: FreedomIpfsNativeGatewayEventStatus
+    public let events: FreedomIpfsNativeGatewayEventFlags
+    public let requestHandle: UInt64
+}
+
 public struct FreedomIpfsStats: Equatable, Sendable {
     public let blockCount: UInt64
     public let totalBytes: UInt64
@@ -391,6 +419,21 @@ public final class FreedomIpfsReader {
         )
         let status = FreedomIpfsNativeGatewayReadStatus(rawValue: result.status) ?? .failed
         return FreedomIpfsNativeGatewayReadResult(status: status, bytesRead: Int(result.bytes_read))
+    }
+
+    public func waitNextNativeGatewayEvent(
+        timeoutMilliseconds: UInt64
+    ) throws -> FreedomIpfsNativeGatewayEvent {
+        guard let handle else {
+            throw FreedomIpfsReaderError.invalidNode
+        }
+        let event = freedom_ipfs_gateway_wait_next_event(handle, timeoutMilliseconds)
+        let status = FreedomIpfsNativeGatewayEventStatus(rawValue: event.status) ?? .gatewayStopped
+        return FreedomIpfsNativeGatewayEvent(
+            status: status,
+            events: FreedomIpfsNativeGatewayEventFlags(rawValue: event.events),
+            requestHandle: event.request_handle
+        )
     }
 
     @discardableResult
