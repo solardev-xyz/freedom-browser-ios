@@ -176,6 +176,55 @@ final class NativeIPFSLifecycleTests: XCTestCase {
         XCTAssertEqual(handle.freeCount, 1)
     }
 
+    /// Pre-response failure surfaces as a 502 HTML error page (not as
+    /// WK's stock "Webpage Not Available"). The Rust error message is
+    /// rendered inline so power users can grep
+    /// `last_native_error_message` in the stats JSON against what the
+    /// user saw.
+    func testFailedMetadataPreResponseRendersErrorPage() {
+        let (task, handle, _, pending) = makePending()
+        handle.enqueueResponseJSON(#"{"state":"failed","error":{"code":"block_provider_error","message":"no HTTP-capable providers found"}}"#)
+
+        pending.nativeRequestReceivedEvent(makeEvent([.failed]))
+        waitForMain(until: { task.finishCount == 1 })
+
+        XCTAssertEqual(task.responses.count, 1)
+        let response = task.responses.first as? HTTPURLResponse
+        XCTAssertEqual(response?.statusCode, 502)
+        XCTAssertEqual(response?.allHeaderFields["Content-Type"] as? String, "text/html; charset=utf-8")
+        XCTAssertEqual(task.dataChunks.count, 1)
+        let body = task.dataChunks.first.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        XCTAssertTrue(body.contains("Couldn't load this IPFS content"),
+                      "Error page should have the retrieval-failed heading")
+        XCTAssertTrue(body.contains("no HTTP-capable providers found"),
+                      "Error page should include the Rust error message")
+        XCTAssertTrue(body.contains("block_provider_error"),
+                      "Error page should include the Rust error code")
+        XCTAssertTrue(task.failErrors.isEmpty,
+                      "Page-rendering path must not also call didFailWithError")
+        XCTAssertEqual(handle.freeCount, 1)
+    }
+
+    /// Once the response has been delivered to WK (mid-stream failure),
+    /// WK rejects a second `didReceive(response:)`. The sink must fall
+    /// back to `didFailWithError` instead of trying to render a page.
+    func testFailedAfterResponseDeliveredFallsBackToDidFail() {
+        let (task, handle, _, pending) = makePending()
+        handle.enqueueResponseJSON(Self.responseJSON(state: .streaming, status: 200))
+
+        pending.nativeRequestReceivedEvent(makeEvent([.responseReady]))
+        waitForMain(until: { task.responses.count == 1 })
+
+        pending.nativeRequestReceivedEvent(makeEvent([.failed]))
+        waitForMain(until: { !task.failErrors.isEmpty })
+
+        XCTAssertEqual(task.responses.count, 1, "Streaming response delivered exactly once; no 502 page injected mid-stream")
+        XCTAssertEqual((task.responses.first as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(task.failErrors.count, 1)
+        XCTAssertEqual(task.finishCount, 0)
+        XCTAssertEqual(handle.freeCount, 1)
+    }
+
     /// Race window: the owner removes the entry from `activeNative`
     /// between the `DispatchQueue.main.async` enqueue and its
     /// execution. The deliverOnMain containment check must drop the

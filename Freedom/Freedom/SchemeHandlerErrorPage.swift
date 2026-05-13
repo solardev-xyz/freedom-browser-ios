@@ -10,6 +10,8 @@ enum SchemeHandlerErrorPage {
     enum Kind {
         case codecMismatch(requestedScheme: String, resolvedScheme: String, name: String)
         case resolutionFailed(name: String, message: String)
+        case retrievalFailed(url: String, code: String?, message: String?)
+        case nodeUnavailable(url: String)
     }
 
     static func render(_ kind: Kind) -> String {
@@ -32,6 +34,32 @@ enum SchemeHandlerErrorPage {
                 body: """
                 <p>Couldn't resolve <code>\(escape(name))</code>.</p>
                 <p class="detail">\(escape(message))</p>
+                """
+            )
+        case let .retrievalFailed(url, code, message):
+            // Detail carries the Rust message verbatim so devs can
+            // cross-reference `last_native_error_code` in the stats
+            // JSON with what the user actually saw.
+            let detail = [
+                message.map { "<p class=\"detail\">\(escape($0))</p>" },
+                code.map { "<p class=\"detail\"><code>\(escape($0))</code></p>" },
+            ].compactMap { $0 }.joined()
+            return page(
+                title: "Couldn't load this IPFS content",
+                heading: "Couldn't load this IPFS content",
+                body: """
+                <p>The Rust gateway couldn't retrieve <code>\(escape(url))</code>.</p>
+                \(detail)
+                <p class="detail">Possible causes: no providers have the content, the network couldn't reach them in time, or the content is unavailable.</p>
+                """
+            )
+        case let .nodeUnavailable(url):
+            return page(
+                title: "IPFS node is not running",
+                heading: "IPFS node is not running",
+                body: """
+                <p>Can't load <code>\(escape(url))</code> because the embedded IPFS node isn't running.</p>
+                <p class="detail">Enable IPFS in Settings, then reload this page.</p>
                 """
             )
         }

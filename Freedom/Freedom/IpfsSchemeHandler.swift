@@ -258,7 +258,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
                 self.handleENSResolved(originalURL: originalURL, resolved: resolved, task: task)
             } catch {
                 guard !pending.cancelled else { return }
-                self.respondWithError(
+                Self.deliverErrorPage(
                     originalURL: originalURL,
                     statusCode: 502,
                     body: SchemeHandlerErrorPage.render(.resolutionFailed(
@@ -285,7 +285,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         guard resolved.codec == expected else {
-            respondWithError(
+            Self.deliverErrorPage(
                 originalURL: originalURL,
                 statusCode: 404,
                 body: SchemeHandlerErrorPage.render(.codecMismatch(
@@ -309,14 +309,19 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         )
     }
 
-    private func respondWithError(
+    /// Synthesize a 4xx/5xx HTML response on a `WKURLSchemeTask`. Used
+    /// by both the ENS error paths and the native FFI failure paths.
+    /// Must only be called before any other `didReceive(response:)` —
+    /// WK rejects a second response mid-stream.
+    @MainActor
+    static func deliverErrorPage(
         originalURL: URL,
         statusCode: Int,
         body: String,
         task: WKURLSchemeTask
     ) {
         let data = Data(body.utf8)
-        let response = Self.sameOriginResponse(
+        let response = sameOriginResponse(
             url: originalURL,
             status: statusCode,
             headers: [
@@ -327,6 +332,71 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         task.didReceive(response)
         task.didReceive(data)
         task.didFinish()
+    }
+
+    /// Classify an `Error` from the native FFI flow into the page kind
+    /// we should render in place of WK's stock error page. Returns
+    /// `nil` for errors WK already handles well — notably
+    /// `URLError(.cancelled)`, which WK silently suppresses (no error
+    /// page; the right UX for user-initiated cancels). Callers fall
+    /// through to `didFailWithError(_:)` in the `nil` case.
+    nonisolated static func errorPageKind(
+        for error: Error,
+        originalURL: URL
+    ) -> SchemeHandlerErrorPage.Kind? {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .cancelled:
+                return nil
+            case .cannotConnectToHost:
+                return .nodeUnavailable(url: originalURL.absoluteString)
+            default:
+                return .retrievalFailed(
+                    url: originalURL.absoluteString,
+                    code: nil,
+                    message: urlError.localizedDescription
+                )
+            }
+        }
+        if let ipfsError = error as? IPFSError, case .notRunning = ipfsError {
+            return .nodeUnavailable(url: originalURL.absoluteString)
+        }
+        let ns = error as NSError
+        if ns.domain == nativeErrorDomain {
+            return .retrievalFailed(
+                url: originalURL.absoluteString,
+                code: ns.userInfo[nativeErrorCodeKey] as? String,
+                message: ns.userInfo[NSLocalizedDescriptionKey] as? String
+            )
+        }
+        return .retrievalFailed(
+            url: originalURL.absoluteString,
+            code: nil,
+            message: error.localizedDescription
+        )
+    }
+
+    /// Classify `error` and, if classifiable, deliver the synthesized
+    /// 502 HTML page. Returns `true` iff a page was rendered (so the
+    /// caller can fall through to `didFailWithError(_:)` on `false`
+    /// without re-classifying). Must only be called pre-response — WK
+    /// rejects a second `didReceive(response:)` mid-stream.
+    @MainActor
+    static func tryDeliverErrorPage(
+        for error: Error,
+        originalURL: URL,
+        task: WKURLSchemeTask
+    ) -> Bool {
+        guard let kind = errorPageKind(for: error, originalURL: originalURL) else {
+            return false
+        }
+        deliverErrorPage(
+            originalURL: originalURL,
+            statusCode: nativeFailureStatus,
+            body: SchemeHandlerErrorPage.render(kind),
+            task: task
+        )
+        return true
     }
 
     // MARK: - Upstream fetch (shared by CID-host and ENS-resolved paths)
@@ -531,7 +601,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         task: WKURLSchemeTask
     ) {
         guard let node else {
-            task.didFailWithError(URLError(.cannotConnectToHost))
+            failNativeStart(error: URLError(.cannotConnectToHost), originalURL: originalURL, task: task)
             return
         }
 
@@ -558,7 +628,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
                 topLevelPath: topLevelPath
             )
         } catch {
-            task.didFailWithError(error)
+            failNativeStart(error: error, originalURL: originalURL, task: task)
             return
         }
 
@@ -577,6 +647,12 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
             )
         } catch {
             nativeLogger.error("start failed path=\(gatewayPath, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            failNativeStart(error: error, originalURL: originalURL, task: task)
+        }
+    }
+
+    private func failNativeStart(error: Error, originalURL: URL, task: WKURLSchemeTask) {
+        if !Self.tryDeliverErrorPage(for: error, originalURL: originalURL, task: task) {
             task.didFailWithError(error)
         }
     }
@@ -626,25 +702,35 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
+    /// NSError domain + userInfo key used to ferry the Rust gateway's
+    /// structured error code/message from `nativeError(from:)` (the
+    /// producer) to `errorPageKind(for:)` (the consumer). String
+    /// literals lived in both sites previously; promoted here so the
+    /// producer/consumer pair can't drift.
+    fileprivate static let nativeErrorDomain = "FreedomIPFSNativeGateway"
+    fileprivate static let nativeErrorCodeKey = "FreedomIPFSNativeErrorCode"
+    /// Status code for the synthesized 5xx HTML page on a native FFI
+    /// failure. Bad Gateway maps cleanly to "the upstream IPFS gateway
+    /// couldn't fulfill this request" and matches what the ENS
+    /// resolution-failed branch uses.
+    fileprivate static let nativeFailureStatus = 502
+
     nonisolated fileprivate static func nativeError(from metadata: NativeResponseMetadata) -> Error {
-        // WebKit's error-page UX treats `URLError(.cancelled)` as a
-        // user-initiated cancel (no page shown). Surfacing terminal
-        // metadata for `.cancelled` as a generic FreedomIPFSNativeGateway
-        // NSError instead would render a "request cancelled" error page
-        // for every back-button / new-navigation cancel. The .failed
-        // branch keeps the structured diagnostic info — failures DO
-        // want a visible error.
+        // WebKit treats `URLError(.cancelled)` as a user-initiated
+        // cancel (no error page shown). A cancelled-state structured
+        // NSError would render a "request cancelled" page for every
+        // back-button / new-navigation cancel — wrong UX.
         if metadata.state == .cancelled {
             return URLError(.cancelled)
         }
         let message = metadata.error?.message ?? "native gateway request \(metadata.state.rawValue)"
         let code = metadata.error?.code ?? "unknown"
         return NSError(
-            domain: "FreedomIPFSNativeGateway",
+            domain: nativeErrorDomain,
             code: -1,
             userInfo: [
                 NSLocalizedDescriptionKey: message,
-                "FreedomIPFSNativeErrorCode": code,
+                nativeErrorCodeKey: code,
             ]
         )
     }
@@ -1007,10 +1093,10 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
         return URLError(.badServerResponse)
     }
 
-    /// Mark terminated, free the Rust handle, hop to main to deliver
-    /// the terminal WK callback and remove ourselves from the owner's
-    /// `activeNative`. `error == nil` ⇒ `didFinish()`; non-nil ⇒
-    /// `didFailWithError`.
+    /// `error == nil` ⇒ `didFinish`; pre-response classifiable error
+    /// ⇒ 502 HTML page; else ⇒ `didFailWithError`. Mid-stream failures
+    /// can't render a page because WK rejects a second
+    /// `didReceive(response:)`.
     private func terminate(with error: Error?) {
         stateLock.lock()
         if terminated {
@@ -1018,6 +1104,8 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
             return
         }
         terminated = true
+        // Snapshot under the lock; main hop must see the pre-terminate value.
+        let responseAlreadyDelivered = responseDelivered
         stateLock.unlock()
 
         _ = handle.free()
@@ -1030,14 +1118,22 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
         } else {
             nativeLogger.info("finish handle=\(id, privacy: .public)")
         }
+        let originalURL = self.originalURL
         DispatchQueue.main.async { [weak self, weak owner] in
             MainActor.assumeIsolated {
                 guard let self, let owner else { return }
                 guard owner.nativePendingRemove(handleID: id) else { return }
-                if let error {
-                    self.schemeTask.didFailWithError(error)
-                } else {
+                guard let error else {
                     self.schemeTask.didFinish()
+                    return
+                }
+                if responseAlreadyDelivered ||
+                    !IpfsSchemeHandler.tryDeliverErrorPage(
+                        for: error,
+                        originalURL: originalURL,
+                        task: self.schemeTask
+                    ) {
+                    self.schemeTask.didFailWithError(error)
                 }
             }
         }
