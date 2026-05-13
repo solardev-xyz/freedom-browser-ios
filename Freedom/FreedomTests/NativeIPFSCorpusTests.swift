@@ -129,6 +129,7 @@ final class NativeIPFSCorpusTests: XCTestCase {
         }
 
         let baselineDiagnostics = node.snapshotDiagnostics()
+        let nativeStatsBefore = node.snapshotNativeGatewayStatsJSON() ?? "{}"
         let started = Date()
         webView.load(URLRequest(url: url))
         let outcome = await delegate.waitForOutcome(timeout: Self.perLoadTimeoutSeconds)
@@ -146,6 +147,7 @@ final class NativeIPFSCorpusTests: XCTestCase {
 
         let finalDiagnostics = node.snapshotDiagnostics()
         let progressJSON = node.progressSnapshotJSON ?? "{}"
+        let nativeStatsAfter = node.snapshotNativeGatewayStatsJSON() ?? "{}"
 
         navContext.end()
         await drainHandlers(webView: webView, handlers: [handlerIpfs, handlerIpns])
@@ -161,7 +163,9 @@ final class NativeIPFSCorpusTests: XCTestCase {
             bodyTextLength: bodyLength,
             activeProgressTargetsAtCapture: activeAtSettle,
             diagnostics: DiagnosticsSnapshot(before: baselineDiagnostics, after: finalDiagnostics),
-            progressSnapshotJSON: progressJSON
+            progressSnapshotJSON: progressJSON,
+            nativeGatewayStatsJSONBefore: nativeStatsBefore,
+            nativeGatewayStatsJSONAfter: nativeStatsAfter
         )
     }
 
@@ -260,6 +264,14 @@ private struct RunResult: Encodable {
     let activeProgressTargetsAtCapture: Int
     let diagnostics: DiagnosticsSnapshot
     let progressSnapshotJSON: String
+    /// Raw JSON from `IPFSNode.snapshotNativeGatewayStatsJSON()` taken
+    /// before/after the URL load. Captured raw so the harness doesn't
+    /// have to track the Rust shape; field meanings are documented in
+    /// `freedom-ipfs/.../NativeGatewayStatsSnapshot`. Useful deltas:
+    /// `total_started/completed/freed`, `active_native_handles` (must
+    /// return to 0 between loads), `events_enqueued/delivered`.
+    let nativeGatewayStatsJSONBefore: String
+    let nativeGatewayStatsJSONAfter: String
 
     static func failure(url: String, transport: IPFSGatewayTransport, message: String) -> RunResult {
         RunResult(
@@ -272,7 +284,9 @@ private struct RunResult: Encodable {
             bodyTextLength: 0,
             activeProgressTargetsAtCapture: 0,
             diagnostics: DiagnosticsSnapshot.empty,
-            progressSnapshotJSON: "{}"
+            progressSnapshotJSON: "{}",
+            nativeGatewayStatsJSONBefore: "{}",
+            nativeGatewayStatsJSONAfter: "{}"
         )
     }
 }

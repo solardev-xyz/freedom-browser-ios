@@ -636,6 +636,20 @@ public final class FreedomIpfsReader {
         return String(cString: ptr)
     }
 
+    /// Raw JSON snapshot of native FFI transport counters: active
+    /// handles, started/completed/failed/cancelled/freed totals,
+    /// bytes streamed, event queue depth, last native error code &
+    /// message. Shape is documented in `freedom-ipfs`'s
+    /// `NativeGatewayStatsSnapshot`. Empty-stats string when the node
+    /// is not running.
+    public var nativeGatewayStatsJSON: String {
+        guard let handle, let ptr = freedom_ipfs_node_native_gateway_stats_json(handle) else {
+            return "{\"active_native_handles\":0}"
+        }
+        defer { freedom_ipfs_string_free(ptr) }
+        return String(cString: ptr)
+    }
+
     public func clearProgress() -> Bool {
         guard let handle else {
             return false

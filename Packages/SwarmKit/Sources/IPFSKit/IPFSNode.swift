@@ -442,6 +442,18 @@ public final class IPFSNode {
         )
     }
 
+    /// Raw native FFI transport counters JSON. Returns `nil` when the
+    /// node isn't running. Shape per Rust's
+    /// `NativeGatewayStatsSnapshot` (`active_native_handles`,
+    /// `total_started/completed/failed/cancelled/freed`, `bytes_read`,
+    /// `events_enqueued/delivered/coalesced`, queue depth fields,
+    /// `last_native_error_code/_message`). Captured as a raw string so
+    /// the harness can stash it without locking us into a Swift type
+    /// before the Rust shape stabilises.
+    public func snapshotNativeGatewayStatsJSON() -> String? {
+        reader?.nativeGatewayStatsJSON
+    }
+
     /// Allocate a fresh correlation ID for an outgoing gateway
     /// request. The scheme handler stamps this onto
     /// `X-Freedom-Request-ID`; the Rust gateway uses it as the
