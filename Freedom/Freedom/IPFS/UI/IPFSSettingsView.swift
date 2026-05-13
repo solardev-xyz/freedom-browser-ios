@@ -48,7 +48,7 @@ struct IPFSSettingsView: View {
                     }
                 }
             } header: {
-                Text("Transport (experimental)")
+                Text("Transport")
             } footer: {
                 Text(transportFooterText)
             }
@@ -121,10 +121,10 @@ struct IPFSSettingsView: View {
 
     private var transportFooterText: String {
         switch settings.ipfsGatewayTransport {
-        case .loopbackHTTP:
-            "Default. ipfs:// requests go through URLSession to http://127.0.0.1:<port> on the embedded Rust gateway."
         case .nativeFFI:
-            "Experimental. Requests bypass URLSession and the loopback HTTP listener; the scheme handler drives GatewayCore through the native FFI directly. Applies to the next request."
+            "Default. The scheme handler drives the Rust gateway through the native FFI directly — no URLSession, no loopback TCP hop."
+        case .loopbackHTTP:
+            "Legacy fallback. ipfs:// requests go through URLSession to http://127.0.0.1:<port> on the embedded Rust gateway. Applies to the next request."
         }
     }
 
