@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */ = {isa = PBXBuildFile; productRef = 170726AB2F96CD3900CCFF45 /* SwarmKit */; };
+		17C0118710000000000000A1 /* Colibri in Frameworks */ = {isa = PBXBuildFile; productRef = 17C0118710000000000000A2 /* Colibri */; };
 		17CFC0872F9EAD0B00A6E66C /* CryptoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 17CFC0862F9EAD0B00A6E66C /* CryptoSwift */; };
 		17E52F300000000000000003 /* web3.swift in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F200000000000000002 /* web3.swift */; };
 		17E52F50000000000000000E /* ENSNormalize in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52F60000000000000000F /* ENSNormalize */; };
@@ -64,6 +65,7 @@
 			files = (
 				170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */,
 				17F5F0F0000000000000F503 /* IPFSKit in Frameworks */,
+				17C0118710000000000000A1 /* Colibri in Frameworks */,
 				17E52F300000000000000003 /* web3.swift in Frameworks */,
 				17E52F50000000000000000E /* ENSNormalize in Frameworks */,
 				17E52F80000000000000000A /* secp256k1 in Frameworks */,
@@ -122,6 +124,7 @@
 			packageProductDependencies = (
 				170726AB2F96CD3900CCFF45 /* SwarmKit */,
 				17F5F0F0000000000000F502 /* IPFSKit */,
+				17C0118710000000000000A2 /* Colibri */,
 				17E52F200000000000000002 /* web3.swift */,
 				17E52F60000000000000000F /* ENSNormalize */,
 				17E52F90000000000000000B /* secp256k1 */,
@@ -181,6 +184,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				170726AA2F96CD3900CCFF45 /* XCLocalSwiftPackageReference "../Packages/SwarmKit" */,
+				17C0118710000000000000A3 /* XCLocalSwiftPackageReference "../Packages/ColibriKit" */,
 				17E52F100000000000000001 /* XCRemoteSwiftPackageReference "web3" */,
 				17E52F400000000000000004 /* XCRemoteSwiftPackageReference "secp256k1" */,
 				17E52F70000000000000000D /* XCRemoteSwiftPackageReference "ENSNormalize" */,
@@ -523,6 +527,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../Packages/SwarmKit;
 		};
+		17C0118710000000000000A3 /* XCLocalSwiftPackageReference "../Packages/ColibriKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Packages/ColibriKit;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -572,6 +580,10 @@
 		170726AB2F96CD3900CCFF45 /* SwarmKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SwarmKit;
+		};
+		17C0118710000000000000A2 /* Colibri */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Colibri;
 		};
 		17CFC0862F9EAD0B00A6E66C /* CryptoSwift */ = {
 			isa = XCSwiftPackageProductDependency;
