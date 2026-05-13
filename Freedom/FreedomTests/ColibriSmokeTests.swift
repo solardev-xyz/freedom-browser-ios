@@ -26,8 +26,7 @@ final class ColibriSmokeTests: XCTestCase {
         executionTimeAllowance = 30
         storageDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("colibri-smoke-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: storageDir, withIntermediateDirectories: true)
-        StorageBridge.registerStorage(TmpDirStorage(root: storageDir))
+        ColibriDiskStorage.register(directory: storageDir)
     }
 
     override func tearDown() async throws {
@@ -68,20 +67,3 @@ final class ColibriSmokeTests: XCTestCase {
     }
 }
 
-/// Temp-dir-rooted `ColibriStorage` so the verifier's sync-committee state
-/// lands somewhere we can wipe in `tearDown` instead of the process cwd
-/// (where the bundled `DefaultFileStorage` writes by default).
-private final class TmpDirStorage: ColibriStorage {
-    private let root: URL
-    init(root: URL) { self.root = root }
-
-    func get(key: String) -> Data? {
-        try? Data(contentsOf: root.appendingPathComponent(key))
-    }
-    func set(key: String, value: Data) {
-        try? value.write(to: root.appendingPathComponent(key))
-    }
-    func delete(key: String) {
-        try? FileManager.default.removeItem(at: root.appendingPathComponent(key))
-    }
-}

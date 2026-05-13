@@ -1,7 +1,10 @@
 import BigInt
 import Foundation
+import OSLog
 import web3
 import ENSNormalize
+
+private let log = Logger(subsystem: "com.browser.Freedom", category: "ENSResolver")
 
 private extension QuorumWave.TrustTier {
     var level: ENSTrustLevel {
@@ -15,9 +18,7 @@ private extension QuorumWave.TrustTier {
 @MainActor
 @Observable
 final class ENSResolver {
-    // DAO-owned proxy so future UR impl upgrades don't require a client change.
-    // https://docs.ens.domains/resolvers/universal/
-    static let universalResolverAddress: EthereumAddress = "0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe"
+    static let universalResolverAddress = UniversalResolverABI.address
 
     enum ConsensusResult {
         case data(resolvedData: Data, resolverAddress: EthereumAddress, trust: ENSTrust)
@@ -30,9 +31,7 @@ final class ENSResolver {
         case allErrored
     }
 
-    // bytes4(keccak256("contenthash(bytes32)")) — the resolver call we
-    // wrap in the Universal Resolver's resolve(name, data).
-    private static let contenthashSelector = Data([0xbc, 0x1c, 0x58, 0xd1])
+    private static let contenthashSelector = UniversalResolverABI.contenthashSelector
 
     private let pool: EthereumRPCPool
     private let settings: SettingsStore
@@ -41,6 +40,10 @@ final class ENSResolver {
     private let reverseTransport: ReverseTransport
     private let reverseCCIPHTTP: CCIPResolver.HTTPClient
     private let clock: () -> Date
+    /// Cryptographic ENS path. Nil in unit tests that don't exercise the
+    /// Colibri branch — `consensusResolve` then skips Colibri regardless
+    /// of `settings.ensResolutionMethod`.
+    private let colibri: ColibriENSClient?
 
     typealias ReverseTransport = @Sendable (URL, Data, TimeInterval) async throws -> Data
     nonisolated static let defaultReverseTransport: ReverseTransport = { url, body, timeout in
@@ -60,7 +63,8 @@ final class ENSResolver {
         legRunner: @escaping QuorumWave.LegRunner = QuorumWave.defaultLegRunner,
         reverseTransport: @escaping ReverseTransport = ENSResolver.defaultReverseTransport,
         reverseCCIPHTTP: @escaping CCIPResolver.HTTPClient = CCIPResolver.defaultHTTP,
-        clock: @escaping () -> Date = Date.init
+        clock: @escaping () -> Date = Date.init,
+        colibri: ColibriENSClient? = nil
     ) {
         self.pool = pool
         self.settings = settings
@@ -69,16 +73,11 @@ final class ENSResolver {
         self.reverseTransport = reverseTransport
         self.reverseCCIPHTTP = reverseCCIPHTTP
         self.clock = clock
+        self.colibri = colibri
     }
 
     // MARK: - Public entry
 
-    /// Resolve an ENS name to a navigable content URL. Normalizes via
-    /// ENSIP-15 (adraffy/ENSNormalize), computes the namehash, runs the
-    /// consensus pipeline, decodes the contenthash. Concurrent calls for
-    /// the same normalized name share one Task; successful results are
-    /// cached with trust-tier-specific TTLs matching desktop (verified
-    /// 15min, unverified 60s, conflict 10s negative cache).
     /// Clears the name cache, cancels in-flight resolutions, and resets
     /// the anchor cache + pool quarantine. Call after a settings edit so
     /// stale verifications don't linger against the new configuration.
@@ -88,8 +87,15 @@ final class ENSResolver {
         inFlight.removeAll()
         anchor.invalidate()
         pool.invalidate()
+        colibri?.invalidate()
     }
 
+    /// Resolve an ENS name to a navigable content URL. Normalizes via
+    /// ENSIP-15 (adraffy/ENSNormalize), computes the namehash, runs the
+    /// consensus pipeline, decodes the contenthash. Concurrent calls for
+    /// the same normalized name share one Task; successful results are
+    /// cached with trust-tier-specific TTLs matching desktop (verified
+    /// 15min, unverified 60s, conflict 10s negative cache).
     func resolveContent(_ name: String) async throws -> ENSResolvedContent {
         let normalized: String
         do {
@@ -282,6 +288,29 @@ final class ENSResolver {
     ) async throws -> ConsensusResult {
         let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
 
+        // Colibri primary: cryptographic verification via the sync committee
+        // (or ZK sync proof). On verification failure or network/prover
+        // error we log loudly and fall through to the legacy quorum path
+        // below unless `ensFallbackToQuorum` is explicitly disabled.
+        // Loud-fallback is load-bearing: silent fall-through would hide
+        // both prover health regressions and the rare "active attack"
+        // signal.
+        if settings.ensResolutionMethod == .colibri, let colibri {
+            do {
+                return try await tryColibri(
+                    dnsEncodedName: dnsEncodedName, callData: callData, client: colibri
+                )
+            } catch let err as ColibriENSError {
+                if !settings.ensFallbackToQuorum {
+                    throw ENSResolutionError.allProvidersErrored
+                }
+                log.warning(
+                    "[ens] colibri-fallback error=\(String(describing: err), privacy: .public)"
+                )
+                // fall through to legacy path
+            }
+        }
+
         // See ENSResolutionError.customRpcFailed — fail-closed by design.
         if settings.enableEnsCustomRpc {
             return try await resolveCustomRPC(
@@ -384,6 +413,46 @@ final class ENSResolver {
         }
     }
 
+    private func tryColibri(
+        dnsEncodedName: Data,
+        callData: Data,
+        client: ColibriENSClient
+    ) async throws -> ConsensusResult {
+        // Colibri pins to head − 1 by construction (sync committee
+        // signatures for block N live in block N+1), so we don't have a
+        // separate anchor step / pinned block to report. ENSBlock is a
+        // required field on the trust object; surface a zero placeholder
+        // and the trust popover knows to render "verifier-pinned" instead
+        // of a block number for `.colibri` results.
+        let placeholderBlock = ENSBlock(number: 0, hash: "")
+        let trust = buildColibriTrust(client: client, block: placeholderBlock)
+        do {
+            let (data, resolver) = try await client.universalResolverCall(
+                dnsEncodedName: dnsEncodedName, callData: callData
+            )
+            return .data(resolvedData: data, resolverAddress: resolver, trust: trust)
+        } catch ColibriENSError.contractRevert {
+            // v1.1.24 can't distinguish ResolverNotFound from NoContenthash
+            // — both are verified-negative outcomes per the proof. Map to
+            // .noContenthash; downstream content code already treats it as
+            // "name verified, no content", same as desktop's
+            // NO_CONTENTHASH bucket.
+            return .notFound(reason: .noContenthash, trust: trust)
+        }
+    }
+
+    private func buildColibriTrust(client: ColibriENSClient, block: ENSBlock) -> ENSTrust {
+        ENSTrust(
+            level: .verified,
+            method: .colibri,
+            block: block,
+            agreed: [client.activeProverHost],
+            dissented: [],
+            queried: [client.activeProverHost],
+            k: 1, m: 1
+        )
+    }
+
     private func resolveSingleSource(
         url: URL,
         level: ENSTrustLevel = .unverified,
@@ -476,8 +545,13 @@ final class ENSResolver {
         k: Int, m: Int,
         block: ENSBlock
     ) -> ENSTrust {
-        ENSTrust(
-            level: level, block: block,
+        // `.userConfigured` level means the custom-RPC fast path produced
+        // the result — method matches the level. Every other path through
+        // here is quorum (single-source falls under quorum semantically
+        // since a future re-resolution should attempt the full wave).
+        let method: ENSResolutionMethod = level == .userConfigured ? .userConfigured : .quorum
+        return ENSTrust(
+            level: level, method: method, block: block,
             agreed: agreed.map(\.hostOrAbsolute),
             dissented: dissented.map(\.hostOrAbsolute),
             queried: queried.map(\.hostOrAbsolute),
@@ -504,7 +578,7 @@ final class ENSResolver {
 
     // MARK: - Forward addr(bytes32) resolution
 
-    private static let addrSelector = Data([0x3b, 0x3b, 0x57, 0xde])
+    private static let addrSelector = UniversalResolverABI.addrSelector
 
     /// Resolve an ENS name to its primary Ethereum address. Same consensus
     /// pipeline as `resolveContent` — a lying RPC could otherwise misroute

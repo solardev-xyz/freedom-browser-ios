@@ -28,7 +28,7 @@ enum QuorumLeg {
         enableCcipRead: Bool = false
     ) async -> Outcome {
         do {
-            let urCall = try abiEncodeResolve(name: dnsEncodedName, callData: callData)
+            let urCall = try UniversalResolverABI.encodeResolve(name: dnsEncodedName, callData: callData)
             let hex = try await callAndMaybeFollowCCIP(
                 rpcURL: url,
                 to: ENSResolver.universalResolverAddress.asString(),
@@ -37,7 +37,7 @@ enum QuorumLeg {
                 timeout: timeout,
                 enableCcipRead: enableCcipRead
             )
-            let (data, resolver) = try abiDecodeResolveResponse(hex)
+            let (data, resolver) = try UniversalResolverABI.decodeResolveResponse(hex)
             return .init(url: url, kind: .data(resolvedData: data, resolverAddress: resolver))
         } catch let RPCError.executionRevert(revertData) {
             let selector = revertData.flatMap(CCIPResolver.selectorOf)
@@ -114,22 +114,6 @@ enum QuorumLeg {
         "0x77209fe8",  // ResolverNotFound(bytes)
         "0x1e9535f2",  // ResolverNotContract(bytes,address)
     ]
-
-    // MARK: ABI
-
-    private static func abiEncodeResolve(name: Data, callData: Data) throws -> Data {
-        let encoder = ABIFunctionEncoder("resolve")
-        try encoder.encode(name)
-        try encoder.encode(callData)
-        return try encoder.encoded()
-    }
-
-    private static func abiDecodeResolveResponse(_ hex: String) throws -> (Data, EthereumAddress) {
-        let decoded = try ABIDecoder.decodeData(hex, types: [Data.self, EthereumAddress.self])
-        let data: Data = try decoded[0].decoded()
-        let resolver: EthereumAddress = try decoded[1].decoded()
-        return (data, resolver)
-    }
 
     // MARK: JSON-RPC transport
 

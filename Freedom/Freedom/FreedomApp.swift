@@ -41,8 +41,13 @@ struct FreedomApp: App {
             let history = HistoryStore(context: container.mainContext)
             let bookmarks = BookmarkStore(context: container.mainContext)
             let settings = SettingsStore()
+            // Colibri's verifier persists sync-committee state across
+            // launches. Register the disk-backed storage adapter once at
+            // startup, before any code path can construct a Colibri client.
+            ColibriDiskStorage.register()
             let pool = EthereumRPCPool(settings: settings)
-            let resolver = ENSResolver(pool: pool, settings: settings)
+            let colibri = ColibriENSClient(settings: settings)
+            let resolver = ENSResolver(pool: pool, settings: settings, colibri: colibri)
             let favicons = FaviconStore(context: container.mainContext, ensResolver: resolver)
             self._historyStore = State(wrappedValue: history)
             self._bookmarkStore = State(wrappedValue: bookmarks)

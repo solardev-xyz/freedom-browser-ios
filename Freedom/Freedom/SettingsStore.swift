@@ -41,6 +41,33 @@ final class SettingsStore {
     var ensRpcUrl: String {
         didSet { defaults.set(ensRpcUrl, forKey: Keys.ensRpcUrl) }
     }
+    /// Primary ENS resolution path. Default `.quorum` for now — Step 4 of
+    /// the Colibri rollout flips it to `.colibri` for fresh installs after
+    /// the trust popover + auto-migration land. While the default is
+    /// `.quorum`, switching to `.colibri` in settings activates the
+    /// cryptographically-verified path with `ensFallbackToQuorum` as a
+    /// safety net.
+    var ensResolutionMethod: ENSResolutionMethod {
+        didSet { defaults.set(ensResolutionMethod.rawValue, forKey: Keys.ensResolutionMethod) }
+    }
+    /// On Colibri verifier failure (prover outage, proof error), fall
+    /// through to the quorum path instead of surfacing the failure to
+    /// the user. Falls land with a loud structured log line — silent
+    /// fallback would hide both prover-health regressions and the rare
+    /// "active attack" signal.
+    var ensFallbackToQuorum: Bool {
+        didSet { defaults.set(ensFallbackToQuorum, forKey: Keys.ensFallbackToQuorum) }
+    }
+    /// Empty → `ColibriENSClient.defaultProverURL`. Override only for
+    /// dev / self-hosted prover use.
+    var ensColibriProverUrl: String {
+        didSet { defaults.set(ensColibriProverUrl, forKey: Keys.ensColibriProverUrl) }
+    }
+    /// ZK sync-committee proof on the Colibri bootstrap. Avoids the
+    /// checkpointz round-trip — partner-recommended on.
+    var ensColibriZkProof: Bool {
+        didSet { defaults.set(ensColibriZkProof, forKey: Keys.ensColibriZkProof) }
+    }
     var enableEnsQuorum: Bool {
         didSet { defaults.set(enableEnsQuorum, forKey: Keys.enableEnsQuorum) }
     }
@@ -147,6 +174,10 @@ final class SettingsStore {
         defaults.register(defaults: [
             Keys.enableEnsCustomRpc: false,
             Keys.ensRpcUrl: "",
+            Keys.ensResolutionMethod: ENSResolutionMethod.quorum.rawValue,
+            Keys.ensFallbackToQuorum: true,
+            Keys.ensColibriProverUrl: "",
+            Keys.ensColibriZkProof: true,
             Keys.enableEnsQuorum: true,
             Keys.ensQuorumK: 3,
             Keys.ensQuorumM: 2,
@@ -171,6 +202,11 @@ final class SettingsStore {
         ])
         self.enableEnsCustomRpc = defaults.bool(forKey: Keys.enableEnsCustomRpc)
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
+        self.ensResolutionMethod = defaults.string(forKey: Keys.ensResolutionMethod)
+            .flatMap(ENSResolutionMethod.init(rawValue:)) ?? .quorum
+        self.ensFallbackToQuorum = defaults.bool(forKey: Keys.ensFallbackToQuorum)
+        self.ensColibriProverUrl = defaults.string(forKey: Keys.ensColibriProverUrl) ?? ""
+        self.ensColibriZkProof = defaults.bool(forKey: Keys.ensColibriZkProof)
         self.enableEnsQuorum = defaults.bool(forKey: Keys.enableEnsQuorum)
         self.ensQuorumK = defaults.integer(forKey: Keys.ensQuorumK)
         self.ensQuorumM = defaults.integer(forKey: Keys.ensQuorumM)
@@ -214,6 +250,10 @@ final class SettingsStore {
     private enum Keys {
         static let enableEnsCustomRpc = "enableEnsCustomRpc"
         static let ensRpcUrl = "ensRpcUrl"
+        static let ensResolutionMethod = "ensResolutionMethod"
+        static let ensFallbackToQuorum = "ensFallbackToQuorum"
+        static let ensColibriProverUrl = "ensColibriProverUrl"
+        static let ensColibriZkProof = "ensColibriZkProof"
         static let enableEnsQuorum = "enableEnsQuorum"
         static let ensQuorumK = "ensQuorumK"
         static let ensQuorumM = "ensQuorumM"
