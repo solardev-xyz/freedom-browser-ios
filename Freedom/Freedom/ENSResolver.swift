@@ -703,28 +703,37 @@ final class ENSResolver {
 
     // MARK: - Reverse resolution
 
-    /// SLIP-44 coin type for Ethereum mainnet. Second arg to UR's
-    /// `reverse(bytes,uint256)` — picks the canonical Ethereum-address
-    /// primary name vs. other-chain primary names.
-    private static let ethereumCoinType: BigUInt = 60
-
     /// Reverse-resolve an Ethereum address to its ENS primary name.
-    /// Single-shot via the wallet's RPC pool against Mainnet UR — display-
-    /// only, so the consensus wave isn't worth the latency. Returns nil
-    /// when the address has no primary name set or the call fails (the
-    /// caller treats nil as "no subtitle").
-    func reverseResolve(address: EthereumAddress) async throws -> String? {
+    /// Returns `.verified(name)` for a forward-verified primary,
+    /// `.unverified(claimedName)` when the contract surfaces a
+    /// `ReverseAddressMismatch` (the on-chain spoof signal), or `.none`
+    /// when no primary is set / the call failed. Single-shot via the
+    /// wallet's RPC pool against Mainnet UR — display-only, so the
+    /// consensus wave isn't worth the latency.
+    func reverseResolve(address: EthereumAddress) async throws -> ENSReverseResolution {
         let key = address.asString().lowercased()
         if let cached = reverseCache[key], clock() < cached.expiresAt {
-            return cached.name
+            return cached.result
         }
-        let name = try await fetchReverseName(address: address)
+        let result = try await fetchReverseName(address: address)
+        let ttl: TimeInterval
+        switch result {
+        case .verified, .unverified:
+            // `.unverified` is a deterministic on-chain state — the
+            // reverse record's claimed name doesn't forward-resolve,
+            // which only flips with an on-chain tx. Cache the same as
+            // `.verified` so we don't re-hit the UR every minute for
+            // a spoofed address.
+            ttl = 15 * 60
+        case .none:
+            ttl = 60
+        }
         reverseCache[key] = ReverseCacheEntry(
-            name: name,
-            expiresAt: clock().addingTimeInterval(name == nil ? 60 : 15 * 60)
+            result: result,
+            expiresAt: clock().addingTimeInterval(ttl)
         )
         capReverseCache()
-        return name
+        return result
     }
 
     private func capReverseCache() {
@@ -736,11 +745,26 @@ final class ENSResolver {
         }
     }
 
-    private func fetchReverseName(address: EthereumAddress) async throws -> String? {
+    private func fetchReverseName(address: EthereumAddress) async throws -> ENSReverseResolution {
+        // Colibri primary path. On `ColibriENSError` we log loudly and
+        // fall through to quorum unless `ensFallbackToQuorum` is disabled.
+        if settings.ensResolutionMethod == .colibri, let colibri {
+            do {
+                return try await colibriReverse(address: address, client: colibri)
+            } catch let err as ColibriENSError {
+                if !settings.ensFallbackToQuorum {
+                    throw ReverseError.allProvidersFailed
+                }
+                log.warning(
+                    "[ens] colibri-fallback reverse address=\(address.asString(), privacy: .public) error=\(String(describing: err), privacy: .public)"
+                )
+            }
+        }
+
         let providers = pool.availableProviders()
         guard !providers.isEmpty else { throw ReverseError.allProvidersFailed }
 
-        let callData = try abiEncodeReverse(address: address)
+        let callData = try UniversalResolverABI.encodeReverse(address: address)
         let body: [String: Any] = [
             "jsonrpc": "2.0",
             "id": 1,
@@ -754,13 +778,15 @@ final class ENSResolver {
         let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
 
         // Iterate providers on transport / parse / RPC-error failure so a
-        // single flaky RPC doesn't poison the result. The UR doesn't revert
-        // for well-formed addresses for ON-chain primary names — it catches
-        // inner reverts and returns empty. Off-chain primary names (EIP-3668
-        // OffchainLookup, e.g. avsa.eth via Namestone) DO bubble up as a
-        // revert; we detect that selector and run CCIP retry. Any other
-        // `error` envelope is provider misbehavior (Cloudflare's -32603,
-        // Ankr's -32000 unauthorized, etc.) → continue iteration.
+        // single flaky RPC doesn't poison the result. The UR catches
+        // inner reverts and returns empty for on-chain primary names
+        // that forward-verify. Two reverts DO bubble up:
+        //  - `OffchainLookup` (EIP-3668) for primary names behind a
+        //    CCIP gateway (e.g. avsa.eth via Namestone). CCIP retry.
+        //  - `ReverseAddressMismatch` when the on-chain reverse record
+        //    claims a name that does NOT forward-resolve back to the
+        //    address. The spoof signal — surface as `.unverified` with
+        //    the claimed name decoded from the revert data.
         for url in providers {
             let response: Data
             do {
@@ -772,20 +798,44 @@ final class ENSResolver {
                 continue
             }
             if let error = envelope["error"] as? [String: Any] {
+                if let revertHex = error["data"] as? String,
+                   UniversalResolverABI.isReverseAddressMismatch(revertHex: revertHex) {
+                    return .unverified(
+                        claimedName: UniversalResolverABI.decodeReverseMismatchClaimedName(revertHex: revertHex)
+                    )
+                }
                 if let primary = try await ccipRetry(error: error, providerURL: url, timeout: timeout) {
-                    return primary.isEmpty ? nil : primary
+                    return primary.isEmpty ? .none : .verified(name: primary)
                 }
                 continue
             }
             guard let resultHex = envelope["result"] as? String,
-                  let primary = decodeReverseResult(resultHex) else {
+                  let primary = UniversalResolverABI.decodeReverseResponse(resultHex) else {
                 continue
             }
-            return primary.isEmpty ? nil : primary
+            return primary.isEmpty ? .none : .verified(name: primary)
         }
         // Every provider failed — transient, not cacheable. Caller's `try?`
-        // turns this into a silent nil.
+        // turns this into a silent .none-ish via XCTUnwrap of the throw.
         throw ReverseError.allProvidersFailed
+    }
+
+    /// Cryptographically-verified reverse via Colibri. The v1.1.24
+    /// binding doesn't expose revert selectors, so we can't distinguish
+    /// `ReverseAddressMismatch` from `ResolverNotFound`; any revert
+    /// surfaces as `.none` here, and the quorum path retains spoof
+    /// detection. When the binding gains revert-data exposure this
+    /// branch can return the rich `.unverified` case.
+    private func colibriReverse(
+        address: EthereumAddress,
+        client: ColibriENSClient
+    ) async throws -> ENSReverseResolution {
+        do {
+            let name = try await client.universalResolverReverse(address: address)
+            return name.isEmpty ? .none : .verified(name: name)
+        } catch ColibriENSError.contractRevert {
+            return .none
+        }
     }
 
     /// nil for any shape other than a CCIP-Read-eligible OffchainLookup
@@ -822,21 +872,11 @@ final class ENSResolver {
         } catch {
             return nil
         }
-        return decodeReverseResult(resultHex)
+        return UniversalResolverABI.decodeReverseResponse(resultHex)
     }
 
     enum ReverseError: Error {
         case allProvidersFailed
-    }
-
-    private func abiEncodeReverse(address: EthereumAddress) throws -> Data {
-        guard let addressBytes = address.asString().web3.hexData else {
-            throw ENSResolutionError.invalidName
-        }
-        let encoder = ABIFunctionEncoder("reverse")
-        try encoder.encode(addressBytes)
-        try encoder.encode(Self.ethereumCoinType)
-        return try encoder.encoded()
     }
 
     /// CCIP callback eth_call against the same provider URL we got the
@@ -875,16 +915,6 @@ final class ENSResolver {
         return result
     }
 
-    private func decodeReverseResult(_ hex: String) -> String? {
-        guard let decoded = try? ABIDecoder.decodeData(
-            hex,
-            types: [String.self, EthereumAddress.self, EthereumAddress.self]
-        ), let primary = try? decoded[0].decoded() as String else {
-            return nil
-        }
-        return primary
-    }
-
     // MARK: - Address cache state
 
     private struct AddressCacheEntry {
@@ -893,7 +923,7 @@ final class ENSResolver {
     }
 
     private struct ReverseCacheEntry {
-        let name: String?
+        let result: ENSReverseResolution
         let expiresAt: Date
     }
 }

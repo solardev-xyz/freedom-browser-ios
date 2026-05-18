@@ -66,7 +66,7 @@ struct SendTransactionDetails {
     let data: Data
     let quote: TransactionService.Quote
     let chain: Chain
-    var recipientName: String? = nil
+    var recipientName: ENSReverseResolution = .none
     var autoApproveOffer: AutoApproveOffer? = nil
 }
 

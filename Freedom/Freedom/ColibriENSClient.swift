@@ -43,8 +43,31 @@ final class ColibriENSClient {
         callData: Data
     ) async throws -> (resolvedData: Data, resolverAddress: EthereumAddress) {
         let encoded = try UniversalResolverABI.encodeResolve(name: dnsEncodedName, callData: callData)
+        let hex = try await provenEthCall(to: UniversalResolverABI.address, callData: encoded)
+        return try UniversalResolverABI.decodeResolveResponse(hex)
+    }
+
+    /// Universal Resolver `reverse(bytes,uint256)` via Colibri. The UR
+    /// internally checks forward-resolution and reverts with
+    /// `ReverseAddressMismatch(string,bytes)` on spoofed records. The
+    /// v1.1.24 binding surfaces reverts as `.contractRevert` without
+    /// selector data, so callers can't yet distinguish spoof from
+    /// "no primary"; the Step 3 `ENSResolver.colibriReverse` branch
+    /// treats any revert as `.none` and lets quorum retain spoof
+    /// detection.
+    func universalResolverReverse(
+        address: EthereumAddress
+    ) async throws -> String {
+        let encoded = try UniversalResolverABI.encodeReverse(address: address)
+        let hex = try await provenEthCall(to: UniversalResolverABI.address, callData: encoded)
+        return UniversalResolverABI.decodeReverseResponse(hex) ?? ""
+    }
+
+    /// One eth_call through the Colibri verifier, returning the proven
+    /// return data as hex. Errors come back as typed `ColibriENSError`.
+    private func provenEthCall(to: EthereumAddress, callData: Data) async throws -> String {
         let paramsJSON = try JSONSerialization.data(withJSONObject: [
-            ["to": UniversalResolverABI.address.asString(), "data": encoded.web3.hexString],
+            ["to": to.asString(), "data": callData.web3.hexString],
             "latest",
         ])
         let params = String(data: paramsJSON, encoding: .utf8) ?? "[]"
@@ -58,7 +81,7 @@ final class ColibriENSClient {
         guard let hex = rawResult as? String else {
             throw ColibriENSError.unexpectedResponse(String(describing: rawResult))
         }
-        return try UniversalResolverABI.decodeResolveResponse(hex)
+        return hex
     }
 
     /// Host of the currently-active prover, for logging and the trust

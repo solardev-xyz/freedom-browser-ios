@@ -103,15 +103,15 @@ final class ENSReverseResolveTests: XCTestCase {
     func testReverseReturnsPrimaryName() async throws {
         let response = envelope(resultHex: encodedTuple(name: "vitalik.eth"))
         let resolver = makeResolver { _, _, _ in response }
-        let name = try await resolver.reverseResolve(address: vitalik)
-        XCTAssertEqual(name, "vitalik.eth")
+        let result = try await resolver.reverseResolve(address: vitalik)
+        XCTAssertEqual(result, .verified(name: "vitalik.eth"))
     }
 
-    func testReverseEmptyNameReturnsNil() async throws {
+    func testReverseEmptyNameReturnsNone() async throws {
         let response = envelope(resultHex: encodedTuple(name: ""))
         let resolver = makeResolver { _, _, _ in response }
-        let name = try await resolver.reverseResolve(address: vitalik)
-        XCTAssertNil(name)
+        let result = try await resolver.reverseResolve(address: vitalik)
+        XCTAssertEqual(result, .none)
     }
 
     /// RPC error envelopes (Cloudflare's -32603, Ankr's -32000, etc.) are
@@ -172,8 +172,8 @@ final class ENSReverseResolveTests: XCTestCase {
             XCTFail("expected throw on first attempt")
         } catch {}
         // Second call succeeds — proves we didn't cache the failure.
-        let name = try await resolver.reverseResolve(address: vitalik)
-        XCTAssertEqual(name, "vitalik.eth")
+        let result = try await resolver.reverseResolve(address: vitalik)
+        XCTAssertEqual(result, .verified(name: "vitalik.eth"))
     }
 
     /// Provider's `eth_call` reverts with `OffchainLookup` (off-chain
@@ -194,8 +194,8 @@ final class ENSReverseResolveTests: XCTestCase {
         }
         let http: CCIPResolver.HTTPClient = { _, _ in gatewayResponse() }
         let resolver = makeResolver(transport: transport, ccipHTTP: http)
-        let name = try await resolver.reverseResolve(address: vitalik)
-        XCTAssertEqual(name, "avsa.eth")
+        let result = try await resolver.reverseResolve(address: vitalik)
+        XCTAssertEqual(result, .verified(name: "avsa.eth"))
         XCTAssertEqual(transportCalls, 2, "one for the reverse(), one for the CCIP callback")
     }
 
@@ -236,6 +236,44 @@ final class ENSReverseResolveTests: XCTestCase {
         } catch {
             XCTFail("wrong error: \(error)")
         }
+    }
+
+    /// UR's `reverse()` reverts with `ReverseAddressMismatch(string,bytes)`
+    /// when an address's on-chain reverse record claims a primary name
+    /// that does not forward-resolve back to the address — the spoof
+    /// signal. The first ABI arg is the claimed name; the resolver
+    /// decodes it and surfaces `.unverified(claimedName:)` so the
+    /// wallet UI can render a warning.
+    func testReverseAddressMismatchSurfacesClaimedName() async throws {
+        let claimed = "imposter.eth"
+        let mismatchHex = encodeReverseMismatchRevert(claimedName: claimed)
+        let revert = revertEnvelope(dataHex: mismatchHex)
+        let resolver = makeResolver(transport: { _, _, _ in revert })
+        let result = try await resolver.reverseResolve(address: vitalik)
+        XCTAssertEqual(result, .unverified(claimedName: claimed))
+    }
+
+    /// Mismatch selector + malformed ABI args → still surface UNVERIFIED,
+    /// just without the claimed name. The selector match alone is the
+    /// spoof signal worth showing the user.
+    func testReverseAddressMismatchUndecodableSurfacesNilClaim() async throws {
+        // Selector + 4 garbage bytes (not enough for the string,bytes payload).
+        let revertHex = "0xef9c03ce" + "deadbeef"
+        let revert = revertEnvelope(dataHex: revertHex)
+        let resolver = makeResolver(transport: { _, _, _ in revert })
+        let result = try await resolver.reverseResolve(address: vitalik)
+        XCTAssertEqual(result, .unverified(claimedName: nil))
+    }
+
+    private func encodeReverseMismatchRevert(claimedName: String) -> String {
+        // ABIFunctionEncoder computes the selector as
+        // keccak256("ReverseAddressMismatch(string,bytes)")[0..4] from
+        // the name + registered arg types — same recipe the contract
+        // uses to emit the revert. No hand-rolled offset math.
+        let encoder = ABIFunctionEncoder("ReverseAddressMismatch")
+        try! encoder.encode(claimedName)
+        try! encoder.encode(Data())  // empty `addr` bytes — UR fills with the actual address; tests don't care
+        return try! encoder.encoded().web3.hexString
     }
 
     func testReverseCacheHitSkipsTransport() async throws {

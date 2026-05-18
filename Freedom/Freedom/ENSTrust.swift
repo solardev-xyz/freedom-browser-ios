@@ -50,3 +50,13 @@ struct ENSTrust: Equatable {
     let k: Int
     let m: Int
 }
+
+/// Outcome of an address → primary-name reverse lookup. `.unverified`
+/// carries the claimed name parsed out of UR's `ReverseAddressMismatch`
+/// revert — the UI surfaces it with a warning so users see that an
+/// address *claims* a primary name that doesn't forward-verify back.
+enum ENSReverseResolution: Equatable, Sendable {
+    case none
+    case verified(name: String)
+    case unverified(claimedName: String?)
+}

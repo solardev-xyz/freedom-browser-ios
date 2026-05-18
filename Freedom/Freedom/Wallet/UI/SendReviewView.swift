@@ -8,7 +8,7 @@ struct SendReviewView: View {
     /// Display-only — set when the user typed an ENS name in SendFlow, OR
     /// when reverse lookup hit on a hex-typed recipient. Bridge tx send
     /// (M5.6) doesn't go through this view, so this is forward-only here.
-    var recipientName: String? = nil
+    var recipientName: ENSReverseResolution = .none
     let amount: BigUInt
     let quote: TransactionService.Quote
     let chain: Chain
@@ -99,15 +99,15 @@ struct SendReviewView: View {
     }
 
     @ViewBuilder private var recipientRow: some View {
-        if let recipientName {
-            // Two-line: ENS name on top (bold-ish), hex address below as
-            // the small monospace cross-check. Address stays the canonical
-            // recipient — name is decorative.
+        if recipientName != .none {
+            // Address stays the canonical recipient; the name is decorative
+            // but the unverified glyph is load-bearing — it's the only
+            // surface for the on-chain spoof signal before approval.
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
                     Text("To").foregroundStyle(.secondary)
                     Spacer()
-                    Text(recipientName).font(.callout)
+                    ENSNameLabel(resolution: recipientName)
                 }
                 Text(recipient.toChecksumAddress())
                     .font(.caption2.monospaced())

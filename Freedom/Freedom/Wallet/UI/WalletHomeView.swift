@@ -41,7 +41,7 @@ struct WalletHomeView: View {
     }
 
     @State private var address: String?
-    @State private var primaryName: String?
+    @State private var primaryName: ENSReverseResolution = .none
     @State private var assetsState: AssetsState = .loading
     @State private var balanceRefreshGeneration: Int = 0
 
@@ -65,11 +65,7 @@ struct WalletHomeView: View {
             VStack(alignment: .leading, spacing: 20) {
                 if let address {
                     VStack(alignment: .leading, spacing: 4) {
-                        if let primaryName {
-                            Text(primaryName)
-                                .font(.subheadline.weight(.semibold))
-                                .padding(.horizontal, 4)
-                        }
+                        ENSNameLabel(resolution: primaryName)
                         AddressPill(address: address)
                     }
                 }
@@ -90,12 +86,12 @@ struct WalletHomeView: View {
             await refreshAssets()
         }
         // Re-runs whenever the address changes (vault create / wipe / import) —
-        // can't dedup by `primaryName != nil` because that's stale across rotations.
+        // can't dedup by `primaryName != .none` because that's stale across rotations.
         .task(id: address) {
             guard let address else { return }
-            primaryName = try? await ensResolver.reverseResolve(
+            primaryName = (try? await ensResolver.reverseResolve(
                 address: EthereumAddress(address)
-            )
+            )) ?? .none
         }
     }
 

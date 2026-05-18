@@ -333,7 +333,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         // Swallows reverse errors: recipientName is decorative, the hex
         // is canonical regardless.
         async let quoteTask = composeQuote(decoded: decoded, on: chain)
-        async let nameTask: String? = (try? services.ensResolver.reverseResolve(address: decoded.to)) ?? nil
+        async let nameTask: ENSReverseResolution = (try? services.ensResolver.reverseResolve(address: decoded.to)) ?? .none
 
         let quote: TransactionService.Quote
         do {

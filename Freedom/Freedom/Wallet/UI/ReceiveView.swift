@@ -13,18 +13,15 @@ struct ReceiveView: View {
     @Environment(ENSResolver.self) private var ensResolver
 
     @State private var address: String?
-    @State private var primaryName: String?
+    @State private var primaryName: ENSReverseResolution = .none
     @State private var qrImage: UIImage?
     @State private var didCopy = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                if let primaryName {
-                    Text(primaryName)
-                        .font(.title3.weight(.semibold))
-                        .padding(.top, 8)
-                }
+                ENSNameLabel(resolution: primaryName)
+                    .padding(.top, 8)
                 qrCard
                 if let address {
                     AddressPill(address: address)
@@ -77,8 +74,8 @@ struct ReceiveView: View {
         self.qrImage = Self.generateQR(content: derived)
         // ENS reverse runs in the background — we already show address
         // and QR, the name is purely additive.
-        if let name = try? await ensResolver.reverseResolve(address: EthereumAddress(derived)) {
-            self.primaryName = name
+        if let result = try? await ensResolver.reverseResolve(address: EthereumAddress(derived)) {
+            self.primaryName = result
         }
     }
 

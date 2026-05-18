@@ -102,11 +102,10 @@ struct ApproveTxSheet: View {
             HStack {
                 Text("To").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                if let recipientName = details.recipientName {
-                    // ENS reverse hit — show the name as a primary label,
-                    // address pill below stays the canonical cross-check.
-                    Text(recipientName).font(.caption.weight(.semibold))
-                }
+                // Surfaces verified ✓ or the unverified-claim ⚠ here —
+                // the latter is exactly what the user needs to see before
+                // approving a send to that address.
+                ENSNameLabel(resolution: details.recipientName)
             }
             // Checksum-cased so the user can cross-check addresses against
             // explorers / dapp UIs that already render in EIP-55 form.

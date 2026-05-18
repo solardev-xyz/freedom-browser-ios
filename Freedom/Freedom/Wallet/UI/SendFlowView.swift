@@ -33,7 +33,7 @@ struct SendFlowView: View {
         case idle
         case invalid(message: String)
         case resolving(name: String)
-        case resolved(EthereumAddress, ensName: String?, reverseInFlight: Bool)
+        case resolved(EthereumAddress, ensName: ENSReverseResolution, reverseInFlight: Bool)
         case resolveFailed(message: String)
     }
 
@@ -64,14 +64,14 @@ struct SendFlowView: View {
         return nil
     }
 
-    private var resolvedENSName: String? {
+    private var resolvedENSName: ENSReverseResolution {
         if case .resolved(_, let name, _) = recipientState { return name }
-        return nil
+        return .none
     }
 
     private struct ReviewInputs {
         let recipient: EthereumAddress
-        let recipientName: String?
+        let recipientName: ENSReverseResolution
         let amount: BigUInt
         let quote: TransactionService.Quote
     }
@@ -169,10 +169,10 @@ struct SendFlowView: View {
                         ProgressView().controlSize(.small)
                         Text("Looking up name…").font(.caption).foregroundStyle(.secondary)
                     }
-                } else if let ensName {
-                    Text(ensName).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                } else if ensName != .none {
+                    ENSNameLabel(resolution: ensName)
                 }
-            } else if ensName != nil {
+            } else if ensName != .none {
                 Text("→ \(address.toChecksumAddress())")
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
@@ -280,7 +280,7 @@ struct SendFlowView: View {
         }
         if Hex.isAddressShape(trimmed) {
             let address = EthereumAddress(trimmed)
-            recipientState = .resolved(address, ensName: nil, reverseInFlight: true)
+            recipientState = .resolved(address, ensName: .none, reverseInFlight: true)
             scheduleQuote()
             recipientTask = Task { await reverseLookupRecipient(address: address, hexInput: trimmed) }
             return
@@ -296,11 +296,11 @@ struct SendFlowView: View {
     }
 
     private func reverseLookupRecipient(address: EthereumAddress, hexInput: String) async {
-        let name = try? await ensResolver.reverseResolve(address: address)
+        let result = (try? await ensResolver.reverseResolve(address: address)) ?? .none
         if Task.isCancelled { return }
         guard recipientInput.trimmingCharacters(in: .whitespaces) == hexInput else { return }
         if case .resolved = recipientState {
-            recipientState = .resolved(address, ensName: name ?? nil, reverseInFlight: false)
+            recipientState = .resolved(address, ensName: result, reverseInFlight: false)
         }
     }
 
@@ -310,7 +310,10 @@ struct SendFlowView: View {
         do {
             let address = try await ensResolver.resolveAddress(name)
             if Task.isCancelled { return }
-            recipientState = .resolved(address, ensName: name, reverseInFlight: false)
+            // The user typed the name themselves and we forward-resolved
+            // it — that's the strongest possible verification, treat as
+            // `.verified` regardless of method.
+            recipientState = .resolved(address, ensName: .verified(name: name), reverseInFlight: false)
             await refreshQuoteIfReady()
         } catch {
             if Task.isCancelled { return }
