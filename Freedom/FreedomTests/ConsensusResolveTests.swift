@@ -246,7 +246,7 @@ final class ConsensusResolveTests: XCTestCase {
     /// as .userConfigured. Public pool is not consulted.
     func testCustomRpcFastPathSuccess() async throws {
         let custom = URL(string: "https://my-node.example.com")!
-        settings.enableEnsCustomRpc = true
+        settings.ensResolutionMethod = .userConfigured
         settings.ensRpcUrl = custom.absoluteString
         // Public list still populated — we assert it's bypassed.
         settings.ensPublicRpcProviders = [alpha, bravo, charlie].map(\.absoluteString)
@@ -276,7 +276,7 @@ final class ConsensusResolveTests: XCTestCase {
     /// allProvidersErrored. User chose custom RPC for privacy — silently
     /// falling back to public would defeat that intent.
     func testCustomRpcInvalidURLFailsClosed() async throws {
-        settings.enableEnsCustomRpc = true
+        settings.ensResolutionMethod = .userConfigured
         settings.ensRpcUrl = ""  // empty → invalid
         settings.ensPublicRpcProviders = [alpha, bravo, charlie].map(\.absoluteString)
         let anchor = makeAnchor(heads: [:], hashes: [:])

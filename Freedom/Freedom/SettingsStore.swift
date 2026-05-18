@@ -35,9 +35,6 @@ final class SettingsStore {
         "https://eth.llamarpc.com",
     ]
 
-    var enableEnsCustomRpc: Bool {
-        didSet { defaults.set(enableEnsCustomRpc, forKey: Keys.enableEnsCustomRpc) }
-    }
     var ensRpcUrl: String {
         didSet { defaults.set(ensRpcUrl, forKey: Keys.ensRpcUrl) }
     }
@@ -172,9 +169,8 @@ final class SettingsStore {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
-            Keys.enableEnsCustomRpc: false,
             Keys.ensRpcUrl: "",
-            Keys.ensResolutionMethod: ENSResolutionMethod.quorum.rawValue,
+            Keys.ensResolutionMethod: ENSResolutionMethod.colibri.rawValue,
             Keys.ensFallbackToQuorum: true,
             Keys.ensColibriProverUrl: "",
             Keys.ensColibriZkProof: true,
@@ -200,10 +196,8 @@ final class SettingsStore {
             Keys.swarmNodeEnabled: true,
             Keys.ipfsNodeEnabled: true,
         ])
-        self.enableEnsCustomRpc = defaults.bool(forKey: Keys.enableEnsCustomRpc)
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
-        self.ensResolutionMethod = defaults.string(forKey: Keys.ensResolutionMethod)
-            .flatMap(ENSResolutionMethod.init(rawValue:)) ?? .quorum
+        self.ensResolutionMethod = Self.migratedResolutionMethod(defaults: defaults)
         self.ensFallbackToQuorum = defaults.bool(forKey: Keys.ensFallbackToQuorum)
         self.ensColibriProverUrl = defaults.string(forKey: Keys.ensColibriProverUrl) ?? ""
         self.ensColibriZkProof = defaults.bool(forKey: Keys.ensColibriZkProof)
@@ -235,6 +229,25 @@ final class SettingsStore {
         self.ipfsNodeEnabled = defaults.bool(forKey: Keys.ipfsNodeEnabled)
     }
 
+    /// One-time migration for installs predating the `ensResolutionMethod`
+    /// key. Custom-RPC users deliberately pointed Freedom at their own
+    /// node — preserve that on `.userConfigured`. Everyone else (including
+    /// fresh installs, where `enableEnsCustomRpc` is false) moves to the
+    /// cryptographically-verified `.colibri` path. Idempotent: once the
+    /// marker is set, the persisted `ensResolutionMethod` is authoritative
+    /// and a later user choice in settings isn't clobbered.
+    private static func migratedResolutionMethod(defaults: UserDefaults) -> ENSResolutionMethod {
+        if defaults.bool(forKey: Keys.ensResolutionMethodMigrated) {
+            return defaults.string(forKey: Keys.ensResolutionMethod)
+                .flatMap(ENSResolutionMethod.init(rawValue:)) ?? .colibri
+        }
+        let method: ENSResolutionMethod =
+            defaults.bool(forKey: Keys.enableEnsCustomRpc) ? .userConfigured : .colibri
+        defaults.set(method.rawValue, forKey: Keys.ensResolutionMethod)
+        defaults.set(true, forKey: Keys.ensResolutionMethodMigrated)
+        return method
+    }
+
     /// Materialize current IPFS settings into an `IPFSConfig` ready for
     /// `IPFSNode.start` / `restart`. The data dir, gateway host, and
     /// gateway port aren't user-configurable yet; defaults from
@@ -251,6 +264,7 @@ final class SettingsStore {
         static let enableEnsCustomRpc = "enableEnsCustomRpc"
         static let ensRpcUrl = "ensRpcUrl"
         static let ensResolutionMethod = "ensResolutionMethod"
+        static let ensResolutionMethodMigrated = "ensResolutionMethodMigrated"
         static let ensFallbackToQuorum = "ensFallbackToQuorum"
         static let ensColibriProverUrl = "ensColibriProverUrl"
         static let ensColibriZkProof = "ensColibriZkProof"

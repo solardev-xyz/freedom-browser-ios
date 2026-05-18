@@ -6,9 +6,9 @@ struct TrustShield: View {
 
     var body: some View {
         Button { showingDetails = true } label: {
-            Image(systemName: trust.level.shieldSymbol)
+            Image(systemName: trust.shieldSymbol)
                 .font(.system(size: 18))
-                .foregroundStyle(trust.level.shieldColor)
+                .foregroundStyle(trust.shieldColor)
                 .frame(width: 28, height: 28)
         }
         .sheet(isPresented: $showingDetails) {
@@ -26,40 +26,46 @@ private struct TrustDetailsSheet: View {
             List {
                 Section { levelHeader }
 
-                Section("Pinned Block") {
-                    HStack {
-                        Text("Number")
-                        Spacer()
-                        Text("\(trust.block.number)").monospacedDigit()
+                if isColibri {
+                    Section("Prover") {
+                        ForEach(trust.queried, id: \.self) { hostRow($0) }
                     }
-                    HStack {
-                        Text("Hash")
-                        Spacer()
-                        Text(truncatedHash)
-                            .font(.caption).monospaced()
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                } else {
+                    Section("Pinned Block") {
+                        HStack {
+                            Text("Number")
+                            Spacer()
+                            Text("\(trust.block.number)").monospacedDigit()
+                        }
+                        HStack {
+                            Text("Hash")
+                            Spacer()
+                            Text(truncatedHash)
+                                .font(.caption).monospaced()
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
                     }
-                }
 
-                Section("Quorum") {
-                    LabeledContent("Providers queried", value: "\(trust.k)")
-                    LabeledContent("Required agreement", value: "\(trust.m)")
-                }
+                    Section("Quorum") {
+                        LabeledContent("Providers queried", value: "\(trust.k)")
+                        LabeledContent("Required agreement", value: "\(trust.m)")
+                    }
 
-                if !trust.agreed.isEmpty {
-                    Section("Agreed (\(trust.agreed.count))") {
-                        ForEach(trust.agreed, id: \.self) { hostRow($0) }
+                    if !trust.agreed.isEmpty {
+                        Section("Agreed (\(trust.agreed.count))") {
+                            ForEach(trust.agreed, id: \.self) { hostRow($0) }
+                        }
                     }
-                }
-                if !trust.dissented.isEmpty {
-                    Section("Dissented (\(trust.dissented.count))") {
-                        ForEach(trust.dissented, id: \.self) { hostRow($0) }
+                    if !trust.dissented.isEmpty {
+                        Section("Dissented (\(trust.dissented.count))") {
+                            ForEach(trust.dissented, id: \.self) { hostRow($0) }
+                        }
                     }
-                }
-                if let silent = silentProviders, !silent.isEmpty {
-                    Section("No response (\(silent.count))") {
-                        ForEach(silent, id: \.self) { hostRow($0) }
+                    if let silent = silentProviders, !silent.isEmpty {
+                        Section("No response (\(silent.count))") {
+                            ForEach(silent, id: \.self) { hostRow($0) }
+                        }
                     }
                 }
             }
@@ -74,13 +80,15 @@ private struct TrustDetailsSheet: View {
         .presentationDetents([.medium, .large])
     }
 
+    private var isColibri: Bool { trust.method == .colibri }
+
     private var levelHeader: some View {
         HStack(spacing: 12) {
-            Image(systemName: trust.level.shieldSymbol)
+            Image(systemName: trust.shieldSymbol)
                 .font(.largeTitle)
-                .foregroundStyle(trust.level.shieldColor)
+                .foregroundStyle(trust.shieldColor)
             VStack(alignment: .leading, spacing: 2) {
-                Text(trust.level.displayName).font(.headline)
+                Text(title).font(.headline)
                 Text(summary).font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -91,16 +99,31 @@ private struct TrustDetailsSheet: View {
         Text(host).font(.caption).monospaced().textSelection(.enabled)
     }
 
+    private var title: String {
+        if isColibri, trust.level == .verified { return "Cryptographically verified" }
+        return trust.level.displayName
+    }
+
     private var summary: String {
+        if isColibri {
+            switch trust.level {
+            case .verified:
+                return "Proven against the Ethereum sync committee — the answer is checked against consensus itself, not just cross-checked between RPCs."
+            default:
+                // Colibri only ever mints `.verified`; a non-verified level
+                // here means the quorum fallback produced the result.
+                break
+            }
+        }
         switch trust.level {
         case .verified:
-            "\(trust.agreed.count) of \(trust.queried.count) providers returned identical bytes at a corroborated block."
+            return "\(trust.agreed.count) of \(trust.queried.count) providers returned identical bytes at a corroborated block."
         case .userConfigured:
-            "Resolved via your configured RPC endpoint — single-source trust."
+            return "Resolved via your configured RPC endpoint — single-source trust."
         case .unverified:
-            "Only one provider responded. The answer is not cross-checked against others."
+            return "Only one provider responded. The answer is not cross-checked against others."
         case .conflict:
-            "Providers disagreed on the contenthash. Do not trust this answer."
+            return "Providers disagreed on the contenthash. Do not trust this answer."
         }
     }
 
@@ -121,22 +144,26 @@ private struct TrustDetailsSheet: View {
     }
 }
 
-private extension ENSTrustLevel {
+private extension ENSTrust {
+    /// Colibri verification gets a distinct `seal` glyph — a proof-backed
+    /// guarantee, visually separate from the `shield` of M-of-K quorum
+    /// agreement.
     var shieldSymbol: String {
-        switch self {
-        case .verified: "checkmark.shield.fill"
-        case .userConfigured: "shield.fill"
-        case .unverified: "exclamationmark.shield.fill"
-        case .conflict: "xmark.shield.fill"
+        if method == .colibri, level == .verified { return "checkmark.seal.fill" }
+        switch level {
+        case .verified: return "checkmark.shield.fill"
+        case .userConfigured: return "shield.fill"
+        case .unverified: return "exclamationmark.shield.fill"
+        case .conflict: return "xmark.shield.fill"
         }
     }
 
     var shieldColor: Color {
-        switch self {
-        case .verified: .green
-        case .userConfigured: .blue
-        case .unverified: .orange
-        case .conflict: .red
+        switch level {
+        case .verified: return .green
+        case .userConfigured: return .blue
+        case .unverified: return .orange
+        case .conflict: return .red
         }
     }
 }

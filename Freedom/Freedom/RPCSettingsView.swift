@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Provider-list settings: which RPCs we hit and (optionally) a single
-/// user-trusted node override. Resolution behavior on top of this lives
-/// on the ENS page.
+/// Public RPC provider list — the pool the quorum path queries and the
+/// `eth_rpcs` set Colibri verifies storage proofs against. Resolution
+/// behavior (method, custom RPC, quorum tuning) lives on the ENS page.
 struct RPCSettingsView: View {
     @Environment(SettingsStore.self) private var settings
 
@@ -11,20 +11,6 @@ struct RPCSettingsView: View {
     var body: some View {
         @Bindable var settings = settings
         Form {
-            Section {
-                Toggle("Use custom RPC", isOn: $settings.enableEnsCustomRpc)
-                TextField("https://your-node.example", text: $settings.ensRpcUrl)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .font(.caption).monospaced()
-                    .disabled(!settings.enableEnsCustomRpc)
-            } header: {
-                Text("Custom RPC")
-            } footer: {
-                Text("When enabled, Freedom uses your own Ethereum node for ENS resolution. Trust label becomes \"user-configured\" — single-source, not cross-checked.")
-            }
-
             Section {
                 ForEach(settings.ensPublicRpcProviders, id: \.self) { url in
                     Text(url).font(.caption).monospaced().lineLimit(1).truncationMode(.middle)

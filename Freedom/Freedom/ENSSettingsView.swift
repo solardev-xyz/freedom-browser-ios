@@ -1,14 +1,59 @@
 import SwiftUI
 
-/// Resolution-behavior settings: how ENS names get resolved (quorum,
-/// safety interstitial, off-chain CCIP). The infrastructure layer
-/// (which RPC URLs we hit, custom RPC override) lives on the RPC page.
+/// Resolution-behavior settings: how ENS names get resolved (method,
+/// quorum tuning, safety interstitial, off-chain CCIP). The infrastructure
+/// layer (which public RPC URLs we hit) lives on the RPC page.
 struct ENSSettingsView: View {
     @Environment(SettingsStore.self) private var settings
 
     var body: some View {
         @Bindable var settings = settings
         Form {
+            Section {
+                Picker("Method", selection: $settings.ensResolutionMethod) {
+                    ForEach(ENSResolutionMethod.allCases, id: \.self) { method in
+                        Text(method.displayName).tag(method)
+                    }
+                }
+            } header: {
+                Text("Resolution Method")
+            } footer: {
+                Text(methodFooter)
+            }
+
+            if settings.ensResolutionMethod == .colibri {
+                Section {
+                    LabeledContent("Prover") {
+                        TextField(ColibriENSClient.defaultProverURL, text: $settings.ensColibriProverUrl)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .font(.caption).monospaced()
+                            .multilineTextAlignment(.trailing)
+                    }
+                    Toggle("ZK consensus proof", isOn: $settings.ensColibriZkProof)
+                    Toggle("Fall back to quorum", isOn: $settings.ensFallbackToQuorum)
+                } header: {
+                    Text("Colibri")
+                } footer: {
+                    Text("Each lookup is verified against the Ethereum sync committee via the prover. ZK proof bootstraps the committee from a succinct proof instead of trusted checkpoints. On a prover error, \"Fall back to quorum\" reuses the public-RPC path below rather than failing the navigation.")
+                }
+            }
+
+            if settings.ensResolutionMethod == .userConfigured {
+                Section {
+                    TextField("https://your-node.example", text: $settings.ensRpcUrl)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .font(.caption).monospaced()
+                } header: {
+                    Text("Custom RPC")
+                } footer: {
+                    Text("Freedom uses your own Ethereum node for ENS resolution. Trust label becomes \"user-configured\" — single-source, not cross-checked.")
+                }
+            }
+
             Section {
                 Toggle("Enable quorum", isOn: $settings.enableEnsQuorum)
                 Stepper("Providers per wave: \(settings.ensQuorumK)",
@@ -27,7 +72,7 @@ struct ENSSettingsView: View {
                     numericField($settings.ensBlockAnchorTtlMs, suffix: "ms")
                 }
             } header: {
-                Text("Quorum")
+                Text(settings.ensResolutionMethod == .quorum ? "Quorum" : "Quorum (fallback)")
             } footer: {
                 Text("M-of-K public RPCs must return byte-identical responses at a corroborated block. K<3 or M<2 falls through to single-source unverified.")
             }
@@ -59,6 +104,17 @@ struct ENSSettingsView: View {
         }
         .navigationTitle("ENS")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var methodFooter: String {
+        switch settings.ensResolutionMethod {
+        case .colibri:
+            return "Cryptographic verification — every lookup is proven against Ethereum consensus, not just cross-checked between RPCs."
+        case .quorum:
+            return "M-of-K public RPCs must agree byte-for-byte at a corroborated block."
+        case .userConfigured:
+            return "Resolution goes through a single Ethereum node you configure."
+        }
     }
 
     private func numericField(_ binding: Binding<Int>, suffix: String) -> some View {

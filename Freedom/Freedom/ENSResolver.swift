@@ -312,7 +312,7 @@ final class ENSResolver {
         }
 
         // See ENSResolutionError.customRpcFailed — fail-closed by design.
-        if settings.enableEnsCustomRpc {
+        if settings.ensResolutionMethod == .userConfigured {
             return try await resolveCustomRPC(
                 dnsEncodedName: dnsEncodedName, callData: callData, timeout: timeout
             )

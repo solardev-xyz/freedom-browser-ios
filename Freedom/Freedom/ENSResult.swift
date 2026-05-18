@@ -62,10 +62,10 @@ enum ENSResolutionError: Error {
     /// UI should surface distinctly from plain network failures.
     case anchorDisagreement(largestBucketSize: Int, total: Int, threshold: Int)
     case allProvidersErrored
-    /// User has `enableEnsCustomRpc` on but the configured URL is
+    /// Resolution method is `.userConfigured` but the configured URL is
     /// missing/malformed or unreachable. Fail-closed — we don't silently
     /// fall back to the public pool, which would defeat the privacy
-    /// intent of the toggle.
+    /// intent of choosing a custom RPC.
     case customRpcFailed
     case notImplemented
 }
