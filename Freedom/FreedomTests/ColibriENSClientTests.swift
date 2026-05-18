@@ -2,10 +2,8 @@ import XCTest
 import Colibri
 @testable import Freedom
 
-/// Live ENS resolution through Colibri's verifier. Diagnoses whether the
-/// `UR.resolve(...)` call shape the Step 1 smoke flagged ("Revert" from the
-/// v1.1.24 binding) reproduces against the production `ColibriENSClient`
-/// config, and surfaces which names resolve cleanly today.
+/// Live ENS resolution end-to-end through `ColibriENSClient` — proves
+/// `UR.resolve(...)` for contenthash + addr against the real prover.
 ///
 /// Disabled by default; opt in via `TEST_RUNNER_COLIBRI_E2E=1` (same gate
 /// as `ColibriSmokeTests`). Network-dependent.

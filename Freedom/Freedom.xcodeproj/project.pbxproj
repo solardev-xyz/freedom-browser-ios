@@ -184,7 +184,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				170726AA2F96CD3900CCFF45 /* XCLocalSwiftPackageReference "../Packages/SwarmKit" */,
-				17C0118710000000000000A3 /* XCLocalSwiftPackageReference "../Packages/ColibriKit" */,
+				17C0118710000000000000A4 /* XCRemoteSwiftPackageReference "colibri-stateless-swift" */,
 				17E52F100000000000000001 /* XCRemoteSwiftPackageReference "web3" */,
 				17E52F400000000000000004 /* XCRemoteSwiftPackageReference "secp256k1" */,
 				17E52F70000000000000000D /* XCRemoteSwiftPackageReference "ENSNormalize" */,
@@ -527,13 +527,17 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../Packages/SwarmKit;
 		};
-		17C0118710000000000000A3 /* XCLocalSwiftPackageReference "../Packages/ColibriKit" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../Packages/ColibriKit;
-		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		17C0118710000000000000A4 /* XCRemoteSwiftPackageReference "colibri-stateless-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/corpus-core/colibri-stateless-swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.1.26;
+			};
+		};
 		17CFC0852F9EAD0B00A6E66C /* XCRemoteSwiftPackageReference "CryptoSwift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/krzyzanowskim/CryptoSwift";
@@ -583,6 +587,7 @@
 		};
 		17C0118710000000000000A2 /* Colibri */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = 17C0118710000000000000A4 /* XCRemoteSwiftPackageReference "colibri-stateless-swift" */;
 			productName = Colibri;
 		};
 		17CFC0862F9EAD0B00A6E66C /* CryptoSwift */ = {

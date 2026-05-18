@@ -431,12 +431,15 @@ final class ENSResolver {
                 dnsEncodedName: dnsEncodedName, callData: callData
             )
             return .data(resolvedData: data, resolverAddress: resolver, trust: trust)
-        } catch ColibriENSError.contractRevert {
-            // v1.1.24 can't distinguish ResolverNotFound from NoContenthash
-            // — both are verified-negative outcomes per the proof. Map to
-            // .noContenthash; downstream content code already treats it as
-            // "name verified, no content", same as desktop's
-            // NO_CONTENTHASH bucket.
+        } catch ColibriENSError.revert(let revertHex) {
+            // An `OffchainLookup` revert means the name has content behind
+            // a CCIP gateway — NOT "no content". Rethrow so the quorum
+            // fallback (which drives CCIP via `CCIPResolver`) handles it.
+            // Any other verified revert is a genuine "no contenthash"
+            // outcome — same as desktop's NO_CONTENTHASH bucket.
+            if CCIPResolver.selectorOf(revertHex) == CCIPResolver.offchainLookupSelector {
+                throw ColibriENSError.revert(data: revertHex)
+            }
             return .notFound(reason: .noContenthash, trust: trust)
         }
     }
@@ -820,12 +823,10 @@ final class ENSResolver {
         throw ReverseError.allProvidersFailed
     }
 
-    /// Cryptographically-verified reverse via Colibri. The v1.1.24
-    /// binding doesn't expose revert selectors, so we can't distinguish
-    /// `ReverseAddressMismatch` from `ResolverNotFound`; any revert
-    /// surfaces as `.none` here, and the quorum path retains spoof
-    /// detection. When the binding gains revert-data exposure this
-    /// branch can return the rich `.unverified` case.
+    /// Cryptographically-verified reverse via Colibri. A `ColibriError`
+    /// revert carries the raw revert data: `ReverseAddressMismatch`
+    /// decodes to `.unverified(claimedName:)` (the spoof signal), any
+    /// other revert (e.g. `ResolverNotFound`) means no primary is set.
     private func colibriReverse(
         address: EthereumAddress,
         client: ColibriENSClient
@@ -833,8 +834,13 @@ final class ENSResolver {
         do {
             let name = try await client.universalResolverReverse(address: address)
             return name.isEmpty ? .none : .verified(name: name)
-        } catch ColibriENSError.contractRevert {
-            return .none
+        } catch ColibriENSError.revert(let revertHex) {
+            guard UniversalResolverABI.isReverseAddressMismatch(revertHex: revertHex) else {
+                return .none
+            }
+            return .unverified(
+                claimedName: UniversalResolverABI.decodeReverseMismatchClaimedName(revertHex: revertHex)
+            )
         }
     }
 

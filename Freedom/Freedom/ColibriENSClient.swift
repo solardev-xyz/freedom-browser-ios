@@ -49,12 +49,9 @@ final class ColibriENSClient {
 
     /// Universal Resolver `reverse(bytes,uint256)` via Colibri. The UR
     /// internally checks forward-resolution and reverts with
-    /// `ReverseAddressMismatch(string,bytes)` on spoofed records. The
-    /// v1.1.24 binding surfaces reverts as `.contractRevert` without
-    /// selector data, so callers can't yet distinguish spoof from
-    /// "no primary"; the Step 3 `ENSResolver.colibriReverse` branch
-    /// treats any revert as `.none` and lets quorum retain spoof
-    /// detection.
+    /// `ReverseAddressMismatch(string,bytes)` on spoofed records — that
+    /// revert surfaces as `ColibriENSError.revert(data:)`, which
+    /// `ENSResolver.colibriReverse` decodes into `.unverified`.
     func universalResolverReverse(
         address: EthereumAddress
     ) async throws -> String {
@@ -107,10 +104,13 @@ final class ColibriENSClient {
         client.provers = [resolvedProverURL]
         client.zkProof = settings.ensColibriZkProof
         client.privacyMode = .basic
-        // Intentionally no `eth_rpcs` — Colibri's trust model is "the
-        // prover is the only external party beyond Ethereum consensus."
-        // Sub-requests that fall through to `eth_rpcs` indicate a
-        // binding-version gap to diagnose, not paper over.
+        // `.basic` (PAP) mode does optimistic `eth_call` execution against
+        // execution-layer data (`eth_getProof`, `eth_getCode`) fetched from
+        // these RPCs and verified locally against the prover-attested state
+        // root — a lying RPC can't forge a Merkle proof, so this is an
+        // untrusted data source, not a trusted one. Reuses the same public
+        // provider list the quorum path uses.
+        client.eth_rpcs = settings.ensPublicRpcProviders
         cached = client
         cachedKey = key
         log.info("[colibri] client ready prover=\(self.activeProverHost, privacy: .public) zk=\(self.settings.ensColibriZkProof, privacy: .public)")
@@ -123,13 +123,12 @@ final class ColibriENSClient {
 /// / `.noResolver`) and a transient failure (network / proof) that should
 /// trigger the quorum fallback.
 enum ColibriENSError: Error {
-    /// EVM-level revert during proof replay. Either the underlying resolver
-    /// has no contenthash for this name (verified-negative) or it reverted
-    /// for another reason. The v1.1.24 binding doesn't expose the revert
-    /// selector so we can't distinguish `ResolverNotFound` from
-    /// `NoContenthash` here — both surface as `.contractRevert`. Refine
-    /// once the binding exposes revert data.
-    case contractRevert(message: String)
+    /// The `eth_call` ran to completion but the EVM reverted — a fully
+    /// verified outcome, not a proof/transport failure. `data` is the
+    /// raw revert return-data (`0x`-prefixed hex). Callers ABI-decode it
+    /// to tell `OffchainLookup` / `ReverseAddressMismatch` / a bare
+    /// "no contenthash" revert apart.
+    case revert(data: String)
     /// Proof generation / verification failed (prover outage, sync
     /// committee mismatch, transient binding error). Treated as transient
     /// — caller falls back to quorum when `ensFallbackToQuorum` is on.
@@ -141,18 +140,13 @@ enum ColibriENSError: Error {
 }
 
 private func mapColibriError(_ error: Error) -> ColibriENSError {
-    let description = String(describing: error)
-    // v1.1.24 wraps revert outcomes as
-    // `proofError("RPC error for method eth_call: Revert")`. Match the
-    // ending token rather than the full string so a future binding with
-    // richer messages still classifies correctly.
-    if description.contains("Revert") {
-        return .contractRevert(message: description)
+    if case let ColibriError.revert(data) = error {
+        return .revert(data: data)
     }
     if let urlErr = error as? URLError {
         return .network(underlying: urlErr)
     }
-    return .proofFailed(message: description)
+    return .proofFailed(message: String(describing: error))
 }
 
 // MARK: - Disk storage adapter
