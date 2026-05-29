@@ -318,9 +318,9 @@ final class BrowserTab {
         switch browserURL {
         case .bzz(let target), .ipfs(let target), .ipns(let target), .web(let target):
             loadInWebView(target)
-        case .ens(let name):
+        case .ens(let name, let path):
             ensStatus = .resolving(name: name, url: browserURL.url)
-            activeResolveTask = Task { await resolveAndLoad(name: name) }
+            activeResolveTask = Task { await resolveAndLoad(name: name, path: path) }
         }
     }
 
@@ -474,8 +474,12 @@ final class BrowserTab {
     /// resolve every time, matching the "pull-to-refresh = bypass cache"
     /// contract.
     func reload() {
-        if let name = url?.ensName {
-            navigate(to: .ens(name: name))
+        // `classify` rewrites any `.eth`-host URL — regardless of codec
+        // scheme — to `.ens(name:, path:)` so the path survives the
+        // re-resolve. Without `classify`, `bzz://vitalik.eth/blog`
+        // would lose `/blog` on pull-to-refresh.
+        if let url, let browserURL = BrowserURL.classify(url), case .ens = browserURL {
+            navigate(to: browserURL)
         } else {
             webView.reload()
         }
@@ -498,7 +502,7 @@ final class BrowserTab {
         }
     }
 
-    private func resolveAndLoad(name: String) async {
+    private func resolveAndLoad(name: String, path: String) async {
         // Paths that never reach webView.load (gates, resolve failures,
         // unsupported codecs, task cancellation) need to stop the pull
         // spinner explicitly; the webview-load path rides the isLoading
@@ -536,18 +540,67 @@ final class BrowserTab {
         case .bzz, .ipfs, .ipns:
             break
         }
+        let finalURL = Self.appendingPath(path, to: result.uri)
         if result.trust.level == .unverified, settings.blockUnverifiedEns {
             // Withhold the webview load until the user opts in. Also
             // withhold currentTrust — the shield shouldn't claim
             // anything yet. continuePastGate sets it when the user proceeds.
             ensStatus = .idle
-            pendingGate = .unverifiedUntrusted(url: result.uri, trust: result.trust)
+            pendingGate = .unverifiedUntrusted(url: finalURL, trust: result.trust)
             return
         }
         ensStatus = .idle
         currentTrust = result.trust
         handedToWebView = true
-        loadInWebView(result.uri)
+        loadInWebView(finalURL)
+    }
+
+    /// Reattach the source URL's path/query/fragment (captured by
+    /// `BrowserURL.classify` as a percent-encoded tail) to the resolved
+    /// `<codec>://name` URI. Empty path returns `base` unchanged so a
+    /// bare-name navigation doesn't grow a trailing slash that previous
+    /// `loadInWebView(result.uri)` calls did not produce — keeps URL
+    /// identity stable across the patch for HistoryStore dedup.
+    ///
+    /// URLComponents-based reassembly (over string concat) is load-bearing:
+    /// `ENSResolver.doResolveContent` deliberately uses URLComponents to
+    /// build `result.uri` because ENSIP-15 normalization can produce
+    /// non-ASCII hosts (emoji.eth, IDN labels) that `URL(string:)` rejects.
+    /// Round-tripping through `URL(string: "\(scheme)://\(host)\(path)")`
+    /// would lose that handling and silently drop the path on non-ASCII
+    /// names via the `?? base` fallback.
+    private static func appendingPath(_ path: String, to base: URL) -> URL {
+        if path.isEmpty { return base }
+        guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            return base
+        }
+        let (pathPart, queryPart, fragmentPart) = Self.splitTail(path)
+        comps.percentEncodedPath = pathPart.hasPrefix("/") ? pathPart : "/" + pathPart
+        comps.percentEncodedQuery = queryPart
+        comps.percentEncodedFragment = fragmentPart
+        return comps.url ?? base
+    }
+
+    /// Pull the packed `/path?query#fragment` tail back into its three
+    /// URLComponents pieces. Mirrors how `BrowserURL.extractTail` glued
+    /// them together at classify time.
+    private static func splitTail(_ tail: String) -> (path: String, query: String?, fragment: String?) {
+        var rest = tail[...]
+        let fragment: String?
+        if let hashIdx = rest.firstIndex(of: "#") {
+            fragment = String(rest[rest.index(after: hashIdx)...])
+            rest = rest[..<hashIdx]
+        } else {
+            fragment = nil
+        }
+        let query: String?
+        if let qIdx = rest.firstIndex(of: "?") {
+            query = String(rest[rest.index(after: qIdx)...])
+            rest = rest[..<qIdx]
+        } else {
+            query = nil
+        }
+        return (String(rest), query, fragment)
     }
 
     private func observeWebView() {
@@ -798,13 +851,29 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
     /// nav, reload). For `ipfs://` / `ipns://` we use it to warm
     /// the Rust reader's routing/blocks ahead of the scheme handler
     /// being asked, and to publish a navigation context the scheme
-    /// handler stamps onto correlation headers. We never block the
-    /// navigation — always `.allow`.
+    /// handler stamps onto correlation headers.
+    ///
+    /// Also the chokepoint for redirecting user-initiated `.eth`-host
+    /// navigations through `BrowserTab.navigate` so the trust shield
+    /// and `blockUnverifiedEns` / conflict / anchorDisagreement gates
+    /// apply to in-page link clicks — without this, the scheme handlers
+    /// resolve ENS internally but discard the trust object.
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
+        if let url = navigationAction.request.url,
+           navigationAction.targetFrame?.isMainFrame == true,
+           Self.shouldInterceptForENS(navigationAction.navigationType),
+           !Self.isSameDocumentFragmentNav(target: url, current: webView.url),
+           let browserURL = BrowserURL.classify(url),
+           case .ens = browserURL
+        {
+            decisionHandler(.cancel)
+            MainActor.assumeIsolated { owner?.navigate(to: browserURL) }
+            return
+        }
         if let url = navigationAction.request.url,
            let scheme = url.scheme?.lowercased(),
            (scheme == "ipfs" || scheme == "ipns"),
@@ -816,6 +885,40 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
             }
         }
         decisionHandler(.allow)
+    }
+
+    /// True for navigations that originated outside `BrowserTab` and
+    /// should be re-routed through the ENS pipeline. `.other` covers
+    /// our own `loadInWebView` (the resolved URL coming back through
+    /// the policy hook) — re-intercepting it would loop. `.reload`
+    /// has its own ENS-aware path in `BrowserTab.reload()`; `.backForward`
+    /// re-visits an already-loaded page and shouldn't re-resolve.
+    /// `.formSubmitted` / `.formResubmitted` are excluded because
+    /// re-issuing the navigation through `webView.load(URLRequest(url:))`
+    /// downgrades the POST to a GET and silently drops the form body —
+    /// preserving form semantics outweighs the trust-gate coverage for
+    /// the rare ENS-host POST.
+    private static func shouldInterceptForENS(_ type: WKNavigationType) -> Bool {
+        switch type {
+        case .linkActivated: return true
+        case .formSubmitted, .formResubmitted: return false
+        case .backForward, .reload, .other: return false
+        @unknown default: return false
+        }
+    }
+
+    /// True when `target` differs from `current` only in its fragment
+    /// (same scheme + host + path + query) — WebKit fires `decidePolicyFor`
+    /// for `<a href="#section">` clicks even though the navigation is a
+    /// same-document scroll, and re-routing through `navigate(.ens)` would
+    /// trigger a redundant ENS resolve + full-page reload, discarding
+    /// scroll position and any JS state.
+    private static func isSameDocumentFragmentNav(target: URL, current: URL?) -> Bool {
+        guard let current, target.fragment != nil else { return false }
+        return target.scheme == current.scheme
+            && target.host == current.host
+            && target.path == current.path
+            && target.query == current.query
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
