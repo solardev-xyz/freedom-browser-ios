@@ -59,7 +59,7 @@ struct FreedomApp: App {
                 chainID: Chain.mainnetID,
                 urlSource: { chainStore.rpcURLs(forChainID: Chain.mainnetID) }
             )
-            let colibri = ColibriENSClient(settings: settings)
+            let colibri = ColibriENSClient(settings: settings, chainStore: chainStore)
             let resolver = ENSResolver(pool: pool, settings: settings, colibri: colibri)
             let favicons = FaviconStore(context: container.mainContext, ensResolver: resolver)
             self._historyStore = State(wrappedValue: history)

@@ -20,11 +20,13 @@ final class ColibriENSClient {
     static let defaultProverURL = "https://mainnet1.colibri-proof.tech"
 
     private let settings: SettingsStore
+    private let chainStore: ChainStore
     private var cached: Colibri?
     private var cachedKey: String?
 
-    init(settings: SettingsStore) {
+    init(settings: SettingsStore, chainStore: ChainStore) {
         self.settings = settings
+        self.chainStore = chainStore
     }
 
     /// Drop the cached `Colibri()` so the next call rebuilds against the
@@ -108,9 +110,10 @@ final class ColibriENSClient {
         // execution-layer data (`eth_getProof`, `eth_getCode`) fetched from
         // these RPCs and verified locally against the prover-attested state
         // root — a lying RPC can't forge a Merkle proof, so this is an
-        // untrusted data source, not a trusted one. Reuses the same public
-        // provider list the quorum path uses.
-        client.eth_rpcs = settings.ensPublicRpcProviders
+        // untrusted data source, not a trusted one. Sourced from the
+        // mainnet `ChainRecord` so it tracks the same list `ENSResolver`
+        // and `WalletRPC` use.
+        client.eth_rpcs = chainStore.rpcURLs(forChainID: Chain.mainnetID)
         cached = client
         cachedKey = key
         log.info("[colibri] client ready prover=\(self.activeProverHost, privacy: .public) zk=\(self.settings.ensColibriZkProof, privacy: .public)")
