@@ -16,6 +16,7 @@ struct FreedomApp: App {
     @State private var ensResolver: ENSResolver
     @State private var vault: Vault
     @State private var chainRegistry: ChainRegistry
+    @State private var chainStore: ChainStore
     @State private var transactionService: TransactionService
     @State private var permissionStore: PermissionStore
     @State private var autoApproveStore: AutoApproveStore
@@ -35,12 +36,18 @@ struct FreedomApp: App {
                 for: TabRecord.self, HistoryEntry.self, Bookmark.self, Favicon.self,
                 DappPermission.self, AutoApproveRule.self,
                 SwarmPermission.self, SwarmFeedRecord.self, SwarmFeedIdentity.self,
-                SwarmPublishHistoryRecord.self
+                SwarmPublishHistoryRecord.self,
+                ChainRecord.self
             )
             self.modelContainer = container
             let history = HistoryStore(context: container.mainContext)
             let bookmarks = BookmarkStore(context: container.mainContext)
             let settings = SettingsStore()
+            // Seed the chain backing (mainnet + Gnosis) before any RPC
+            // pool / resolver constructs against it. WP3 swaps the pool's
+            // URL source to the store; for now the store just runs the
+            // one-time migration of `ensPublicRpcProviders`.
+            let chainStore = ChainStore(context: container.mainContext, settings: settings)
             // Colibri's verifier persists sync-committee state across
             // launches. Register the disk-backed storage adapter once at
             // startup, before any code path can construct a Colibri client.
@@ -69,6 +76,7 @@ struct FreedomApp: App {
             )
             self._vault = State(wrappedValue: vault)
             self._chainRegistry = State(wrappedValue: registry)
+            self._chainStore = State(wrappedValue: chainStore)
             self._permissionStore = State(wrappedValue: permissions)
             self._autoApproveStore = State(wrappedValue: autoApprove)
             self._transactionService = State(wrappedValue: txService)
@@ -163,6 +171,7 @@ struct FreedomApp: App {
                 .environment(ensResolver)
                 .environment(vault)
                 .environment(chainRegistry)
+                .environment(chainStore)
                 .environment(transactionService)
                 .environment(permissionStore)
                 .environment(autoApproveStore)

@@ -86,6 +86,13 @@ final class SettingsStore {
     var ensPublicRpcProviders: [String] {
         didSet { defaults.set(ensPublicRpcProviders, forKey: Keys.ensPublicRpcProviders) }
     }
+    /// One-shot marker flipped the first time `ChainStore` seeds the
+    /// SwiftData backing. Gates the migration of `ensPublicRpcProviders`
+    /// into the mainnet `ChainRecord` so a wipe-and-reseed can't re-
+    /// import a stale UserDefaults list over a user's later edits.
+    var chainStoreMigrated: Bool {
+        didSet { defaults.set(chainStoreMigrated, forKey: Keys.chainStoreMigrated) }
+    }
     var blockUnverifiedEns: Bool {
         didSet { defaults.set(blockUnverifiedEns, forKey: Keys.blockUnverifiedEns) }
     }
@@ -210,6 +217,7 @@ final class SettingsStore {
         self.ensBlockAnchorTtlMs = defaults.integer(forKey: Keys.ensBlockAnchorTtlMs)
         self.ensPublicRpcProviders = defaults.stringArray(forKey: Keys.ensPublicRpcProviders)
             ?? Self.defaultPublicRpcProviders
+        self.chainStoreMigrated = defaults.bool(forKey: Keys.chainStoreMigrated)
         self.blockUnverifiedEns = defaults.bool(forKey: Keys.blockUnverifiedEns)
         self.enableCcipRead = defaults.bool(forKey: Keys.enableCcipRead)
         self.beeNodeMode = defaults.string(forKey: Keys.beeNodeMode)
@@ -275,6 +283,7 @@ final class SettingsStore {
         static let ensBlockAnchor = "ensBlockAnchor"
         static let ensBlockAnchorTtlMs = "ensBlockAnchorTtlMs"
         static let ensPublicRpcProviders = "ensPublicRpcProviders"
+        static let chainStoreMigrated = "chainStoreMigrated"
         static let blockUnverifiedEns = "blockUnverifiedEns"
         static let enableCcipRead = "enableCcipRead"
         static let beeNodeMode = "beeNodeMode"
