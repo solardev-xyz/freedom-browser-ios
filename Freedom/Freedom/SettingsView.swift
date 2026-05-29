@@ -6,6 +6,7 @@ import SwiftUI
 /// toggle) take effect on the next navigation.
 struct SettingsView: View {
     @Environment(ENSResolver.self) private var resolver
+    @Environment(ChainRegistry.self) private var chainRegistry
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -54,6 +55,9 @@ struct SettingsView: View {
 
     private func finish() {
         resolver.invalidate()
+        // Drop quarantine + shuffle on every per-chain pool so a URL the
+        // user just edited / re-added is reconsidered on the next request.
+        chainRegistry.invalidateAllPools()
         dismiss()
     }
 }

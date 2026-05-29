@@ -58,6 +58,22 @@ final class ChainRegistryTests: XCTestCase {
         XCTAssertFalse(stack.registry.rpcURLs(for: .gnosis).contains(gnosisURL))
     }
 
+    // MARK: - Invalidation
+
+    func testInvalidateAllPoolsClearsQuarantineAcrossChains() {
+        let mainnetURL = stack.mainnetPool.availableProviders().first!
+        let gnosisURL = ChainRegistry.gnosisURLs.first!
+        stack.registry.markFailure(url: mainnetURL, on: .mainnet)
+        stack.registry.markFailure(url: gnosisURL, on: .gnosis)
+        XCTAssertFalse(stack.registry.rpcURLs(for: .mainnet).contains(mainnetURL))
+        XCTAssertFalse(stack.registry.rpcURLs(for: .gnosis).contains(gnosisURL))
+
+        stack.registry.invalidateAllPools()
+
+        XCTAssertTrue(stack.registry.rpcURLs(for: .mainnet).contains(mainnetURL))
+        XCTAssertTrue(stack.registry.rpcURLs(for: .gnosis).contains(gnosisURL))
+    }
+
     // MARK: - Lazy custom-chain pool
 
     func testCustomChainPoolLazilyMaterializesFromChainStore() throws {

@@ -42,6 +42,17 @@ final class ChainRegistry {
         pool(for: chain.id).markFailure(url)
     }
 
+    /// Clear shuffle + quarantine on every materialized pool. Called from
+    /// `SettingsView.finish()` so a URL the user just re-added isn't kept
+    /// quarantined and so the next request picks a fresh shuffle. Mainnet's
+    /// invalidate() is also driven from `ENSResolver.invalidate()` — calling
+    /// both is harmless (idempotent reset on the shared instance).
+    func invalidateAllPools() {
+        for pool in pools.values {
+            pool.invalidate()
+        }
+    }
+
     /// Lazily materializes a pool for a chain on first request, then
     /// memoizes — quarantine state must persist across calls for backoff
     /// to be meaningful.
