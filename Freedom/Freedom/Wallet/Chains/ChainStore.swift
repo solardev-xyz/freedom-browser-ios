@@ -192,7 +192,8 @@ final class ChainStore {
             nativeName: record.nativeName,
             nativeSymbol: record.nativeSymbol,
             nativeDecimals: record.nativeDecimals,
-            pollInterval: .seconds(record.pollIntervalSeconds)
+            pollInterval: .seconds(record.pollIntervalSeconds),
+            isBuiltIn: record.isBuiltIn
         )
     }
 

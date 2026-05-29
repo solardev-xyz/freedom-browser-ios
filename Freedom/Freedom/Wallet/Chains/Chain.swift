@@ -11,6 +11,11 @@ struct Chain: Equatable, Hashable, Identifiable {
     /// as its default polling interval, so we don't fire faster than blocks
     /// actually produce.
     let pollInterval: Duration
+    /// True for mainnet + Gnosis (seeded by `ChainStore`); false for
+    /// user-added chains. Drives the per-chain settings editor: built-ins
+    /// can be "reset to defaults" but never deleted; custom chains can
+    /// be deleted but have no defaults to reset to.
+    let isBuiltIn: Bool
 
     /// EIP-155 chain ID, `0x`-prefixed hex (EIP-1193 wire format).
     var hexChainID: String { "0x" + String(id, radix: 16) }
@@ -35,7 +40,8 @@ struct Chain: Equatable, Hashable, Identifiable {
         nativeName: "Ether",
         nativeSymbol: "ETH",
         nativeDecimals: 18,
-        pollInterval: .seconds(8)
+        pollInterval: .seconds(8),
+        isBuiltIn: true
     )
 
     static let gnosis = Chain(
@@ -45,7 +51,8 @@ struct Chain: Equatable, Hashable, Identifiable {
         nativeName: "xDAI",
         nativeSymbol: "xDAI",
         nativeDecimals: 18,
-        pollInterval: .seconds(3)
+        pollInterval: .seconds(3),
+        isBuiltIn: true
     )
 
     static let all: [Chain] = [.gnosis, .mainnet]
