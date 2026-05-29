@@ -285,7 +285,35 @@ One-time, marker-flagged (same pattern as the Colibri
    source for mainnet; don't delete it during the `ensPublicRpcProviders`
    cleanup.
 
-## 10. Future phases (deferred — not part of phases 1–4)
+## 10. Edge cases
+
+Cross-cutting details that don't belong to a single phase but must be
+resolved in-phase.
+
+- **Phase 1 migration test** — mirror `ENSResolutionMethodMigrationTests`:
+  fresh install seeds mainnet + Gnosis with their default RPC lists; an
+  existing install with a customized `ensPublicRpcProviders` carries
+  those URLs into mainnet's `ChainRecord`; idempotent across relaunch
+  via a marker flag.
+- **Empty per-chain RPC list** — today `EthereumRPCPool` falls back to
+  `defaultPublicRpcProviders` (mainnet URLs) when the user's list is
+  empty. That fallback is wrong for any non-mainnet chain. Either
+  refuse-to-save-empty in the per-chain editor, or seed each chain with
+  its own default list (mainnet's defaults, Gnosis's seed list, the
+  chainlist-imported set) and treat empty as "use the seed."
+- **Active chain deletion** — when the user deletes a custom chain that
+  is currently `WalletDefaults.activeChainID`, proactively reset
+  `activeChainID` to `Chain.defaultChain.id`. Don't rely on the
+  `Chain.find(id:) ?? .defaultChain` read-side fallback alone — the
+  active-chain change should fire so observers (`WalletHomeView` task
+  IDs, etc.) re-run. Built-in chains being non-deletable means this only
+  ever applies to custom chains.
+- **chainlist.org TTL + offline** — cache `rpcs.json` to disk with a 24h
+  TTL; on cache miss + offline, "Search chainlist" surfaces an error
+  banner but the manual-add form (Phase 3) still works unchanged. Don't
+  block the entire add-chain entry on network availability.
+
+## 11. Future phases (deferred — not part of phases 1–4)
 
 These are intentionally out of the initial scope but specified here so
 the design isn't lost. Both depend on Phase 1's `ChainStore`.
@@ -342,7 +370,7 @@ which Phase 1 leaves with only their native asset).
 - **Remove token** — swipe-to-delete, user-added tokens only; built-ins
   are not removable.
 
-## 11. Other follow-ups (minor)
+## 12. Other follow-ups (minor)
 
 - **Remove `SettingsStore.ensPublicRpcProviders`** — once the chain store
   is proven in production, delete the now-unused key. Keep
@@ -351,7 +379,7 @@ which Phase 1 leaves with only their native asset).
 - **Swarm's pinned Gnosis RPC** — `SwarmFunderConstants.pinnedGnosisRPC`
   stays independent of `ChainStore` by design; no change planned.
 
-## 12. Delivery cadence
+## 13. Delivery cadence
 
 Same as the Colibri workstream: implement a phase → user smoke-tests →
 `/simplify` → commit → next phase. Phase 1 lands behind no UI change, so
