@@ -6,9 +6,12 @@ import web3
 @MainActor
 final class TransactionServiceTests: XCTestCase {
     private var service: String = ""
+    private var chainStack: ChainStackBundle!
 
-    override func setUp() {
+    override func setUp() async throws {
+        try await super.setUp()
         service = "com.freedom.wallet.test.\(UUID().uuidString)"
+        chainStack = try ChainStackBundle()
     }
 
     override func tearDown() async throws {
@@ -57,7 +60,7 @@ final class TransactionServiceTests: XCTestCase {
     }
 
     private func makeService(vault: Vault, stub: StubRPC) -> TransactionService {
-        let registry = ChainRegistry(mainnetPool: EthereumRPCPool(settings: SettingsStore()))
+        let registry = chainStack.registry
         registry.walletRPC = WalletRPC(registry: registry, transport: stub.transport)
         return TransactionService(vault: vault, registry: registry)
     }

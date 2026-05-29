@@ -23,7 +23,7 @@ final class ConsensusResolveTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "ConsensusResolveTests-\(UUID().uuidString)")!
         settings = SettingsStore(defaults: defaults)
         clock = MutableClock(now: Date(timeIntervalSince1970: 1_700_000_000))
-        pool = EthereumRPCPool(settings: settings, clock: { [unowned self] in self.clock.now })
+        pool = mainnetPool(settings: settings, clock: { [unowned self] in self.clock.now })
     }
 
     // MARK: - Helpers

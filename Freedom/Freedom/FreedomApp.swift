@@ -52,7 +52,13 @@ struct FreedomApp: App {
             // launches. Register the disk-backed storage adapter once at
             // startup, before any code path can construct a Colibri client.
             ColibriDiskStorage.register()
-            let pool = EthereumRPCPool(settings: settings)
+            // Mainnet pool sources URLs from the chain store; the same
+            // instance flows into `ENSResolver` and `ChainRegistry` so
+            // ENS and wallet share mainnet quarantine state.
+            let pool = EthereumRPCPool(
+                chainID: Chain.mainnetID,
+                urlSource: { chainStore.rpcURLs(forChainID: Chain.mainnetID) }
+            )
             let colibri = ColibriENSClient(settings: settings)
             let resolver = ENSResolver(pool: pool, settings: settings, colibri: colibri)
             let favicons = FaviconStore(context: container.mainContext, ensResolver: resolver)
@@ -62,7 +68,7 @@ struct FreedomApp: App {
             self._settings = State(wrappedValue: settings)
             self._ensResolver = State(wrappedValue: resolver)
             let vault = Vault()
-            let registry = ChainRegistry(mainnetPool: pool)
+            let registry = ChainRegistry(chainStore: chainStore, mainnetPool: pool)
             let permissions = PermissionStore(context: container.mainContext)
             let autoApprove = AutoApproveStore(context: container.mainContext)
             let txService = TransactionService(vault: vault, registry: registry)

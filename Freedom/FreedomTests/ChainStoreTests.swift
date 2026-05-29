@@ -54,7 +54,7 @@ final class ChainStoreTests: XCTestCase {
         XCTAssertEqual(gnosis.nativeDecimals, 18)
     }
 
-    func testReseedingExistingStoreIsNoOp() {
+    func testReseedingExistingStoreIsNoOp() async throws {
         store.updateRPCURLs(forChainID: Chain.mainnetID, ["https://custom.example/eth"])
         // A second `ChainStore` against the same context must not reseed.
         let store2 = ChainStore(context: container.mainContext, settings: settings)
@@ -62,6 +62,10 @@ final class ChainStoreTests: XCTestCase {
             store2.rpcURLs(forChainID: Chain.mainnetID),
             ["https://custom.example/eth"]
         )
+        // Yield so the local `store2` deinit runs inline on the main actor.
+        // A sync `@MainActor` test method deallocs locals through the
+        // executor-hop shim, which aborts for @Observable @MainActor types.
+        await Task.yield()
     }
 
     // MARK: - CRUD

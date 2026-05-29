@@ -27,7 +27,13 @@ final class ChainStoreMigrationTests: XCTestCase {
         )
     }
 
-    func testFreshInstallSeedsDefaults() throws {
+    // Local `@Observable @MainActor` types (the store constructed in each
+    // test body) must deinit on the main actor; sync `@MainActor` test
+    // methods route the dealloc through an executor-hop shim that aborts.
+    // The trailing `await Task.yield()` forces an inline dealloc before
+    // the test method returns.
+
+    func testFreshInstallSeedsDefaults() async throws {
         try makeContainerAndSettings()
         let store = ChainStore(context: container.mainContext, settings: settings)
         XCTAssertEqual(
@@ -35,9 +41,10 @@ final class ChainStoreMigrationTests: XCTestCase {
             SettingsStore.defaultPublicRpcProviders
         )
         XCTAssertTrue(settings.chainStoreMigrated)
+        await Task.yield()
     }
 
-    func testCustomizedSettingsCarriesToMainnetRecord() throws {
+    func testCustomizedSettingsCarriesToMainnetRecord() async throws {
         try makeContainerAndSettings()
         let customURLs = [
             "https://my-private-node.example/eth",
@@ -48,9 +55,10 @@ final class ChainStoreMigrationTests: XCTestCase {
         let store = ChainStore(context: container.mainContext, settings: settings)
         XCTAssertEqual(store.rpcURLs(forChainID: Chain.mainnetID), customURLs)
         XCTAssertTrue(settings.chainStoreMigrated)
+        await Task.yield()
     }
 
-    func testMigrationIsIdempotentAcrossRelaunch() throws {
+    func testMigrationIsIdempotentAcrossRelaunch() async throws {
         try makeContainerAndSettings()
         let customURLs = ["https://my-private-node.example/eth"]
         settings.ensPublicRpcProviders = customURLs
@@ -67,9 +75,10 @@ final class ChainStoreMigrationTests: XCTestCase {
             store2.rpcURLs(forChainID: Chain.mainnetID),
             ["https://only.example/eth"]
         )
+        await Task.yield()
     }
 
-    func testEmptySettingsListFallsBackToDefaults() throws {
+    func testEmptySettingsListFallsBackToDefaults() async throws {
         // A user could clear all providers in the legacy RPC settings UI.
         // Migrating that `[]` as-is would leave mainnet with no providers
         // and break ENS / wallet RPC immediately on first launch.
@@ -82,9 +91,10 @@ final class ChainStoreMigrationTests: XCTestCase {
             SettingsStore.defaultPublicRpcProviders
         )
         XCTAssertTrue(settings.chainStoreMigrated)
+        await Task.yield()
     }
 
-    func testWipeAndReseedSkipsSettingsImport() throws {
+    func testWipeAndReseedSkipsSettingsImport() async throws {
         // Simulates: a previous launch ran the migration + the user later
         // customized the mainnet list inside the store. Then the SwiftData
         // backing got wiped (clean reinstall reusing UserDefaults, manual
@@ -100,5 +110,6 @@ final class ChainStoreMigrationTests: XCTestCase {
             store.rpcURLs(forChainID: Chain.mainnetID),
             SettingsStore.defaultPublicRpcProviders
         )
+        await Task.yield()
     }
 }

@@ -12,6 +12,60 @@ func inMemoryContainer(for models: any PersistentModel.Type...) throws -> ModelC
     return try ModelContainer(for: Schema(models), configurations: config)
 }
 
+/// Builds a mainnet `EthereumRPCPool` whose URL source reads from
+/// `settings.ensPublicRpcProviders` — the pre-WP3 test convenience,
+/// preserved for tests that don't need a full `ChainStore` and just
+/// want a settings-driven mainnet pool.
+@MainActor
+func mainnetPool(
+    settings: SettingsStore,
+    clock: @escaping () -> Date = Date.init
+) -> EthereumRPCPool {
+    EthereumRPCPool(
+        chainID: Chain.mainnetID,
+        urlSource: { settings.ensPublicRpcProviders },
+        clock: clock
+    )
+}
+
+/// One-stop bundle that mirrors prod's chain stack — in-memory
+/// `ChainStore` seeded with mainnet + Gnosis, mainnet pool sourcing
+/// URLs from the store, and a registry holding both. Hold a single
+/// reference on the test class so the `ModelContainer` outlives every
+/// fetch the test triggers.
+@MainActor
+final class ChainStackBundle {
+    let container: ModelContainer
+    let settings: SettingsStore
+    let chainStore: ChainStore
+    let mainnetPool: EthereumRPCPool
+    let registry: ChainRegistry
+
+    init(
+        settings: SettingsStore? = nil,
+        clock: @escaping () -> Date = Date.init,
+        orderer: @escaping ([URL]) -> [URL] = { $0.shuffled() }
+    ) throws {
+        // Per-bundle UserDefaults suite by default — keeps the chain
+        // store's migration markers and provider lists isolated from
+        // `UserDefaults.standard`, which is shared across the test process.
+        let s = settings ?? SettingsStore(
+            defaults: UserDefaults(suiteName: "ChainStack-\(UUID().uuidString)")!
+        )
+        self.settings = s
+        container = try inMemoryContainer(for: ChainRecord.self)
+        chainStore = ChainStore(context: container.mainContext, settings: s)
+        let store = chainStore
+        mainnetPool = EthereumRPCPool(
+            chainID: Chain.mainnetID,
+            urlSource: { store.rpcURLs(forChainID: Chain.mainnetID) },
+            clock: clock,
+            orderer: orderer
+        )
+        registry = ChainRegistry(chainStore: store, mainnetPool: mainnetPool, poolOrderer: orderer)
+    }
+}
+
 /// Standard hardhat / anvil test mnemonic. Account 0 derives to
 /// `0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266`. Used across the wallet
 /// + bridge test suite; centralized so vector lookups against external

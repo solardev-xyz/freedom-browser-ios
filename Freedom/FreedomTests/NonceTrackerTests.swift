@@ -5,9 +5,16 @@ import XCTest
 final class NonceTrackerTests: XCTestCase {
     private let address = "0xabcdef"
 
+    private var chainStack: ChainStackBundle!
+
+    override func setUp() async throws {
+        try await super.setUp()
+        chainStack = try ChainStackBundle()
+    }
+
     private func makeStubRPC(responses: [Data]) -> (WalletRPC, () -> Int) {
         let index = ResponseIndex()
-        let registry = ChainRegistry(mainnetPool: EthereumRPCPool(settings: SettingsStore()))
+        let registry = chainStack.registry
         let rpc = WalletRPC(registry: registry) { _, _ in
             let i = index.next()
             XCTAssertLessThan(i, responses.count, "RPC called more times than stubbed")
