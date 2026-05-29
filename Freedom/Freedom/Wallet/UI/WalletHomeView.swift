@@ -7,6 +7,7 @@ import web3
 struct WalletHomeView: View {
     @Environment(Vault.self) private var vault
     @Environment(ChainRegistry.self) private var chains
+    @Environment(ChainStore.self) private var chainStore
     @Environment(PermissionStore.self) private var permissions
     @Environment(ENSResolver.self) private var ensResolver
     @Environment(TabStore.self) private var tabStore
@@ -57,7 +58,7 @@ struct WalletHomeView: View {
     }
 
     private var activeChain: Chain {
-        Chain.find(id: activeChainID) ?? .defaultChain
+        chainStore.chain(id: activeChainID) ?? Chain.defaultChain
     }
 
     var body: some View {
@@ -121,7 +122,7 @@ struct WalletHomeView: View {
             set: { WalletDefaults.setActiveChainID($0) }
         )
         return Picker("Chain", selection: binding) {
-            ForEach(Chain.all) { chain in
+            ForEach(chainStore.allChains()) { chain in
                 Text(chain.displayName).tag(chain.id)
             }
         }

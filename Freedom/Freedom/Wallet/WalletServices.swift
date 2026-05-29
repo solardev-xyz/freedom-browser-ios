@@ -9,6 +9,7 @@ import Foundation
 struct WalletServices {
     let vault: Vault
     let chainRegistry: ChainRegistry
+    let chainStore: ChainStore
     let permissionStore: PermissionStore
     let autoApproveStore: AutoApproveStore
     let transactionService: TransactionService

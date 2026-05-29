@@ -216,13 +216,14 @@ final class BrowserTab {
 
         // Active chain read live so a wallet-UI chain switch is picked up
         // by dapp reads without rebuilding the router.
+        let chainStore = wallet.chainStore
         let router = RPCRouter(
             registry: wallet.chainRegistry,
             permissionStore: wallet.permissionStore,
             activeChain: {
                 let raw = UserDefaults.standard.integer(forKey: WalletDefaults.activeChainID)
                 let id = raw == 0 ? Chain.defaultChain.id : raw
-                return Chain.find(id: id) ?? .defaultChain
+                return chainStore.chain(id: id) ?? Chain.defaultChain
             }
         )
         self.walletBridge = EthereumBridge(

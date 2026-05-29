@@ -11,6 +11,7 @@ import web3
 struct AssetPickerView: View {
     @Environment(Vault.self) private var vault
     @Environment(ChainRegistry.self) private var chains
+    @Environment(ChainStore.self) private var chainStore
     @Environment(\.dismiss) private var dismiss
 
     @Binding var selectedChain: Chain
@@ -42,7 +43,7 @@ struct AssetPickerView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                ForEach(Chain.all) { chain in
+                ForEach(chainStore.allChains()) { chain in
                     let chainEntries = entries.filter { $0.chain.id == chain.id }
                     if !chainEntries.isEmpty {
                         Section(chain.displayName) {
@@ -86,7 +87,7 @@ struct AssetPickerView: View {
         let fetcher = TokenBalanceFetcher(walletRPC: chains.walletRPC)
 
         var collected: [Entry] = []
-        for chain in Chain.all {
+        for chain in chainStore.allChains() {
             let tokens = TokenRegistry.tokens(for: chain)
             let balances = await fetcher.fetch(holder: holder, chain: chain, tokens: tokens)
             for token in tokens {

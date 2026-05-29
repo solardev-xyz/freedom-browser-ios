@@ -75,6 +75,7 @@ struct FreedomApp: App {
             let wallet = WalletServices(
                 vault: vault,
                 chainRegistry: registry,
+                chainStore: chainStore,
                 permissionStore: permissions,
                 autoApproveStore: autoApprove,
                 transactionService: txService,

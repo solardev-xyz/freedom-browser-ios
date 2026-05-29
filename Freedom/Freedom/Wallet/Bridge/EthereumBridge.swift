@@ -422,7 +422,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
             return reply(id: id, result: NSNull())
         }
 
-        guard let target = Chain.find(id: requestedID) else {
+        guard let target = services.chainStore.chain(id: requestedID) else {
             return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.unrecognizedChain, message: "Unrecognized chain ID. Add it first."))
         }
 
