@@ -6,7 +6,14 @@ import Foundation
 /// so one drifted record doesn't drop the whole list. RPC entries get
 /// filtered down to no-key, no-tracking endpoints before the result
 /// reaches the chainlist search UI.
-final class ChainlistService: Sendable {
+///
+/// `@MainActor`-isolated rather than `Sendable` — the only caller is
+/// the search view (MainActor); pinning the service to the same
+/// isolation domain sidesteps a Swift 6 continuation-handling
+/// miscompilation that crashed `EXC_BAD_ACCESS` at the first `await`
+/// when the fetcher closure was invoked across actor boundaries.
+@MainActor
+final class ChainlistService {
     /// Subset of a chainlist entry shaped for `AddChainForm.Prefill`.
     /// `explorerBase` is optional — some chains have no explorer on
     /// chainlist; the manual form lets the user fill it in.
@@ -25,7 +32,7 @@ final class ChainlistService: Sendable {
         case malformedResponse
     }
 
-    typealias Fetcher = @Sendable (URL) async throws -> Data
+    typealias Fetcher = @MainActor (URL) async throws -> Data
 
     static let endpoint = URL(string: "https://chainlist.org/rpcs.json")!
 
@@ -35,12 +42,18 @@ final class ChainlistService: Sendable {
 
     private let cacheURL: URL
     private let fetcher: Fetcher
-    private let clock: @Sendable () -> Date
+    private let clock: () -> Date
 
     init(
         cacheURL: URL = ChainlistService.defaultCacheURL(),
-        fetcher: @escaping Fetcher = ChainlistService.defaultFetcher,
-        clock: @escaping @Sendable () -> Date = { Date() }
+        fetcher: @escaping Fetcher = { url in
+            let (data, response) = try await URLSession.shared.data(for: URLRequest(url: url))
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                throw URLError(.badServerResponse)
+            }
+            return data
+        },
+        clock: @escaping () -> Date = { Date() }
     ) {
         self.cacheURL = cacheURL
         self.fetcher = fetcher
@@ -163,15 +176,7 @@ final class ChainlistService: Sendable {
 
     // MARK: - Defaults
 
-    static let defaultFetcher: Fetcher = { url in
-        let (data, response) = try await URLSession.shared.data(from: url)
-        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-            throw URLError(.badServerResponse)
-        }
-        return data
-    }
-
-    static func defaultCacheURL() -> URL {
+    nonisolated static func defaultCacheURL() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         return base.appendingPathComponent("chainlist", isDirectory: true)

@@ -10,15 +10,11 @@ import SwiftUI
 struct RPCSettingsView: View {
     @Environment(ChainStore.self) private var chainStore
 
-    @State private var showAddSheet = false
-
     var body: some View {
         Form {
             Section {
                 ForEach(chainStore.allChains()) { chain in
-                    NavigationLink {
-                        ChainRPCDetailView(chain: chain)
-                    } label: {
+                    NavigationLink(value: SettingsPath.chainEditor(chain.id)) {
                         chainRow(chain)
                     }
                 }
@@ -27,18 +23,13 @@ struct RPCSettingsView: View {
                 Text("Tap a chain to edit its RPC providers. Mainnet and Gnosis are required.")
             }
             Section {
-                Button {
-                    showAddSheet = true
-                } label: {
+                NavigationLink(value: SettingsPath.chainlistSearch) {
                     Label("Add Chain", systemImage: "plus")
                 }
             }
         }
         .navigationTitle("RPC")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showAddSheet) {
-            AddChainForm()
-        }
     }
 
     private func chainRow(_ chain: Chain) -> some View {

@@ -13,7 +13,9 @@ import SwiftUI
 struct AddChainForm: View {
     /// Optional pre-fill payload. Chainlist search hands this in;
     /// manual launch leaves it nil and the user fills every field.
-    struct Prefill {
+    /// Hashable so the enclosing `AddChainRoute.form(_:)` case can be
+    /// a NavigationStack path value.
+    struct Prefill: Hashable {
         let chainID: Int
         let displayName: String
         let nativeName: String
@@ -26,7 +28,11 @@ struct AddChainForm: View {
     let prefill: Prefill?
 
     @Environment(ChainStore.self) private var chainStore
-    @Environment(\.dismiss) private var dismiss
+    /// Shared settings navigation path. On successful Add the form
+    /// trims every consecutive Add Chain step from the top so the
+    /// chainlist search view and the form pop together, landing the
+    /// user back on the chain list with the new entry visible.
+    @Environment(\.settingsPath) private var settingsPath
 
     @State private var chainIDText: String
     @State private var displayName: String
@@ -86,59 +92,54 @@ struct AddChainForm: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Chain") {
-                    formField("Chain ID", placeholder: "137", text: $chainIDText, keyboard: .numberPad)
-                    formField("Display Name", placeholder: "Polygon", text: $displayName)
-                    formField("Poll Interval (s)", placeholder: "12", text: $pollIntervalText, keyboard: .numberPad)
+        Form {
+            Section("Chain") {
+                formField("Chain ID", placeholder: "137", text: $chainIDText, keyboard: .numberPad)
+                formField("Display Name", placeholder: "Polygon", text: $displayName)
+                formField("Poll Interval (s)", placeholder: "12", text: $pollIntervalText, keyboard: .numberPad)
+            }
+            Section("Native Asset") {
+                formField("Name", placeholder: "Polygon", text: $nativeName)
+                formField("Symbol", placeholder: "POL", text: $nativeSymbol)
+                formField("Decimals", placeholder: "18", text: $nativeDecimalsText, keyboard: .numberPad)
+            }
+            Section("Explorer") {
+                TextField("https://polygonscan.com", text: $explorerURLText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .font(.caption).monospaced()
+            }
+            Section {
+                ForEach(rpcURLs, id: \.self) { url in
+                    Text(url).font(.caption).monospaced().lineLimit(1).truncationMode(.middle)
                 }
-                Section("Native Asset") {
-                    formField("Name", placeholder: "Polygon", text: $nativeName)
-                    formField("Symbol", placeholder: "POL", text: $nativeSymbol)
-                    formField("Decimals", placeholder: "18", text: $nativeDecimalsText, keyboard: .numberPad)
-                }
-                Section("Explorer") {
-                    TextField("https://polygonscan.com", text: $explorerURLText)
+                .onDelete { offsets in rpcURLs.remove(atOffsets: offsets) }
+                HStack {
+                    TextField("https://rpc.example", text: $newRPCText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .font(.caption).monospaced()
-                }
-                Section {
-                    ForEach(rpcURLs, id: \.self) { url in
-                        Text(url).font(.caption).monospaced().lineLimit(1).truncationMode(.middle)
+                    Button { addRPC() } label: {
+                        Image(systemName: "plus.circle.fill").foregroundStyle(.tint)
                     }
-                    .onDelete { offsets in rpcURLs.remove(atOffsets: offsets) }
-                    HStack {
-                        TextField("https://rpc.example", text: $newRPCText)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .font(.caption).monospaced()
-                        Button { addRPC() } label: {
-                            Image(systemName: "plus.circle.fill").foregroundStyle(.tint)
-                        }
-                        .disabled(!isValidWebURL(newRPCText))
-                    }
-                } header: {
-                    Text("RPC Providers")
-                } footer: {
-                    Text("At least one well-formed http(s) URL is required.")
+                    .disabled(!isValidWebURL(newRPCText))
                 }
-                if let submitError {
-                    Section { Text(submitError).foregroundStyle(.red) }
-                }
+            } header: {
+                Text("RPC Providers")
+            } footer: {
+                Text("At least one well-formed http(s) URL is required.")
             }
-            .navigationTitle("Add Chain")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add", action: submit).disabled(!canSubmit)
-                }
+            if let submitError {
+                Section { Text(submitError).foregroundStyle(.red) }
+            }
+        }
+        .navigationTitle("Add Chain")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Add", action: submit).disabled(!canSubmit)
             }
         }
     }
@@ -185,7 +186,13 @@ struct AddChainForm: View {
                 pollIntervalSeconds: poll,
                 rpcURLs: rpcURLs
             )
-            dismiss()
+            // Trim every Add Chain step from the top of the settings
+            // path — chainlist search + this form — so the user lands
+            // back on the chain list in one animation instead of
+            // stepping back through the chainlist results.
+            while let top = settingsPath.wrappedValue.last, top.isAddChainStep {
+                settingsPath.wrappedValue.removeLast()
+            }
         } catch ChainStore.AddChainError.duplicateID(let existing) {
             submitError = "A chain with ID \(existing) already exists. Edit it from the chain list instead."
         } catch {
