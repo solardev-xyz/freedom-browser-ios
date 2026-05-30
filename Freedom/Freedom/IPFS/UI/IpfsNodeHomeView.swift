@@ -85,10 +85,8 @@ struct IpfsNodeHomeView: View {
             Divider().opacity(0.3)
             row(label: "Routing", value: ipfs.activeRoutingMode.rawValue)
             row(label: "Power", value: ipfs.activeLowPower ? "low" : "default")
-            if let url = ipfs.gatewayURL {
-                Divider().opacity(0.3)
-                row(label: "Gateway", value: url.absoluteString, copyable: url.absoluteString)
-            }
+            Divider().opacity(0.3)
+            row(label: "Transport", value: "Native FFI")
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -39,8 +39,8 @@ let package = Package(
         // from `../freedom-ipfs`.
         .binaryTarget(
             name: "FreedomIpfs",
-            url: "https://github.com/solardev-xyz/freedom-ipfs/releases/download/ios-v0.3.0-rust-reader.1/FreedomIpfs.xcframework.zip",
-            checksum: "c56781ac0c5f030f8cd6569645b1f77387143ef2548589f3a47def91fc6ea3cc"
+            url: "https://github.com/solardev-xyz/freedom-ipfs/releases/download/v0.4.0/FreedomIpfs.xcframework.zip",
+            checksum: "cb12dcd656b155be2049bb90b855b47844e8416ec17ed8f4fb7d112f29ee56b3"
         ),
         .target(
             name: "SwarmKit",

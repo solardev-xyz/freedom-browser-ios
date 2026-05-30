@@ -18,9 +18,13 @@ import XCTest
 ///     -destination 'id=<sim-udid>' \
 ///     -only-testing FreedomTests/NativeIPFSCorpusTests/testNativeCorpus
 ///
-/// Output: /tmp/freedom-corpus-results-native.json (or -loopback.json).
+/// Output: /tmp/freedom-corpus-results-native.json.
 @MainActor
 final class NativeIPFSCorpusTests: XCTestCase {
+
+    /// Native FFI is the only transport now; recorded in the report so
+    /// the JSON shape stays stable for downstream tooling.
+    static let transportLabel = "nativeFFI"
 
     private static let corpus: [String] = [
         "ipfs://vitalik.eth/",
@@ -52,28 +56,18 @@ final class NativeIPFSCorpusTests: XCTestCase {
     }
 
     func testNativeCorpus() async throws {
-        try await runCorpus(
-            transport: .nativeFFI,
-            outputPath: "/tmp/freedom-corpus-results-native.json"
-        )
-    }
-
-    func testLoopbackCorpus() async throws {
-        try await runCorpus(
-            transport: .loopbackHTTP,
-            outputPath: "/tmp/freedom-corpus-results-loopback.json"
-        )
+        try await runCorpus(outputPath: "/tmp/freedom-corpus-results-native.json")
     }
 
     // MARK: - Harness
 
-    private func runCorpus(transport: IPFSGatewayTransport, outputPath: String) async throws {
+    private func runCorpus(outputPath: String) async throws {
         var results: [RunResult] = []
         for url in Self.corpus {
-            let result = await loadOnce(urlString: url, transport: transport)
+            let result = await loadOnce(urlString: url)
             results.append(result)
         }
-        try writeResults(results, transport: transport, outputPath: outputPath)
+        try writeResults(results, outputPath: outputPath)
     }
 
     /// `@MainActor` dependencies (`IPFSNode`, `ENSResolver`, etc.)
@@ -85,16 +79,15 @@ final class NativeIPFSCorpusTests: XCTestCase {
     nonisolated(unsafe) private static var leakedDependencies: [AnyObject] = []
 
     /// Fresh `IPFSNode` per URL — cold-cache scenario.
-    private func loadOnce(urlString: String, transport: IPFSGatewayTransport) async -> RunResult {
+    private func loadOnce(urlString: String) async -> RunResult {
         let dataDir = makeTemporaryDataDir()
         let settings = SettingsStore(defaults: makeEphemeralDefaults())
-        settings.ipfsGatewayTransport = transport
 
         let node = IPFSNode()
         node.start(settings.ipfsConfig(dataDir: dataDir))
         guard await waitForNodeRunning(node) else {
             Self.leakedDependencies.append(contentsOf: [node, settings] as [AnyObject])
-            return RunResult.failure(url: urlString, transport: transport, message: "node failed to start within \(Self.nodeStartTimeoutSeconds)s")
+            return RunResult.failure(url: urlString, message: "node failed to start within \(Self.nodeStartTimeoutSeconds)s")
         }
 
         let pool = mainnetPool(settings: settings)
@@ -103,10 +96,10 @@ final class NativeIPFSCorpusTests: XCTestCase {
         Self.leakedDependencies.append(contentsOf: [node, settings, pool, resolver, navContext] as [AnyObject])
 
         let handlerIpfs = IpfsSchemeHandler(
-            node: node, ensResolver: resolver, navContext: navContext, settings: settings
+            node: node, ensResolver: resolver, navContext: navContext
         )
         let handlerIpns = IpfsSchemeHandler(
-            node: node, ensResolver: resolver, navContext: navContext, settings: settings
+            node: node, ensResolver: resolver, navContext: navContext
         )
         let config = WKWebViewConfiguration()
         // Ephemeral WK state per iteration so cold-cache comparisons
@@ -122,7 +115,7 @@ final class NativeIPFSCorpusTests: XCTestCase {
 
         guard let url = URL(string: urlString) else {
             Self.leakedDependencies.append(contentsOf: [webView, handlerIpfs, handlerIpns, delegate] as [AnyObject])
-            return RunResult.failure(url: urlString, transport: transport, message: "invalid URL")
+            return RunResult.failure(url: urlString, message: "invalid URL")
         }
         if let path = IpfsSchemeHandler.gatewayStylePath(for: url) {
             navContext.begin(topLevelPath: path)
@@ -156,7 +149,7 @@ final class NativeIPFSCorpusTests: XCTestCase {
 
         return RunResult(
             url: urlString,
-            transport: String(describing: transport),
+            transport: Self.transportLabel,
             success: outcome == .didFinish,
             errorMessage: outcome.errorMessage,
             durationMs: Int(finished.timeIntervalSince(started) * 1000),
@@ -227,11 +220,10 @@ final class NativeIPFSCorpusTests: XCTestCase {
 
     private func writeResults(
         _ results: [RunResult],
-        transport: IPFSGatewayTransport,
         outputPath: String
     ) throws {
         let report = CorpusReport(
-            transport: String(describing: transport),
+            transport: Self.transportLabel,
             timestamp: ISO8601DateFormatter().string(from: Date()),
             runs: results
         )
@@ -280,10 +272,10 @@ private struct RunResult: Encodable {
     let nativeGatewayStatsJSONAtCapture: String
     let nativeGatewayStatsJSONPostDrain: String
 
-    static func failure(url: String, transport: IPFSGatewayTransport, message: String) -> RunResult {
+    static func failure(url: String, message: String) -> RunResult {
         RunResult(
             url: url,
-            transport: String(describing: transport),
+            transport: NativeIPFSCorpusTests.transportLabel,
             success: false,
             errorMessage: message,
             durationMs: 0,

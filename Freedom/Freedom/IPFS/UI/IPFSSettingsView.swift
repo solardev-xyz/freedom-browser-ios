@@ -42,24 +42,10 @@ struct IPFSSettingsView: View {
             }
 
             Section {
-                Picker("Gateway transport", selection: $settings.ipfsGatewayTransport) {
-                    ForEach(IPFSGatewayTransport.allCases, id: \.self) { transport in
-                        Text(transportDisplayName(transport)).tag(transport)
-                    }
-                }
-            } header: {
-                Text("Transport")
-            } footer: {
-                Text(transportFooterText)
-            }
-
-            Section {
                 LabeledContent("Status", value: ipfs.status.rawValue.capitalized)
                 LabeledContent("Active routing", value: ipfs.activeRoutingMode.rawValue)
                 LabeledContent("Active budget", value: ipfs.activeLowPower ? "low" : "default")
-                if let gateway = ipfs.gatewayURL {
-                    LabeledContent("Gateway", value: gateway.absoluteString)
-                }
+                LabeledContent("Transport", value: "Native FFI")
                 if let diag = ipfs.diagnostics {
                     LabeledContent(
                         "Cache",
@@ -109,22 +95,6 @@ struct IPFSSettingsView: View {
         case .autoclient: "Auto"
         case .dhtclient, .dht:  "Light DHT"
         case .disabled:   "Off"
-        }
-    }
-
-    private func transportDisplayName(_ transport: IPFSGatewayTransport) -> String {
-        switch transport {
-        case .loopbackHTTP: "Loopback HTTP"
-        case .nativeFFI:    "Native FFI"
-        }
-    }
-
-    private var transportFooterText: String {
-        switch settings.ipfsGatewayTransport {
-        case .nativeFFI:
-            "Default. The scheme handler drives the Rust gateway through the native FFI directly — no URLSession, no loopback TCP hop."
-        case .loopbackHTTP:
-            "Legacy fallback. ipfs:// requests go through URLSession to http://127.0.0.1:<port> on the embedded Rust gateway. Applies to the next request."
         }
     }
 

@@ -7,19 +7,6 @@ enum BlockAnchor: String, CaseIterable, Hashable {
     case finalized
 }
 
-/// Which transport the `ipfs://` / `ipns://` scheme handler uses to
-/// reach the Rust gateway. `nativeFFI` is the default — `WKURLSchemeTask`
-/// drives `freedom_ipfs_gateway_request_*` directly with no TCP hop.
-/// `loopbackHTTP` is the legacy fallback — `WKURLSchemeTask ->
-/// URLSession -> http://127.0.0.1:<port>` — kept available for one
-/// TestFlight cycle so a regression in native can be unblocked from the
-/// picker without a rollback. Read live by the handler so a settings
-/// flip applies to the next request without restarting tabs.
-enum IPFSGatewayTransport: String, CaseIterable, Sendable {
-    case loopbackHTTP
-    case nativeFFI
-}
-
 @MainActor
 @Observable
 final class SettingsStore {
@@ -114,9 +101,6 @@ final class SettingsStore {
     var ipfsLowPower: Bool {
         didSet { defaults.set(ipfsLowPower, forKey: Keys.ipfsLowPower) }
     }
-    var ipfsGatewayTransport: IPFSGatewayTransport {
-        didSet { defaults.set(ipfsGatewayTransport.rawValue, forKey: Keys.ipfsGatewayTransport) }
-    }
     /// True once the user has successfully reached light-mode `.ready` at
     /// least once. Drives the inline mode toggle in `NodeHomeView`: a true
     /// flag means bee's statestore still has the `swap_chequebook` entry
@@ -194,7 +178,6 @@ final class SettingsStore {
             Keys.hasCompletedPublishSetup: false,
             Keys.ipfsRoutingMode: IPFSRoutingMode.autoclient.rawValue,
             Keys.ipfsLowPower: false,
-            Keys.ipfsGatewayTransport: IPFSGatewayTransport.nativeFFI.rawValue,
             Keys.adblockAdsEnabled: true,
             Keys.adblockPrivacyEnabled: true,
             Keys.adblockCookiesEnabled: false,
@@ -226,8 +209,6 @@ final class SettingsStore {
         self.ipfsRoutingMode = defaults.string(forKey: Keys.ipfsRoutingMode)
             .flatMap(IPFSRoutingMode.init(rawValue:)) ?? .autoclient
         self.ipfsLowPower = defaults.bool(forKey: Keys.ipfsLowPower)
-        self.ipfsGatewayTransport = defaults.string(forKey: Keys.ipfsGatewayTransport)
-            .flatMap(IPFSGatewayTransport.init(rawValue:)) ?? .nativeFFI
         self.adblockAdsEnabled = defaults.bool(forKey: Keys.adblockAdsEnabled)
         self.adblockPrivacyEnabled = defaults.bool(forKey: Keys.adblockPrivacyEnabled)
         self.adblockCookiesEnabled = defaults.bool(forKey: Keys.adblockCookiesEnabled)
@@ -290,7 +271,6 @@ final class SettingsStore {
         static let hasCompletedPublishSetup = "hasCompletedPublishSetup"
         static let ipfsRoutingMode = "ipfsRoutingMode"
         static let ipfsLowPower = "ipfsLowPower"
-        static let ipfsGatewayTransport = "ipfsGatewayTransport"
         static let adblockAdsEnabled = "adblockAdsEnabled"
         static let adblockPrivacyEnabled = "adblockPrivacyEnabled"
         static let adblockCookiesEnabled = "adblockCookiesEnabled"
