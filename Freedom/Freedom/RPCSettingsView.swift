@@ -10,6 +10,8 @@ import SwiftUI
 struct RPCSettingsView: View {
     @Environment(ChainStore.self) private var chainStore
 
+    @State private var showAddSheet = false
+
     var body: some View {
         Form {
             Section {
@@ -24,9 +26,19 @@ struct RPCSettingsView: View {
             } footer: {
                 Text("Tap a chain to edit its RPC providers. Mainnet and Gnosis are required.")
             }
+            Section {
+                Button {
+                    showAddSheet = true
+                } label: {
+                    Label("Add Chain", systemImage: "plus")
+                }
+            }
         }
         .navigationTitle("RPC")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showAddSheet) {
+            AddChainForm()
+        }
     }
 
     private func chainRow(_ chain: Chain) -> some View {
@@ -47,17 +59,26 @@ struct RPCSettingsView: View {
     }
 
     /// `.onDelete` fires for any swipe; we drop the indices that point at
-    /// built-in rows so the delete is a no-op for mainnet / Gnosis. iOS
-    /// also won't render the delete affordance on those rows once Phase 3
-    /// custom chains land alongside them, but the guard here is the
-    /// canonical safety net.
+    /// built-in rows so the delete is a no-op for mainnet / Gnosis. If
+    /// the user deletes the chain that's currently active in the wallet,
+    /// reset `WalletDefaults.activeChainID` to the default — the read-
+    /// side fallback (`chainStore.chain(id:) ?? Chain.defaultChain`) would
+    /// also paper over it, but the explicit write fires the change
+    /// notification so wallet observers (chain picker, dapp `chainChanged`
+    /// emit) re-run immediately instead of on next launch.
     private func deleteChains(at offsets: IndexSet) {
         let chains = chainStore.allChains()
+        let activeID = UserDefaults.standard.integer(forKey: WalletDefaults.activeChainID)
+        var deletedActive = false
         for index in offsets {
             guard chains.indices.contains(index) else { continue }
             let chain = chains[index]
             guard !chain.isBuiltIn else { continue }
+            if chain.id == activeID { deletedActive = true }
             chainStore.deleteChain(id: chain.id)
+        }
+        if deletedActive {
+            WalletDefaults.setActiveChainID(Chain.defaultChain.id)
         }
     }
 }
