@@ -177,20 +177,14 @@ public final class FreedomIpfsReader {
         return String(cString: ptr)
     }
 
-    public func startGateway(address: String = "127.0.0.1:0") throws {
-        guard let handle else {
-            throw FreedomIpfsReaderError.invalidNode
-        }
-        let ok = address.withCString { addressPtr in
-            freedom_ipfs_node_start_gateway(handle, addressPtr)
-        }
-        guard ok else {
-            throw FreedomIpfsReaderError.startGatewayFailed
-        }
-    }
-
-    public func startOnlineGateway(
-        address: String = "127.0.0.1:0",
+    /// Configure online retrieval for the native request/event API
+    /// **without binding a loopback HTTP gateway**. Backed by
+    /// `freedom_ipfs_node_start_native_gateway_online_with_config_v2`
+    /// (freedom-ipfs v0.4.0+). Calling it again on a live reader swaps
+    /// the gateway core in place, preserving the block cache — so it
+    /// doubles as the restart path. `freedom_ipfs_node_gateway_url`
+    /// stays `nil` after this; there is no local HTTP server.
+    public func startNativeGateway(
         delegatedRouter: String? = nil,
         routingMode: FreedomIpfsRoutingMode = .auto,
         maxConcurrentRequests: Int = 0,
@@ -200,23 +194,21 @@ public final class FreedomIpfsReader {
         guard let handle else {
             throw FreedomIpfsReaderError.invalidNode
         }
-        let ok = address.withCString { addressPtr in
-            if let delegatedRouter {
-                return delegatedRouter.withCString { routerPtr in
-                    freedom_ipfs_node_start_gateway_online_with_config_v2(
-                        handle,
-                        addressPtr,
-                        routerPtr,
-                        routingMode.rawValue,
-                        maxConcurrentRequests,
-                        dhtQueryTimeoutSeconds,
-                        dhtMaxProviders
-                    )
-                }
+        let ok: Bool
+        if let delegatedRouter {
+            ok = delegatedRouter.withCString { routerPtr in
+                freedom_ipfs_node_start_native_gateway_online_with_config_v2(
+                    handle,
+                    routerPtr,
+                    routingMode.rawValue,
+                    maxConcurrentRequests,
+                    dhtQueryTimeoutSeconds,
+                    dhtMaxProviders
+                )
             }
-            return freedom_ipfs_node_start_gateway_online_with_config_v2(
+        } else {
+            ok = freedom_ipfs_node_start_native_gateway_online_with_config_v2(
                 handle,
-                addressPtr,
                 nil,
                 routingMode.rawValue,
                 maxConcurrentRequests,
@@ -229,8 +221,7 @@ public final class FreedomIpfsReader {
         }
     }
 
-    public func startOnlineGateway(
-        address: String = "127.0.0.1:0",
+    public func startNativeGateway(
         delegatedRouters: [String],
         routingMode: FreedomIpfsRoutingMode = .auto,
         maxConcurrentRequests: Int = 0,
@@ -241,100 +232,13 @@ public final class FreedomIpfsReader {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: ",")
-        try startOnlineGateway(
-            address: address,
+        try startNativeGateway(
             delegatedRouter: routerList.isEmpty ? nil : routerList,
             routingMode: routingMode,
             maxConcurrentRequests: maxConcurrentRequests,
             dhtQueryTimeoutSeconds: dhtQueryTimeoutSeconds,
             dhtMaxProviders: dhtMaxProviders
         )
-    }
-
-    public func restartOnlineGateway(
-        address: String = "127.0.0.1:0",
-        delegatedRouter: String? = nil,
-        routingMode: FreedomIpfsRoutingMode = .auto,
-        maxConcurrentRequests: Int = 0,
-        dhtQueryTimeoutSeconds: UInt64 = 0,
-        dhtMaxProviders: Int = 0
-    ) throws {
-        guard let handle else {
-            throw FreedomIpfsReaderError.invalidNode
-        }
-        let ok = address.withCString { addressPtr in
-            if let delegatedRouter {
-                return delegatedRouter.withCString { routerPtr in
-                    freedom_ipfs_node_restart_gateway_online_with_config_v2(
-                        handle,
-                        addressPtr,
-                        routerPtr,
-                        routingMode.rawValue,
-                        maxConcurrentRequests,
-                        dhtQueryTimeoutSeconds,
-                        dhtMaxProviders
-                    )
-                }
-            }
-            return freedom_ipfs_node_restart_gateway_online_with_config_v2(
-                handle,
-                addressPtr,
-                nil,
-                routingMode.rawValue,
-                maxConcurrentRequests,
-                dhtQueryTimeoutSeconds,
-                dhtMaxProviders
-            )
-        }
-        guard ok else {
-            throw FreedomIpfsReaderError.startGatewayFailed
-        }
-    }
-
-    public func restartOnlineGateway(
-        address: String = "127.0.0.1:0",
-        delegatedRouters: [String],
-        routingMode: FreedomIpfsRoutingMode = .auto,
-        maxConcurrentRequests: Int = 0,
-        dhtQueryTimeoutSeconds: UInt64 = 0,
-        dhtMaxProviders: Int = 0
-    ) throws {
-        let routerList = delegatedRouters
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: ",")
-        try restartOnlineGateway(
-            address: address,
-            delegatedRouter: routerList.isEmpty ? nil : routerList,
-            routingMode: routingMode,
-            maxConcurrentRequests: maxConcurrentRequests,
-            dhtQueryTimeoutSeconds: dhtQueryTimeoutSeconds,
-            dhtMaxProviders: dhtMaxProviders
-        )
-    }
-
-    public func setRoutingMode(
-        _ routingMode: FreedomIpfsRoutingMode,
-        delegatedRouters: [String] = [],
-        maxConcurrentRequests: Int = 0,
-        dhtQueryTimeoutSeconds: UInt64 = 0,
-        dhtMaxProviders: Int = 0
-    ) throws {
-        try restartOnlineGateway(
-            delegatedRouters: delegatedRouters,
-            routingMode: routingMode,
-            maxConcurrentRequests: maxConcurrentRequests,
-            dhtQueryTimeoutSeconds: dhtQueryTimeoutSeconds,
-            dhtMaxProviders: dhtMaxProviders
-        )
-    }
-
-    public var gatewayURL: URL? {
-        guard let handle, let ptr = freedom_ipfs_node_gateway_url(handle) else {
-            return nil
-        }
-        defer { freedom_ipfs_string_free(ptr) }
-        return URL(string: String(cString: ptr))
     }
 
     public func startNativeGatewayRequest(json: String) throws -> UInt64 {
@@ -450,56 +354,6 @@ public final class FreedomIpfsReader {
             return false
         }
         return freedom_ipfs_gateway_request_free(handle, requestHandle)
-    }
-
-    public func localGatewayURL(for address: String) -> URL? {
-        guard
-            let gatewayURL,
-            let path = Self.gatewayPathParts(for: address),
-            var components = URLComponents(url: gatewayURL, resolvingAgainstBaseURL: false)
-        else {
-            return nil
-        }
-        components.percentEncodedPath = path.percentEncodedPath
-        components.percentEncodedQuery = path.percentEncodedQuery
-        components.percentEncodedFragment = path.percentEncodedFragment
-        return components.url
-    }
-
-    public static func gatewayPath(for address: String) -> String? {
-        gatewayPathParts(for: address)?.rendered
-    }
-
-    private static func gatewayPathParts(for address: String) -> GatewayPath? {
-        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return nil
-        }
-
-        if let direct = GatewayPath(gatewayStyleAddress: trimmed) {
-            return direct
-        }
-
-        guard
-            let components = URLComponents(string: trimmed),
-            let scheme = components.scheme?.lowercased(),
-            scheme == "ipfs" || scheme == "ipns"
-        else {
-            return nil
-        }
-
-        let authority = components.host ?? ""
-        guard !authority.isEmpty else {
-            return nil
-        }
-
-        let prefix = scheme == "ipfs" ? "/ipfs/" : "/ipns/"
-        let path = prefix + authority + components.percentEncodedPath
-        return GatewayPath(
-            percentEncodedPath: path,
-            percentEncodedQuery: components.percentEncodedQuery,
-            percentEncodedFragment: components.percentEncodedFragment
-        )
     }
 
     public func preload(path: String) -> UInt64 {
@@ -727,45 +581,5 @@ public final class FreedomIpfsReader {
             return Data()
         }
         return Data(bytes: data, count: buffer.len)
-    }
-}
-
-private struct GatewayPath {
-    let percentEncodedPath: String
-    let percentEncodedQuery: String?
-    let percentEncodedFragment: String?
-
-    init(percentEncodedPath: String, percentEncodedQuery: String?, percentEncodedFragment: String?) {
-        self.percentEncodedPath = percentEncodedPath
-        self.percentEncodedQuery = percentEncodedQuery
-        self.percentEncodedFragment = percentEncodedFragment
-    }
-
-    init?(gatewayStyleAddress: String) {
-        guard
-            let components = URLComponents(string: gatewayStyleAddress),
-            components.scheme == nil,
-            components.host == nil,
-            components.percentEncodedPath.hasPrefix("/ipfs/")
-                || components.percentEncodedPath.hasPrefix("/ipns/")
-        else {
-            return nil
-        }
-        self.init(
-            percentEncodedPath: components.percentEncodedPath,
-            percentEncodedQuery: components.percentEncodedQuery,
-            percentEncodedFragment: components.percentEncodedFragment
-        )
-    }
-
-    var rendered: String {
-        var output = percentEncodedPath
-        if let percentEncodedQuery {
-            output += "?\(percentEncodedQuery)"
-        }
-        if let percentEncodedFragment {
-            output += "#\(percentEncodedFragment)"
-        }
-        return output
     }
 }

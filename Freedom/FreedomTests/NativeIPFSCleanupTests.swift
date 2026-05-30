@@ -133,7 +133,6 @@ final class NativeIPFSCleanupTests: XCTestCase {
     private func makeEnv() async throws -> Env {
         let dataDir = makeTemporaryDataDir()
         let settings = SettingsStore(defaults: makeEphemeralDefaults())
-        settings.ipfsGatewayTransport = .nativeFFI
 
         let node = IPFSNode()
         node.start(settings.ipfsConfig(dataDir: dataDir))
@@ -150,10 +149,10 @@ final class NativeIPFSCleanupTests: XCTestCase {
         let navContext = IpfsNavContext()
 
         let handlerIpfs = IpfsSchemeHandler(
-            node: node, ensResolver: resolver, navContext: navContext, settings: settings
+            node: node, ensResolver: resolver, navContext: navContext
         )
         let handlerIpns = IpfsSchemeHandler(
-            node: node, ensResolver: resolver, navContext: navContext, settings: settings
+            node: node, ensResolver: resolver, navContext: navContext
         )
 
         let config = WKWebViewConfiguration()

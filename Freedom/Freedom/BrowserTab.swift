@@ -186,8 +186,7 @@ final class BrowserTab {
             IpfsSchemeHandler(
                 node: ipfs,
                 ensResolver: ensResolver,
-                navContext: ipfsNavContext,
-                settings: settings
+                navContext: ipfsNavContext
             ),
             forURLScheme: "ipfs"
         )
@@ -195,8 +194,7 @@ final class BrowserTab {
             IpfsSchemeHandler(
                 node: ipfs,
                 ensResolver: ensResolver,
-                navContext: ipfsNavContext,
-                settings: settings
+                navContext: ipfsNavContext
             ),
             forURLScheme: "ipns"
         )

@@ -7,6 +7,12 @@ import Observation
 /// the previous Kubo-backed implementation to keep the iOS app's blast
 /// radius small.
 ///
+/// Transport is **native FFI only**: the node configures online
+/// retrieval through `startNativeGateway` and never binds a loopback
+/// HTTP gateway. The `ipfs://` / `ipns://` scheme handler drives the
+/// `freedom_ipfs_gateway_request_*` API directly. There is no
+/// `gatewayURL` because there is no local HTTP server.
+///
 /// What is NOT preserved from the Kubo era:
 /// - There is no Kubo PeerID. `peerID` exists as an empty
 ///   compile-compatibility property; never display it.
@@ -48,11 +54,6 @@ public enum IPFSRoutingMode: String, Sendable, CaseIterable {
 
 public struct IPFSConfig: Sendable {
     public var dataDir: URL
-    /// Loopback host. Rust gateway only binds loopback addresses.
-    public var gatewayHost: String
-    /// `0` (the new default) means an ephemeral port — read the actual
-    /// port back from `IPFSNode.gatewayURL` after start.
-    public var gatewayPort: Int
     /// When true, scales request/provider budgets down for mobile.
     public var lowPower: Bool
     public var routingMode: IPFSRoutingMode
@@ -66,8 +67,6 @@ public struct IPFSConfig: Sendable {
 
     public init(
         dataDir: URL,
-        gatewayHost: String = "127.0.0.1",
-        gatewayPort: Int = 0,
         lowPower: Bool = false,
         routingMode: IPFSRoutingMode = .autoclient,
         offline: Bool = false,
@@ -75,16 +74,12 @@ public struct IPFSConfig: Sendable {
         delegatedRouters: [String] = []
     ) {
         self.dataDir = dataDir
-        self.gatewayHost = gatewayHost
-        self.gatewayPort = gatewayPort
         self.lowPower = lowPower
         self.routingMode = routingMode
         self.offline = offline
         self.maxCacheBytes = maxCacheBytes
         self.delegatedRouters = delegatedRouters
     }
-
-    public var gatewayAddr: String { "\(gatewayHost):\(gatewayPort)" }
 
     /// Translate the legacy routing-mode setting + offline flag into the
     /// shape the Rust reader expects.
@@ -124,7 +119,6 @@ public final class IPFSNode {
     /// Compile-compatibility shim — the Rust reader has no Kubo PeerID.
     /// Always empty. Never surface this in the UI.
     public let peerID: String = ""
-    public private(set) var gatewayURL: URL?
     public private(set) var log: [String] = []
     public private(set) var activeRoutingMode: IPFSRoutingMode = .autoclient
     public private(set) var activeLowPower: Bool = true
@@ -182,7 +176,6 @@ public final class IPFSNode {
 
         let dataDir = config.dataDir
         let cacheBytes = config.maxCacheBytes
-        let address = config.gatewayAddr
         let routingMode = config.rustRoutingMode
         let maxConcurrent = config.maxConcurrentRequests
         let dhtTimeout = config.dhtQueryTimeoutSeconds
@@ -195,15 +188,16 @@ public final class IPFSNode {
                     dataDirectory: dataDir,
                     maxCacheBytes: cacheBytes
                 )
-                try reader.startOnlineGateway(
-                    address: address,
+                // Native-only retrieval: no loopback HTTP gateway is
+                // bound. The scheme handler drives requests through the
+                // native FFI.
+                try reader.startNativeGateway(
                     delegatedRouters: routers,
                     routingMode: routingMode,
                     maxConcurrentRequests: maxConcurrent,
                     dhtQueryTimeoutSeconds: dhtTimeout,
                     dhtMaxProviders: dhtMax
                 )
-                let resolvedURL = reader.gatewayURL
                 let snapshot = reader.diagnostics
                 await MainActor.run {
                     guard let self else {
@@ -225,11 +219,9 @@ public final class IPFSNode {
                     let dispatcher = NativeGatewayDispatcher(eventSource: reader)
                     dispatcher.start()
                     self.nativeDispatcher = dispatcher
-                    self.gatewayURL = resolvedURL
                     self.diagnostics = snapshot
                     self.status = .running
-                    let urlString = resolvedURL?.absoluteString ?? "(no gateway)"
-                    self.append("node running · gateway \(urlString)")
+                    self.append("node running · native FFI transport")
                     self.startPolling()
                 }
             } catch {
@@ -243,11 +235,11 @@ public final class IPFSNode {
     }
 
     public func restart(_ config: IPFSConfig) async {
-        // If the reader is alive, reuse its handle by calling
-        // `restartOnlineGateway` — avoids tearing down the cache for a
-        // routing-mode flip. The Rust reader treats `.offline` mode as
-        // a valid restart target, so this also covers the
-        // disabled / cache-only flow.
+        // If the reader is alive, reuse its handle by re-running
+        // `startNativeGateway` — it swaps the gateway core in place,
+        // avoiding a cache teardown for a routing-mode flip. The Rust
+        // reader treats `.offline` mode as a valid target, so this also
+        // covers the disabled / cache-only flow.
         if let reader {
             lifecycleGeneration += 1
             let myGeneration = lifecycleGeneration
@@ -256,7 +248,6 @@ public final class IPFSNode {
             activeConfig = config
             status = .starting
             append("restarting gateway (\(config.routingMode.rawValue), \(config.lowPower ? "lowpower" : "default"))…")
-            let address = config.gatewayAddr
             let routingMode = config.rustRoutingMode
             let maxConcurrent = config.maxConcurrentRequests
             let dhtTimeout = config.dhtQueryTimeoutSeconds
@@ -264,8 +255,7 @@ public final class IPFSNode {
             let routers = config.delegatedRouters
             do {
                 try await Task.detached(priority: .userInitiated) {
-                    try reader.restartOnlineGateway(
-                        address: address,
+                    try reader.startNativeGateway(
                         delegatedRouters: routers,
                         routingMode: routingMode,
                         maxConcurrentRequests: maxConcurrent,
@@ -279,11 +269,9 @@ public final class IPFSNode {
                 // been torn down on the main side — drop the result
                 // instead of re-publishing stale state.
                 guard lifecycleGeneration == myGeneration else { return }
-                gatewayURL = reader.gatewayURL
                 diagnostics = reader.diagnostics
                 status = .running
-                let urlString = gatewayURL?.absoluteString ?? "(no gateway)"
-                append("node running · gateway \(urlString)")
+                append("node running · native FFI transport")
                 return
             } catch {
                 guard lifecycleGeneration == myGeneration else { return }
@@ -322,7 +310,6 @@ public final class IPFSNode {
         let capturedDispatcher = nativeDispatcher
         nativeDispatcher = nil
         self.reader = nil
-        gatewayURL = nil
         // Clear synchronously alongside `self.reader` — otherwise the
         // detached `stopGateway()` hop below leaves a window where the
         // UI sees the last in-flight progress targets while the node
@@ -346,13 +333,6 @@ public final class IPFSNode {
     public func add(_ data: Data) async throws -> String {
         _ = data
         throw IPFSError.unsupported
-    }
-
-    /// Translate an `ipfs://` / `ipns://` URL or a `/ipfs/...` /
-    /// `/ipns/...` gateway-style path into a localhost gateway URL bound
-    /// to whatever ephemeral port the Rust reader is listening on.
-    public func localGatewayURL(for address: String) -> URL? {
-        reader?.localGatewayURL(for: address)
     }
 
     /// Fire-and-forget preload. `0` if the reader isn't running. The
