@@ -97,7 +97,7 @@ final class NativeIPFSCorpusTests: XCTestCase {
             return RunResult.failure(url: urlString, transport: transport, message: "node failed to start within \(Self.nodeStartTimeoutSeconds)s")
         }
 
-        let pool = EthereumRPCPool(settings: settings)
+        let pool = mainnetPool(settings: settings)
         let resolver = ENSResolver(pool: pool, settings: settings)
         let navContext = IpfsNavContext()
         Self.leakedDependencies.append(contentsOf: [node, settings, pool, resolver, navContext] as [AnyObject])

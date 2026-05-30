@@ -145,7 +145,7 @@ final class NativeIPFSCleanupTests: XCTestCase {
             throw XCTSkip("Node failed to start; cleanup tests can't proceed")
         }
 
-        let pool = EthereumRPCPool(settings: settings)
+        let pool = mainnetPool(settings: settings)
         let resolver = ENSResolver(pool: pool, settings: settings)
         let navContext = IpfsNavContext()
 

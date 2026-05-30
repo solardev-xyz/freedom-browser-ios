@@ -3,6 +3,15 @@ import XCTest
 
 @MainActor
 final class WalletRPCTests: XCTestCase {
+    private var chainStack: ChainStackBundle!
+
+    override func setUp() async throws {
+        try await super.setUp()
+        // Identity orderer so call-order assertions on
+        // `ChainRegistry.gnosisURLs[0]` are deterministic.
+        chainStack = try ChainStackBundle(orderer: { $0 })
+    }
+
     /// Stub transport that dispatches on URL. Each URL is configured with
     /// either a canned response body or a thrown error. Records call order
     /// for fall-through assertions. Access is serial because the whole
@@ -24,10 +33,10 @@ final class WalletRPCTests: XCTestCase {
     }
 
     private func makeRegistry() -> ChainRegistry {
-        // For tests, Mainnet goes through this empty-settings pool. We never
-        // actually call Mainnet in these tests — all assertions target Gnosis
-        // whose URLs are hardcoded.
-        ChainRegistry(mainnetPool: EthereumRPCPool(settings: SettingsStore()))
+        // Mainnet + Gnosis are both backed by the bundle's chain store —
+        // Gnosis seeds with `ChainRegistry.gnosisURLs`, so stubbing
+        // against those URLs continues to match the routed addresses.
+        chainStack.registry
     }
 
     private var gnosisURLs: [URL] { ChainRegistry.gnosisURLs }
@@ -151,8 +160,8 @@ final class WalletRPCTests: XCTestCase {
     /// A JSON-RPC error envelope means the provider responded correctly
     /// per spec — that's transport health, not a quarantine signal.
     func testRPCErrorDoesNotPoisonQuarantine() async throws {
-        let pool = EthereumRPCPool(settings: SettingsStore())
-        let registry = ChainRegistry(mainnetPool: pool)
+        let pool = chainStack.mainnetPool
+        let registry = chainStack.registry
         let mainnetURLs = pool.availableProviders()
         XCTAssertGreaterThanOrEqual(mainnetURLs.count, 2)
 
@@ -172,8 +181,8 @@ final class WalletRPCTests: XCTestCase {
     /// Transport errors (network / DNS / TLS / 5xx) DO mark provider
     /// failure — that's exactly the signal quarantine wants.
     func testTransportErrorPoisonsQuarantine() async throws {
-        let pool = EthereumRPCPool(settings: SettingsStore())
-        let registry = ChainRegistry(mainnetPool: pool)
+        let pool = chainStack.mainnetPool
+        let registry = chainStack.registry
         let mainnetURLs = pool.availableProviders()
         XCTAssertGreaterThanOrEqual(mainnetURLs.count, 2)
 

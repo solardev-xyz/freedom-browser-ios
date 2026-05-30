@@ -4,11 +4,18 @@ struct Chain: Equatable, Hashable, Identifiable {
     let id: Int
     let displayName: String
     let explorerBase: URL
+    let nativeName: String
     let nativeSymbol: String
+    let nativeDecimals: Int
     /// Target block time — `TransactionService.awaitConfirmation` uses this
     /// as its default polling interval, so we don't fire faster than blocks
     /// actually produce.
     let pollInterval: Duration
+    /// True for mainnet + Gnosis (seeded by `ChainStore`); false for
+    /// user-added chains. Drives the per-chain settings editor: built-ins
+    /// can be "reset to defaults" but never deleted; custom chains can
+    /// be deleted but have no defaults to reset to.
+    let isBuiltIn: Bool
 
     /// EIP-155 chain ID, `0x`-prefixed hex (EIP-1193 wire format).
     var hexChainID: String { "0x" + String(id, radix: 16) }
@@ -19,20 +26,33 @@ struct Chain: Equatable, Hashable, Identifiable {
         explorerBase.appendingPathComponent("tx").appendingPathComponent(hash)
     }
 
+    /// Canonical EIP-155 IDs for the protocol-pinned chains. ENS and Colibri
+    /// resolve only against mainnet; the active-chain default falls back to
+    /// Gnosis. Surfaced as constants so call sites that must hard-pin don't
+    /// depend on the value-type `static let`s sticking around forever.
+    static let mainnetID = 1
+    static let gnosisID = 100
+
     static let mainnet = Chain(
-        id: 1,
+        id: Self.mainnetID,
         displayName: "Ethereum",
         explorerBase: URL(string: "https://etherscan.io")!,
+        nativeName: "Ether",
         nativeSymbol: "ETH",
-        pollInterval: .seconds(8)
+        nativeDecimals: 18,
+        pollInterval: .seconds(8),
+        isBuiltIn: true
     )
 
     static let gnosis = Chain(
-        id: 100,
+        id: Self.gnosisID,
         displayName: "Gnosis Chain",
         explorerBase: URL(string: "https://gnosisscan.io")!,
+        nativeName: "xDAI",
         nativeSymbol: "xDAI",
-        pollInterval: .seconds(3)
+        nativeDecimals: 18,
+        pollInterval: .seconds(3),
+        isBuiltIn: true
     )
 
     static let all: [Chain] = [.gnosis, .mainnet]

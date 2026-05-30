@@ -21,7 +21,7 @@ final class ENSAddressResolveTests: XCTestCase {
         settings = SettingsStore(defaults: defaults)
         settings.ensPublicRpcProviders = [alpha, bravo, charlie].map(\.absoluteString)
         clock = MutableClock(now: Date(timeIntervalSince1970: 1_700_000_000))
-        pool = EthereumRPCPool(settings: settings, clock: { [unowned self] in self.clock.now })
+        pool = mainnetPool(settings: settings, clock: { [unowned self] in self.clock.now })
     }
 
     private func makeAnchor() -> AnchorCorroboration {

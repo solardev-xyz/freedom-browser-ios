@@ -11,6 +11,7 @@ import Colibri
 final class ColibriENSClientTests: XCTestCase {
     private var storageDir: URL!
     private var settings: SettingsStore!
+    private var chainStack: ChainStackBundle!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -25,6 +26,7 @@ final class ColibriENSClientTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "ColibriENSClientTests-\(UUID().uuidString)")!
         settings = SettingsStore(defaults: defaults)
         settings.ensResolutionMethod = .colibri
+        chainStack = try ChainStackBundle(settings: settings)
     }
 
     override func tearDown() async throws {
@@ -49,7 +51,7 @@ final class ColibriENSClientTests: XCTestCase {
     }
 
     private func callUR(name: String, selector: Data) async throws -> (resolvedData: Data, resolverAddress: Any) {
-        let client = ColibriENSClient(settings: settings)
+        let client = ColibriENSClient(settings: settings, chainStore: chainStack.chainStore)
         let normalized = try name.ensNormalized()
         let dns = try ENSNameEncoding.dnsEncode(normalized)
         let inner = selector + ENSNameEncoding.namehash(normalized)

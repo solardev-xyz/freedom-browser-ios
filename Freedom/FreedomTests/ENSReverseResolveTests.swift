@@ -23,7 +23,7 @@ final class ENSReverseResolveTests: XCTestCase {
         settings = SettingsStore(defaults: defaults)
         settings.ensPublicRpcProviders = [alpha].map(\.absoluteString)
         clock = MutableClock(now: Date(timeIntervalSince1970: 1_700_000_000))
-        pool = EthereumRPCPool(settings: settings, clock: { [unowned self] in self.clock.now })
+        pool = mainnetPool(settings: settings, clock: { [unowned self] in self.clock.now })
     }
 
     private func makeResolver(

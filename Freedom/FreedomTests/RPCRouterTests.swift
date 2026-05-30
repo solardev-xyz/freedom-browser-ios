@@ -6,10 +6,12 @@ import XCTest
 final class RPCRouterTests: XCTestCase {
     private var permissionContainer: ModelContainer!
     private var permissionStore: PermissionStore!
+    private var chainStack: ChainStackBundle!
 
     override func setUp() async throws {
         permissionContainer = try inMemoryContainer(for: DappPermission.self)
         permissionStore = PermissionStore(context: permissionContainer.mainContext)
+        chainStack = try ChainStackBundle()
     }
 
     // MARK: - Stub infra (mirror of TransactionServiceTests' StubRPC)
@@ -35,7 +37,7 @@ final class RPCRouterTests: XCTestCase {
     }
 
     private func makeRouter(stub: StubRPC, chain: Chain = .gnosis) -> RPCRouter {
-        let registry = ChainRegistry(mainnetPool: EthereumRPCPool(settings: SettingsStore()))
+        let registry = chainStack.registry
         registry.walletRPC = WalletRPC(registry: registry, transport: stub.transport)
         return RPCRouter(
             registry: registry,

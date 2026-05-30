@@ -1,47 +1,75 @@
 import Foundation
 import Observation
 
-/// Resolves a chain to its live RPC provider list. Mainnet piggybacks on
-/// the ENS pool so its quarantine state is shared across ENS and wallet
-/// reads; Gnosis has its own small, hardcoded fallback list.
+/// Resolves a chain to its live RPC provider pool. Pools are lazily
+/// materialized per chain ID from `ChainStore`; the mainnet pool is
+/// injected at init so it stays the same instance that `ENSResolver`
+/// and `AnchorCorroboration` hold — ENS and wallet share mainnet
+/// quarantine state.
 @MainActor
 @Observable
 final class ChainRegistry {
+    @ObservationIgnored private let chainStore: ChainStore
     @ObservationIgnored private let mainnetPool: EthereumRPCPool
+    @ObservationIgnored private let poolOrderer: ([URL]) -> [URL]
+    @ObservationIgnored private var pools: [Int: EthereumRPCPool] = [:]
     /// Lazy so `WalletRPC`'s back-reference to `self` is safe — `self` is
     /// fully initialized by the time any view pulls the RPC.
     @ObservationIgnored lazy var walletRPC: WalletRPC = WalletRPC(registry: self)
 
-    init(mainnetPool: EthereumRPCPool) {
+    init(
+        chainStore: ChainStore,
+        mainnetPool: EthereumRPCPool,
+        poolOrderer: @escaping ([URL]) -> [URL] = { $0.shuffled() }
+    ) {
+        self.chainStore = chainStore
         self.mainnetPool = mainnetPool
+        self.poolOrderer = poolOrderer
+        // Seed the map with the injected mainnet pool so its instance
+        // identity is preserved (ENSResolver holds the same reference).
+        self.pools[mainnetPool.chainID] = mainnetPool
     }
 
     func rpcURLs(for chain: Chain) -> [URL] {
-        switch chain {
-        case Chain.mainnet: return mainnetPool.availableProviders()
-        case Chain.gnosis: return Self.gnosisURLs
-        default:
-            // Chain is a struct, so this switch isn't exhaustive — `default`
-            // catches any future `Chain.*` that forgets to wire itself up.
-            // Trap in debug so the miss is loud, empty list in release so
-            // the wallet degrades instead of crashing in users' hands.
-            assertionFailure("rpcURLs(for:) asked for unknown chain \(chain.displayName)")
-            return []
-        }
+        pool(for: chain.id).availableProviders()
     }
 
-    /// Feeds Mainnet pool quarantine; no-op on Gnosis (hardcoded URL
-    /// list, no pool).
     func markSuccess(url: URL, on chain: Chain) {
-        if chain == .mainnet { mainnetPool.markSuccess(url) }
+        pool(for: chain.id).markSuccess(url)
     }
 
     func markFailure(url: URL, on chain: Chain) {
-        if chain == .mainnet { mainnetPool.markFailure(url) }
+        pool(for: chain.id).markFailure(url)
     }
 
-    /// Exposed for tests (see WalletRPCTests) — single source of truth for
-    /// what URLs Gnosis queries go to.
+    /// Clear shuffle + quarantine on every materialized pool. Called from
+    /// `SettingsView.finish()` so a URL the user just re-added isn't kept
+    /// quarantined and so the next request picks a fresh shuffle. Mainnet's
+    /// invalidate() is also driven from `ENSResolver.invalidate()` — calling
+    /// both is harmless (idempotent reset on the shared instance).
+    func invalidateAllPools() {
+        for pool in pools.values {
+            pool.invalidate()
+        }
+    }
+
+    /// Lazily materializes a pool for a chain on first request, then
+    /// memoizes — quarantine state must persist across calls for backoff
+    /// to be meaningful.
+    private func pool(for chainID: Int) -> EthereumRPCPool {
+        if let existing = pools[chainID] { return existing }
+        let store = chainStore
+        let pool = EthereumRPCPool(
+            chainID: chainID,
+            urlSource: { store.rpcURLs(forChainID: chainID) },
+            orderer: poolOrderer
+        )
+        pools[chainID] = pool
+        return pool
+    }
+
+    /// Exposed for tests + the chain store seed. Single source of truth
+    /// for which URLs ship with Gnosis on first launch.
     static let gnosisURLs: [URL] = [
         URL(string: "https://rpc.gnosischain.com")!,
         URL(string: "https://rpc.ankr.com/gnosis")!,
