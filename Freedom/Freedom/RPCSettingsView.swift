@@ -1,64 +1,63 @@
 import SwiftUI
 
-/// Public RPC provider list — the pool the quorum path queries and the
-/// `eth_rpcs` set Colibri verifies storage proofs against. Resolution
-/// behavior (method, custom RPC, quorum tuning) lives on the ENS page.
+/// Chain list — the top-level Settings → RPC page. Each row is a chain
+/// from `ChainStore`, drilling into `ChainRPCDetailView` for the per-
+/// chain provider editor. Mainnet + Gnosis are seeded built-ins and
+/// can't be deleted (they're protocol-pinned: ENS / Colibri only run
+/// against mainnet, and the embedded bee node depends on Gnosis at
+/// the chain-store level). User-added chains (Phase 3+: chainlist.org
+/// + manual form) get swipe-to-delete.
 struct RPCSettingsView: View {
-    @Environment(SettingsStore.self) private var settings
-
-    @State private var newProviderText: String = ""
+    @Environment(ChainStore.self) private var chainStore
 
     var body: some View {
-        @Bindable var settings = settings
         Form {
             Section {
-                ForEach(settings.ensPublicRpcProviders, id: \.self) { url in
-                    Text(url).font(.caption).monospaced().lineLimit(1).truncationMode(.middle)
-                }
-                .onDelete { offsets in
-                    settings.ensPublicRpcProviders.remove(atOffsets: offsets)
-                }
-                HStack {
-                    TextField("https://new-provider.example", text: $newProviderText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .font(.caption).monospaced()
-                    Button {
-                        addProvider()
+                ForEach(chainStore.allChains()) { chain in
+                    NavigationLink {
+                        ChainRPCDetailView(chain: chain)
                     } label: {
-                        Image(systemName: "plus.circle.fill").foregroundStyle(.tint)
-                    }
-                    .disabled(newProviderText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                if settings.ensPublicRpcProviders != SettingsStore.defaultPublicRpcProviders {
-                    Button("Reset to defaults", role: .destructive) {
-                        settings.ensPublicRpcProviders = SettingsStore.defaultPublicRpcProviders
+                        chainRow(chain)
                     }
                 }
-            } header: {
-                Text("Public RPC Providers")
+                .onDelete(perform: deleteChains)
             } footer: {
-                Text("Used when custom RPC is off. Distinct URLs don't guarantee distinct operators — several of the defaults may proxy the same backend.")
+                Text("Tap a chain to edit its RPC providers. Mainnet and Gnosis are required.")
             }
         }
         .navigationTitle("RPC")
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func addProvider() {
-        let trimmed = newProviderText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            newProviderText = ""
-            return
+    private func chainRow(_ chain: Chain) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(chain.displayName)
+                Text(providerCountLabel(for: chain))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
         }
-        // Case-insensitive dedupe matches the pool's own normalization —
-        // otherwise the UI lets users add two entries that collapse to
-        // one downstream, which looks like state drift.
-        let existingLowers = Set(settings.ensPublicRpcProviders.map { $0.lowercased() })
-        if !existingLowers.contains(trimmed.lowercased()) {
-            settings.ensPublicRpcProviders.append(trimmed)
+    }
+
+    private func providerCountLabel(for chain: Chain) -> String {
+        let count = chainStore.rpcURLs(forChainID: chain.id).count
+        return count == 1 ? "1 provider" : "\(count) providers"
+    }
+
+    /// `.onDelete` fires for any swipe; we drop the indices that point at
+    /// built-in rows so the delete is a no-op for mainnet / Gnosis. iOS
+    /// also won't render the delete affordance on those rows once Phase 3
+    /// custom chains land alongside them, but the guard here is the
+    /// canonical safety net.
+    private func deleteChains(at offsets: IndexSet) {
+        let chains = chainStore.allChains()
+        for index in offsets {
+            guard chains.indices.contains(index) else { continue }
+            let chain = chains[index]
+            guard !chain.isBuiltIn else { continue }
+            chainStore.deleteChain(id: chain.id)
         }
-        newProviderText = ""
     }
 }
