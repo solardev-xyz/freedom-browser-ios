@@ -31,12 +31,14 @@ public enum SwarmError: LocalizedError {
     case notRunning
     case notFound
     case startFailed(String)
+    case identitySeedFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case .notRunning: "Swarm node is not running"
         case .notFound: "content not found on Swarm"
         case .startFailed(let message): "Swarm node failed to start: \(message)"
+        case .identitySeedFailed(let message): "Couldn't seed Swarm identity: \(message)"
         }
     }
 }
@@ -100,9 +102,54 @@ public final class SwarmNode {
 
     public init() {}
 
-    public static func defaultDataDir() -> URL {
+    public nonisolated static func defaultDataDir() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("swarm", isDirectory: true)
+    }
+
+    /// Seed Ant's `identity.json` so the next `start(_:)` adopts
+    /// `signingKey` (the user's vault-derived Swarm secp256k1 secret)
+    /// instead of generating a random identity. Overwrites any existing
+    /// file. Call while the node is stopped, before `start(_:)`.
+    ///
+    /// The overlay address Ant derives is
+    /// `keccak256(ethAddress ‖ networkID_le ‖ overlay_nonce)`. We write a
+    /// **32-zero `overlay_nonce`** to match desktop `antd`'s
+    /// `keys/swarm.key` injection branch (which also uses a zero nonce) —
+    /// the eth address (same `m/44'/60'/0'/0/1` key) and networkID (1)
+    /// already match, so the overlay comes out **byte-identical** to
+    /// desktop for the same wallet. `libp2p_keypair` is omitted so Ant
+    /// derives it deterministically from the signing key.
+    public nonisolated static func writeInjectedIdentity(
+        signingKey: Data,
+        dataDir: URL = SwarmNode.defaultDataDir()
+    ) throws {
+        guard signingKey.count == 32 else {
+            throw SwarmError.identitySeedFailed(
+                "signing key must be 32 bytes, got \(signingKey.count)"
+            )
+        }
+        struct IdentityFile: Encodable {
+            let signing_key: String
+            let overlay_nonce: String
+        }
+        let identity = IdentityFile(
+            signing_key: signingKey.map { String(format: "%02x", $0) }.joined(),
+            overlay_nonce: String(repeating: "0", count: 64) // 32 zero bytes
+        )
+        do {
+            try FileManager.default.createDirectory(
+                at: dataDir, withIntermediateDirectories: true
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(identity)
+                .write(to: dataDir.appendingPathComponent("identity.json"))
+        } catch let error as SwarmError {
+            throw error
+        } catch {
+            throw SwarmError.identitySeedFailed(error.localizedDescription)
+        }
     }
 
     /// Fetch a `/bzz/<ref>` document through the in-process gateway.
