@@ -179,17 +179,23 @@ public final class FreedomIpfsReader {
 
     /// Configure online retrieval for the native request/event API
     /// **without binding a loopback HTTP gateway**. Backed by
-    /// `freedom_ipfs_node_start_native_gateway_online_with_config_v2`
-    /// (freedom-ipfs v0.4.0+). Calling it again on a live reader swaps
+    /// `freedom_ipfs_node_start_native_gateway_online_with_config_v3`
+    /// (freedom-ipfs v0.4.2+). Calling it again on a live reader swaps
     /// the gateway core in place, preserving the block cache — so it
     /// doubles as the restart path. `freedom_ipfs_node_gateway_url`
     /// stays `nil` after this; there is no local HTTP server.
+    ///
+    /// `requestQueueTimeoutMilliseconds` caps how long a request waits
+    /// for admission when the gateway's concurrency budget is saturated
+    /// before the gateway returns a machine-readable `gateway_busy`
+    /// response. `0` (the default) uses the gateway's built-in default.
     public func startNativeGateway(
         delegatedRouter: String? = nil,
         routingMode: FreedomIpfsRoutingMode = .auto,
         maxConcurrentRequests: Int = 0,
         dhtQueryTimeoutSeconds: UInt64 = 0,
-        dhtMaxProviders: Int = 0
+        dhtMaxProviders: Int = 0,
+        requestQueueTimeoutMilliseconds: UInt64 = 0
     ) throws {
         guard let handle else {
             throw FreedomIpfsReaderError.invalidNode
@@ -197,23 +203,25 @@ public final class FreedomIpfsReader {
         let ok: Bool
         if let delegatedRouter {
             ok = delegatedRouter.withCString { routerPtr in
-                freedom_ipfs_node_start_native_gateway_online_with_config_v2(
+                freedom_ipfs_node_start_native_gateway_online_with_config_v3(
                     handle,
                     routerPtr,
                     routingMode.rawValue,
                     maxConcurrentRequests,
                     dhtQueryTimeoutSeconds,
-                    dhtMaxProviders
+                    dhtMaxProviders,
+                    requestQueueTimeoutMilliseconds
                 )
             }
         } else {
-            ok = freedom_ipfs_node_start_native_gateway_online_with_config_v2(
+            ok = freedom_ipfs_node_start_native_gateway_online_with_config_v3(
                 handle,
                 nil,
                 routingMode.rawValue,
                 maxConcurrentRequests,
                 dhtQueryTimeoutSeconds,
-                dhtMaxProviders
+                dhtMaxProviders,
+                requestQueueTimeoutMilliseconds
             )
         }
         guard ok else {
@@ -226,7 +234,8 @@ public final class FreedomIpfsReader {
         routingMode: FreedomIpfsRoutingMode = .auto,
         maxConcurrentRequests: Int = 0,
         dhtQueryTimeoutSeconds: UInt64 = 0,
-        dhtMaxProviders: Int = 0
+        dhtMaxProviders: Int = 0,
+        requestQueueTimeoutMilliseconds: UInt64 = 0
     ) throws {
         let routerList = delegatedRouters
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -237,7 +246,8 @@ public final class FreedomIpfsReader {
             routingMode: routingMode,
             maxConcurrentRequests: maxConcurrentRequests,
             dhtQueryTimeoutSeconds: dhtQueryTimeoutSeconds,
-            dhtMaxProviders: dhtMaxProviders
+            dhtMaxProviders: dhtMaxProviders,
+            requestQueueTimeoutMilliseconds: requestQueueTimeoutMilliseconds
         )
     }
 

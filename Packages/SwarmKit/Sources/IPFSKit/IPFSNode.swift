@@ -64,6 +64,11 @@ public struct IPFSConfig: Sendable {
     public var maxCacheBytes: UInt64
     /// Optional delegated-router endpoints. Empty uses the Rust default.
     public var delegatedRouters: [String]
+    /// Cap (ms) on how long a native request waits for admission when
+    /// the gateway's concurrency budget is saturated before the gateway
+    /// returns a machine-readable `gateway_busy` response. `0` uses the
+    /// gateway's built-in default (freedom-ipfs v0.4.2+ backpressure).
+    public var requestQueueTimeoutMilliseconds: UInt64
 
     public init(
         dataDir: URL,
@@ -71,7 +76,8 @@ public struct IPFSConfig: Sendable {
         routingMode: IPFSRoutingMode = .autoclient,
         offline: Bool = false,
         maxCacheBytes: UInt64 = 256 * 1024 * 1024,
-        delegatedRouters: [String] = []
+        delegatedRouters: [String] = [],
+        requestQueueTimeoutMilliseconds: UInt64 = 0
     ) {
         self.dataDir = dataDir
         self.lowPower = lowPower
@@ -79,6 +85,7 @@ public struct IPFSConfig: Sendable {
         self.offline = offline
         self.maxCacheBytes = maxCacheBytes
         self.delegatedRouters = delegatedRouters
+        self.requestQueueTimeoutMilliseconds = requestQueueTimeoutMilliseconds
     }
 
     /// Translate the legacy routing-mode setting + offline flag into the
@@ -181,6 +188,7 @@ public final class IPFSNode {
         let dhtTimeout = config.dhtQueryTimeoutSeconds
         let dhtMax = config.dhtMaxProviders
         let routers = config.delegatedRouters
+        let queueTimeout = config.requestQueueTimeoutMilliseconds
 
         Task.detached(priority: .userInitiated) { [weak self] in
             do {
@@ -196,7 +204,8 @@ public final class IPFSNode {
                     routingMode: routingMode,
                     maxConcurrentRequests: maxConcurrent,
                     dhtQueryTimeoutSeconds: dhtTimeout,
-                    dhtMaxProviders: dhtMax
+                    dhtMaxProviders: dhtMax,
+                    requestQueueTimeoutMilliseconds: queueTimeout
                 )
                 let snapshot = reader.diagnostics
                 await MainActor.run {
@@ -253,6 +262,7 @@ public final class IPFSNode {
             let dhtTimeout = config.dhtQueryTimeoutSeconds
             let dhtMax = config.dhtMaxProviders
             let routers = config.delegatedRouters
+            let queueTimeout = config.requestQueueTimeoutMilliseconds
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try reader.startNativeGateway(
@@ -260,7 +270,8 @@ public final class IPFSNode {
                         routingMode: routingMode,
                         maxConcurrentRequests: maxConcurrent,
                         dhtQueryTimeoutSeconds: dhtTimeout,
-                        dhtMaxProviders: dhtMax
+                        dhtMaxProviders: dhtMax,
+                        requestQueueTimeoutMilliseconds: queueTimeout
                     )
                 }.value
                 // The Rust restart held us across an `await`. If
