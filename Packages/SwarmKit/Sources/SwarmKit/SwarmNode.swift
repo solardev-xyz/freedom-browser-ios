@@ -194,6 +194,26 @@ public final class SwarmNode {
                 return
             }
 
+            // Light mode: deploy (or rediscover / reuse) the node's
+            // chequebook BEFORE serving, so the gateway's ChainContext
+            // reports it and publish-setup's "chequebook deployed" step
+            // advances. Idempotent — returns the persisted/rediscovered
+            // address with no on-chain tx when one already exists (incl.
+            // one the same vault deployed on desktop). Best-effort: a
+            // failure (no xDAI for gas, RPC down) is non-fatal; the node
+            // still serves so browsing works.
+            if lightMode, let gnosisRpc {
+                var cbErr: UnsafeMutablePointer<CChar>?
+                let cbResult: String? = gnosisRpc.withCString { rpcPtr in
+                    guard let ptr = ant_deploy_chequebook(handle, rpcPtr, &cbErr) else { return nil }
+                    defer { ant_free_string(ptr) }
+                    return String(cString: ptr)
+                }
+                let line = cbResult.map { "chequebook ready · \($0)" }
+                    ?? "chequebook deploy skipped: \(Self.takeError(cbErr))"
+                await MainActor.run { self?.append(line) }
+            }
+
             // Serve the bee-compatible HTTP gateway in-process. Pass the
             // Gnosis RPC through so light mode gets live wallet/postage.
             var gwErr: UnsafeMutablePointer<CChar>?
