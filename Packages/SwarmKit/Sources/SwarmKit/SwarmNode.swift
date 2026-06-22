@@ -179,6 +179,10 @@ public final class SwarmNode {
         append("dataDir: \(config.dataDir.path)")
 
         let dataDirPath = config.dataDir.path
+        // Gnosis RPC for the on-chain /wallet · /stamps · /chequebook
+        // gateway surfaces. Present only in light mode; nil → those
+        // endpoints stay bee zero-stubs (ultra-light browsing).
+        let gnosisRpc = config.rpcEndpoint
 
         Task.detached(priority: .userInitiated) { [weak self] in
             // Boot the node.
@@ -190,10 +194,16 @@ public final class SwarmNode {
                 return
             }
 
-            // Serve the bee-compatible HTTP gateway in-process.
+            // Serve the bee-compatible HTTP gateway in-process. Pass the
+            // Gnosis RPC through so light mode gets live wallet/postage.
             var gwErr: UnsafeMutablePointer<CChar>?
-            let served = Self.gatewayAuthority.withCString {
-                ant_start_gateway(handle, $0, lightMode, &gwErr)
+            let served = Self.gatewayAuthority.withCString { addrPtr in
+                if let gnosisRpc {
+                    return gnosisRpc.withCString { rpcPtr in
+                        ant_start_gateway(handle, addrPtr, lightMode, rpcPtr, &gwErr)
+                    }
+                }
+                return ant_start_gateway(handle, addrPtr, lightMode, nil, &gwErr)
             }
             guard served else {
                 let message = Self.takeError(gwErr)
