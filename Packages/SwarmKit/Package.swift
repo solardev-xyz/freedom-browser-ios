@@ -1,16 +1,19 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
-// One Swift package, two library products. SwarmKit links the gomobile
-// `Mobile.xcframework` (bee-lite) from solardev-xyz/bee-lite-java.
-// IPFSKit links the Rust `FreedomIpfs.xcframework` from
-// flotob/freedom-ipfs — a lightweight read-only IPFS reader. The two
-// frameworks are independent (Rust has no Go runtime), so they coexist
-// in one process without the gomobile-TLS-slot conflict that prevented
-// this before. Previously SwarmKit pulled the combined bee+kubo
-// `Mobile.xcframework` from solardev-xyz/freedom-node-mobile; that
-// existed only to share one Go runtime between bee and kubo, and is
-// no longer needed now that kubo is gone.
+// One Swift package, two library products, ONE binary. Both products now
+// link the combined `FreedomMobile.xcframework` from
+// solardev-xyz/freedom-mobile-ffi — a single Rust staticlib that bundles
+// the Swarm node (`ant-ffi`, `ant_*` C ABI) and the IPFS reader
+// (`freedom-ipfs-mobile`, `freedom_ipfs_*` C ABI) in one compilation
+// graph (one std / allocator / libp2p / tokio).
+//
+// This replaces the previous split: the gomobile `Mobile.xcframework`
+// (bee-lite, Go runtime) and the standalone `FreedomIpfs.xcframework`.
+// Bee is gone — Swarm now runs the Rust Ant node, which serves a
+// bee-compatible HTTP gateway in-process on 127.0.0.1:1633 (started via
+// `ant_start_gateway`), so the app's bee-HTTP layer is unchanged. With
+// bee gone there is no Go runtime, hence no `libresolv` link.
 let package = Package(
     name: "SwarmKit",
     platforms: [.iOS("18.0")],
@@ -19,42 +22,35 @@ let package = Package(
         .library(name: "IPFSKit", targets: ["IPFSKit"]),
     ],
     targets: [
-        // Bee-lite gomobile binding from solardev-xyz/bee-lite-java.
-        // SHA256 is verified by SwiftPM before unpacking; bumps
-        // require a new tag, a new release, and a new checksum here.
+        // Combined Swarm + IPFS Rust staticlib from
+        // solardev-xyz/freedom-mobile-ffi (built from ant v0.5.30 +
+        // freedom-ipfs v0.4.2). SHA256 verified by SwiftPM before
+        // unpacking; bumps require a new release tag + checksum.
         // Local-path development override: comment out the URL/checksum
-        // pair below and replace with `path: "../../../bee-lite-java/build/Mobile.xcframework"`.
+        // pair and replace with
+        // `path: "../../../freedom-mobile-ffi/target/ios-xcframework/FreedomMobile.xcframework"`,
+        // building locally with `./scripts/build-xcframework.sh` from
+        // `../freedom-mobile-ffi`.
         .binaryTarget(
-            name: "Mobile",
-            url: "https://github.com/solardev-xyz/bee-lite-java/releases/download/ios-v0.1.2/Mobile.xcframework.zip",
-            checksum: "1781deb5d0e1f61e51423313ee06bcc11e6bc9a435c00a923c27954979b6c3be"
-        ),
-        // Rust read-only IPFS reader from solardev-xyz/freedom-ipfs.
-        // SHA256 verified by SwiftPM before unpacking; bumps require a
-        // new tag, a new release, and a new checksum here.
-        // Local-path development override: comment out the URL/checksum
-        // pair below and replace with
-        // `path: "../../../freedom-ipfs/target/ios-xcframework/FreedomIpfs.xcframework"`,
-        // building locally with `cargo run -p xtask -- build-xcframework`
-        // from `../freedom-ipfs`.
-        .binaryTarget(
-            name: "FreedomIpfs",
-            url: "https://github.com/solardev-xyz/freedom-ipfs/releases/download/v0.4.2/FreedomIpfs.xcframework.zip",
-            checksum: "72dd7b78aa1fe6047c87d9682b423d82a9ed4f814cf690b6bf66d731eb27794f"
+            name: "FreedomMobile",
+            url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.2.0/FreedomMobile.xcframework.zip",
+            checksum: "c1f4678ad4d69774c38ce5ea8a2d430b7e2431277b21b08feb5bdd792ea27aa9"
         ),
         .target(
             name: "SwarmKit",
-            dependencies: ["Mobile"],
+            dependencies: ["FreedomMobile"],
             linkerSettings: [
-                // Go's net package uses BSD libresolv (res_9_n*) for DNS
-                // on iOS. Declared once here so app targets don't have
-                // to add libresolv.tbd manually.
-                .linkedLibrary("resolv"),
+                // Ant's libp2p/TLS stack pulls these Apple frameworks.
+                // The combined modulemap also declares them, but list
+                // them here too so app targets don't have to.
+                .linkedFramework("Security"),
+                .linkedFramework("SystemConfiguration"),
+                .linkedFramework("CoreFoundation"),
             ]
         ),
         .target(
             name: "IPFSKit",
-            dependencies: ["FreedomIpfs"],
+            dependencies: ["FreedomMobile"],
             linkerSettings: [
                 // Rust hyper / reqwest pulls in SystemConfiguration for
                 // proxy/network config detection on Apple platforms.

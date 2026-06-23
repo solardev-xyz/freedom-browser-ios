@@ -1,23 +1,26 @@
 import Foundation
 import SwarmKit
 
-/// Orchestrates Bee node identity changes — vault create / import (swap to
-/// derived identity) and vault wipe (revert to anonymous). Sequence for
-/// `inject` matches desktop `identity-manager.js:399-445`:
+/// Orchestrates Swarm node identity changes — vault create / import (swap
+/// to derived identity) and vault wipe (revert to anonymous).
 ///
-///   1. derive bee wallet from `m/44'/60'/0'/0/1`
+/// The Swarm node is now Rust Ant (`ant-ffi`), which reads its identity
+/// from `<dataDir>/identity.json` at `ant_init` (NOT desktop's
+/// `keys/swarm.key` keystore — that's the `antd` daemon's format, which
+/// the in-process FFI doesn't read). So injection here is:
+///
+///   1. derive the Swarm wallet from `m/44'/60'/0'/0/1`
 ///   2. short-circuit if the derived address matches what the running node
 ///      already reports (same-mnemonic re-import path)
-///   3. encrypt the private key into a V3 keystore
-///   4. stop the node, wait for `.stopped`
-///   5. wipe identity-tied auxiliary state
-///   6. overwrite `keys/swarm.key`
-///   7. start the node with a fresh config built around the same password
-///   8. wait for `.running`
+///   3. stop the node, wait for `.stopped`
+///   4. wipe identity-tied auxiliary state
+///   5. seed `identity.json` with the derived signing key + a zero overlay
+///      nonce (`SwarmNode.writeInjectedIdentity`) — this makes the overlay
+///      byte-identical to desktop's injected node for the same wallet
+///   6. start the node, wait for `.running`
 ///
-/// `revertToAnonymous` is the wipe counterpart: full data-dir wipe so Bee
-/// regenerates a fresh internal random key under the existing Keychain
-/// password.
+/// `revertToAnonymous` is the wipe counterpart: full data-dir wipe so Ant
+/// regenerates a fresh random `identity.json` on next start.
 ///
 /// Failures between steps 4 and 8 leave the user in a partial state.
 /// Recovery is "wipe wallet → recreate", a tested UX path.
@@ -70,31 +73,17 @@ enum BeeIdentityInjector {
             return
         }
 
+        // The SwarmConfig password is vestigial under Ant (Ant owns its
+        // identity via identity.json), but BeeBootConfig still threads it
+        // — keep loading it so the config shape is unchanged.
         let password = try BeePassword.loadOrCreate()
-        // Resolve bootnodes in parallel with scrypt + stop + wipe + write —
-        // the network call is independent of every other step and finishes
-        // in time to be ready when we hand the config to swarm.start.
-        async let config = BeeBootConfig.build(password: password, mode: mode)
-
-        // scrypt N=32768 is intentionally 3-5s of CPU; running it on the
-        // main actor would freeze gesture / scroll responsiveness for the
-        // duration. Detach so the actor stays free. Priority matches the
-        // vault's other crypto offloads (`Vault.swift:47, 58, 92, 98`).
-        let privateKey = hdKey.privateKey
-        let strippedAddress = Hex.stripped(derivedAddress)
-        let keystoreJSON = try await Task.detached(priority: .userInitiated) {
-            try BeeKeystore.encrypt(
-                privateKey: privateKey,
-                password: password,
-                address: strippedAddress
-            )
-        }.value
+        let config = await BeeBootConfig.build(password: password, mode: mode)
 
         try await restart(
             swarm: swarm,
             wipe: .auxiliaryOnly,
-            keystoreJSON: keystoreJSON,
-            config: await config
+            signingKey: hdKey.privateKey,
+            config: config
         )
     }
 
@@ -109,7 +98,7 @@ enum BeeIdentityInjector {
         try await restart(
             swarm: swarm,
             wipe: .all,
-            keystoreJSON: nil,
+            signingKey: nil,
             config: await config
         )
     }
@@ -148,13 +137,14 @@ enum BeeIdentityInjector {
 
     // MARK: - Private
 
-    /// Shared restart sequence for both inject and revert. The `keystoreJSON`
-    /// param is non-nil for inject (overwrite `keys/swarm.key` after wiping
-    /// auxiliary state) and nil for revert (let Bee regenerate fresh).
+    /// Shared restart sequence for both inject and revert. `signingKey` is
+    /// non-nil for inject (seed `identity.json` after wiping auxiliary
+    /// state) and nil for revert (let Ant regenerate a fresh random
+    /// identity).
     private static func restart(
         swarm: SwarmNode,
         wipe: WipeMode,
-        keystoreJSON: Data?,
+        signingKey: Data?,
         config: SwarmConfig
     ) async throws {
         try await ensureStopped(swarm)
@@ -163,8 +153,8 @@ enum BeeIdentityInjector {
         case .auxiliaryOnly: try BeeStateDirs.wipeAuxiliaryState(at: dataDir)
         case .all:           try BeeStateDirs.wipeAll(at: dataDir)
         }
-        if let keystoreJSON {
-            try writeKeystore(keystoreJSON, at: dataDir)
+        if let signingKey {
+            try SwarmNode.writeInjectedIdentity(signingKey: signingKey, dataDir: dataDir)
         }
         swarm.start(config)
         try await waitForStatus(swarm, target: .running, timeout: startTimeoutSeconds)
@@ -180,18 +170,6 @@ enum BeeIdentityInjector {
         if swarm.status == .running {
             swarm.stop()
             try await waitForStatus(swarm, target: .stopped, timeout: stopTimeoutSeconds)
-        }
-    }
-
-    private static func writeKeystore(_ json: Data, at dataDir: URL) throws {
-        let keysDir = dataDir.appendingPathComponent("keys")
-        try FileManager.default.createDirectory(
-            at: keysDir, withIntermediateDirectories: true
-        )
-        do {
-            try json.write(to: keysDir.appendingPathComponent("swarm.key"))
-        } catch {
-            throw Error.keystoreWriteFailed(error.localizedDescription)
         }
     }
 

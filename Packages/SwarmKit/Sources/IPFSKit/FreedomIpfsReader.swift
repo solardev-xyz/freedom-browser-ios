@@ -1,5 +1,5 @@
 import Foundation
-import FreedomIpfs
+import FreedomMobile
 
 public enum FreedomIpfsReaderError: Error, Equatable {
     case createNodeFailed
