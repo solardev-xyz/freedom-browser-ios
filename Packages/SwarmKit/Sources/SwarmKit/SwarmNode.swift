@@ -99,6 +99,10 @@ public final class SwarmNode {
     /// `ant_start_gateway` that completes after `stop()` tears itself
     /// down instead of publishing a live node nobody can stop.
     private var lifecycleGeneration = 0
+    /// Last config handed to `start(_:)`, retained so `resume()` can
+    /// rebind the gateway with the same light-mode / RPC settings after a
+    /// suspension reaped its loopback listener.
+    private var lastConfig: SwarmConfig?
 
     public init() {}
 
@@ -169,6 +173,7 @@ public final class SwarmNode {
 
     public func start(_ config: SwarmConfig) {
         guard node == nil else { return }
+        lastConfig = config
         lifecycleGeneration += 1
         let myGeneration = lifecycleGeneration
         let lightMode = config.rpcEndpoint != nil
@@ -284,7 +289,66 @@ public final class SwarmNode {
         }
     }
 
+    /// Recover the in-process node after an iOS background suspension.
+    ///
+    /// A long suspension lets the OS reap the node's libp2p sockets
+    /// without a FIN, so the peer count still *looks* healthy and the
+    /// swarm's count-gated maintenance never re-dials — the next
+    /// `bzz://` retrieval hangs and the page renders blank (ant #12).
+    /// `ant_resume` forces a fresh bootstrap dial past those gates and
+    /// leaves healthy peers untouched, so a short-background resume is
+    /// ~a no-op. If the gateway's loopback listener was also torn down
+    /// (`/health` unreachable), rebind it — `ant_resume` recovers the
+    /// swarm only. Safe to call on every foreground; no-op unless the
+    /// node is running.
+    public func resume() async {
+        guard status == .running, let handle = node else { return }
+        var err: UnsafeMutablePointer<CChar>?
+        let rc = ant_resume(handle, &err)
+        if rc == 0 {
+            append("resume: swarm redial kicked")
+        } else {
+            append("resume: ant_resume rc=\(rc) (\(Self.takeError(err)))")
+        }
+        if await !Self.gatewayHealthy() {
+            // The node can vanish between the health check and here if a
+            // stop()/restart raced; re-read rather than reuse `handle`.
+            if let live = node { rebindGateway(live) }
+        }
+    }
+
     // MARK: - Internals
+
+    /// `GET /health` with a tight timeout — true only on a live `200`.
+    /// Used by `resume()` to decide whether the loopback listener
+    /// survived the suspension.
+    private nonisolated static func gatewayHealthy() async -> Bool {
+        guard let url = URL(string: "http://\(gatewayAuthority)/health") else { return false }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (_, response) = try? await URLSession.shared.data(for: req) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    /// Rebind the in-process gateway after its loopback listener was
+    /// reaped during suspension: `ant_stop_gateway` clears the dead serve
+    /// task so `ant_start_gateway` can re-bind (and reload the persisted
+    /// chequebook into the ChainContext). Reuses the last `start(_:)`
+    /// config for light-mode / RPC.
+    private func rebindGateway(_ handle: OpaquePointer) {
+        let lightMode = lastConfig?.rpcEndpoint != nil
+        let rpc = lastConfig?.rpcEndpoint
+        ant_stop_gateway(handle)
+        var err: UnsafeMutablePointer<CChar>?
+        let served = Self.gatewayAuthority.withCString { addrPtr in
+            if let rpc {
+                return rpc.withCString { ant_start_gateway(handle, addrPtr, lightMode, $0, &err) }
+            }
+            return ant_start_gateway(handle, addrPtr, lightMode, nil, &err)
+        }
+        append(served ? "resume: gateway rebound" : "resume: gateway rebind failed (\(Self.takeError(err)))")
+    }
 
     private func failStart(_ message: String, generation: Int) {
         guard lifecycleGeneration == generation else { return }

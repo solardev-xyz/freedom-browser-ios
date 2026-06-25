@@ -226,6 +226,14 @@ struct ContentView: View {
                 ipfs.enterBackground()
             case .active:
                 ipfs.enterForeground()
+                // Un-wedge the Swarm node after a background suspension:
+                // the OS reaps its libp2p sockets without a FIN, so the
+                // peer count looks healthy and the swarm never re-dials —
+                // `bzz://` pages then render blank until a full restart
+                // (ant #12). `resume()` forces a redial (+ rebinds the
+                // gateway if its listener was reaped too); ~no-op when
+                // the node is already healthy or not running.
+                Task { await swarm.resume() }
             case .inactive:
                 break
             @unknown default:

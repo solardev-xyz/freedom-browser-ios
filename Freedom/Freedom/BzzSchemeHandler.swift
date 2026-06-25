@@ -21,7 +21,11 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private let session = URLSession.shared
     private let ensResolver: any ENSResolving
-    private var active: [ObjectIdentifier: URLSessionDataTask] = [:]
+    /// In-flight upstream fetches, keyed by scheme task. Each carries a
+    /// cancellation flag + its retry `Task` so `stop(_:)` can abort a
+    /// fetch that's mid-retry (between backoff sleeps, when there's no
+    /// live URLSession task to cancel).
+    private var fetches: [ObjectIdentifier: UpstreamFetch] = [:]
     /// Tracks scheme tasks whose ENS resolution is in flight. The
     /// existing `active` dict is keyed by `dataTask.taskIdentifier`,
     /// which doesn't exist yet at this stage — so `stop(_:)` needs a
@@ -77,7 +81,12 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
             pending.cancelled = true
             return
         }
-        active.removeValue(forKey: key)?.cancel()
+        if let fetch = fetches.removeValue(forKey: key) {
+            // Flip the flag BEFORE cancelling so the retry loop never
+            // messages a stopped WKURLSchemeTask (WebKit traps on that).
+            fetch.cancelled = true
+            fetch.task?.cancel()
+        }
     }
 
     // MARK: - ENS resolution
@@ -131,40 +140,95 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
 
     // MARK: - Response paths
 
+    /// Backoff before retry attempts (attempt 0 fires immediately).
+    private static let retryBackoff: [UInt64] = [400_000_000, 1_200_000_000] // 0.4s, 1.2s
+
+    /// A Bee port can momentarily refuse or stall — most acutely right
+    /// after an iOS foreground transition, while the in-process node
+    /// re-dials the swarm (`SwarmNode.resume()`) and rebinds the gateway.
+    /// Rather than surface that transient as a blank page, retry a few
+    /// times with backoff; only a hard, repeated failure renders the
+    /// error page. 2xx–4xx are delivered as-is (a 404 is a real Bee
+    /// answer, not something to retry); 5xx and transport errors retry.
     private func startUpstreamFetch(upstreamURL: URL, responseURL: URL, task: WKURLSchemeTask) {
         let key = ObjectIdentifier(task)
-        let dataTask = session.dataTask(with: upstreamURL) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self, self.active.removeValue(forKey: key) != nil else { return }
-                    if let error {
-                        task.didFailWithError(error)
-                        return
-                    }
-                    guard let http = response as? HTTPURLResponse, let data else {
-                        task.didFailWithError(URLError(.badServerResponse))
-                        return
-                    }
-                    // Rewrite the response URL back to the bzz:// scheme so WebKit
-                    // treats the response as same-origin with the requesting page,
-                    // and overlay permissive CORS headers so cross-origin
-                    // `bzz://<hex>/` fetches from other `bzz://` pages succeed.
-                    var headers = http.allHeaderFields as? [String: String] ?? [:]
-                    headers.merge(Self.corsResponseHeaders) { _, new in new }
-                    let rewritten = HTTPURLResponse(
-                        url: responseURL,
-                        statusCode: http.statusCode,
-                        httpVersion: "HTTP/1.1",
-                        headerFields: headers
-                    ) ?? http
-                    task.didReceive(rewritten)
-                    task.didReceive(data)
-                    task.didFinish()
+        let fetch = UpstreamFetch()
+        fetches[key] = fetch
+        fetch.task = Task { [weak self] in
+            await self?.runUpstreamWithRetry(
+                upstreamURL: upstreamURL, responseURL: responseURL, task: task, key: key, fetch: fetch
+            )
+        }
+    }
+
+    private func runUpstreamWithRetry(
+        upstreamURL: URL, responseURL: URL, task: WKURLSchemeTask,
+        key: ObjectIdentifier, fetch: UpstreamFetch
+    ) async {
+        defer { fetches.removeValue(forKey: key) }
+        let attempts = Self.retryBackoff.count + 1
+        var lastFailure: (code: Int, kind: SchemeHandlerErrorPage.Kind)?
+        for attempt in 0..<attempts {
+            if fetch.cancelled { return }
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: Self.retryBackoff[attempt - 1])
+                if fetch.cancelled { return }
+            }
+            do {
+                var request = URLRequest(url: upstreamURL)
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                let (data, response) = try await session.data(for: request)
+                if fetch.cancelled { return }
+                guard let http = response as? HTTPURLResponse else {
+                    lastFailure = (502, .nodeUnavailable(url: responseURL.absoluteString))
+                    continue
                 }
+                if (500...599).contains(http.statusCode) {
+                    // Gateway up but the retrieval failed server-side —
+                    // worth another try while peers warm back up.
+                    lastFailure = (http.statusCode, .retrievalFailed(
+                        url: responseURL.absoluteString,
+                        code: String(http.statusCode),
+                        message: nil
+                    ))
+                    continue
+                }
+                deliver(data: data, http: http, responseURL: responseURL, task: task)
+                return
+            } catch {
+                if fetch.cancelled { return }
+                // Transport-level failure: connection refused while the
+                // gateway rebinds, or a timeout while the swarm re-dials.
+                lastFailure = (503, .nodeUnavailable(url: responseURL.absoluteString))
+                continue
             }
         }
-        active[key] = dataTask
-        dataTask.resume()
+        if fetch.cancelled { return }
+        let failure = lastFailure ?? (503, .nodeUnavailable(url: responseURL.absoluteString))
+        respondWithError(
+            originalURL: responseURL,
+            statusCode: failure.code,
+            body: SchemeHandlerErrorPage.render(failure.kind),
+            task: task
+        )
+    }
+
+    /// Rewrite the upstream response back onto the `bzz://` origin (so
+    /// WebKit treats it as same-origin) and overlay permissive CORS, then
+    /// hand it to the scheme task. Callers must verify the task isn't
+    /// cancelled immediately before invoking this (no `await` in between).
+    private func deliver(data: Data, http: HTTPURLResponse, responseURL: URL, task: WKURLSchemeTask) {
+        var headers = http.allHeaderFields as? [String: String] ?? [:]
+        headers.merge(Self.corsResponseHeaders) { _, new in new }
+        let rewritten = HTTPURLResponse(
+            url: responseURL,
+            statusCode: http.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: headers
+        ) ?? http
+        task.didReceive(rewritten)
+        task.didReceive(data)
+        task.didFinish()
     }
 
     private func respondWithError(
@@ -244,4 +308,15 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
             return false
         }
     }
+}
+
+/// Per-scheme-task state for a retrying upstream fetch. `cancelled` is
+/// flipped by `stop(_:)` so the retry loop bails before messaging a
+/// stopped `WKURLSchemeTask` (WebKit traps on a post-stop message);
+/// `task` is the retry loop itself, cancelled to interrupt an in-flight
+/// `URLSession` call or a backoff sleep.
+@MainActor
+final class UpstreamFetch {
+    var cancelled = false
+    var task: Task<Void, Never>?
 }
