@@ -189,6 +189,12 @@ public final class IPFSNode {
         let dhtMax = config.dhtMaxProviders
         let routers = config.delegatedRouters
         let queueTimeout = config.requestQueueTimeoutMilliseconds
+        // Surface the admission budget in the node log so high-fanout
+        // test runs can confirm the queue timeout is active (0 = the
+        // gateway's built-in default; nonzero = the desktop-parity
+        // admission wait). Pairs with `snapshotNativeGatewayStatsJSON`'s
+        // `total_gateway_busy_responses` / `active_native_handles`.
+        append("native gateway · concurrency \(maxConcurrent) · queue-timeout \(queueTimeout)ms")
 
         Task.detached(priority: .userInitiated) { [weak self] in
             do {

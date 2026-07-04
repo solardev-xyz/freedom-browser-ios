@@ -245,7 +245,15 @@ final class SettingsStore {
         IPFSConfig(
             dataDir: dataDir,
             lowPower: ipfsLowPower,
-            routingMode: ipfsRoutingMode
+            routingMode: ipfsRoutingMode,
+            // Give queued native requests up to 15s to win an admission
+            // slot before the bounded gateway returns `gateway_busy` —
+            // the desktop high-fanout fix. Heavy pages fire 40–80
+            // subresources at once; without this, the overflow instantly
+            // 503s under admission pressure and renders blank. This only
+            // makes admission more patient; it does NOT widen the gateway
+            // (concurrency stays bounded — see maxConcurrentRequests).
+            requestQueueTimeoutMilliseconds: 15_000
         )
     }
 
