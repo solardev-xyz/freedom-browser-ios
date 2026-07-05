@@ -193,27 +193,64 @@ enum ColibriDiskStorage {
         return base.appendingPathComponent("colibri", isDirectory: true)
     }
 
+    /// Bump ALONGSIDE the colibri-stateless-swift pin in project.pbxproj
+    /// whenever the package version changes. The persisted verifier state
+    /// (sync-committee snapshots) is version-coupled: 1.1.30 fails
+    /// light-client catch-up over 1.1.26-era state files with "invalid
+    /// merkle root for finalized header", which silently degrades every
+    /// Colibri resolution to the quorum fallback. Wiping on mismatch
+    /// costs one fresh checkpointz bootstrap (~seconds); keeping stale
+    /// state costs verified resolution entirely.
+    private static let storageFormatVersion = "1.1.30"
+    private static let storageFormatMarker = "freedom-colibri-storage-version"
+
     /// One-shot registration. Safe to call multiple times; the underlying
     /// `StorageBridge` is a process global and the last call wins. Tests
     /// register their own adapter and rely on registration order.
     static func register(directory: URL = defaultDirectory()) {
+        wipeIfFormatChanged(at: directory)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         StorageBridge.registerStorage(DiskBacked(root: directory))
         log.info("[colibri] disk storage at \(directory.path, privacy: .public)")
     }
 
-    private final class DiskBacked: ColibriStorage {
-        let root: URL
-        init(root: URL) { self.root = root }
+    /// Clears the verifier-state directory once per storage-format bump.
+    /// A missing marker also wipes — it covers installs that persisted
+    /// state before the marker existed (everything ≤ 1.1.26).
+    private static func wipeIfFormatChanged(at directory: URL) {
+        let marker = directory.appendingPathComponent(storageFormatMarker)
+        if let current = try? String(contentsOf: marker, encoding: .utf8),
+           current == storageFormatVersion {
+            return
+        }
+        let hadState = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.isEmpty == false
+        try? FileManager.default.removeItem(at: directory)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? storageFormatVersion.write(to: marker, atomically: true, encoding: .utf8)
+        if hadState {
+            log.notice("[colibri] wiped verifier state for storage format \(storageFormatVersion, privacy: .public) — fresh checkpointz bootstrap on next use")
+        }
+    }
 
-        func get(key: String) -> Data? {
-            try? Data(contentsOf: root.appendingPathComponent(key))
-        }
-        func set(key: String, value: Data) {
-            try? value.write(to: root.appendingPathComponent(key))
-        }
-        func delete(key: String) {
-            try? FileManager.default.removeItem(at: root.appendingPathComponent(key))
-        }
+}
+
+/// Deliberately `nonisolated` (the target's default isolation is
+/// MainActor): Colibri's C core drives the `ColibriStorage` callbacks
+/// from arbitrary threads, and a MainActor-isolated class would also get
+/// an isolated deinit whose back-deployment shim aborts with a malloc
+/// error when `StorageBridge.registerStorage` releases a previously-
+/// registered instance (reproduced by the storage-migration tests).
+private nonisolated final class DiskBacked: ColibriStorage {
+    let root: URL
+    init(root: URL) { self.root = root }
+
+    func get(key: String) -> Data? {
+        try? Data(contentsOf: root.appendingPathComponent(key))
+    }
+    func set(key: String, value: Data) {
+        try? value.write(to: root.appendingPathComponent(key))
+    }
+    func delete(key: String) {
+        try? FileManager.default.removeItem(at: root.appendingPathComponent(key))
     }
 }
