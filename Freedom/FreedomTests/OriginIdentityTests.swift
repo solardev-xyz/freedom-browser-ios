@@ -19,9 +19,21 @@ final class OriginIdentityTests: XCTestCase {
         XCTAssertEqual(OriginIdentity.from(string: "myapp.box/about")?.key, "myapp.box")
     }
 
-    /// Desktop's regex `^[a-z0-9-]+\.(eth|box)` is not anchored at the end,
-    /// so inputs like `foo.ethereum.com` match as ENS. Parity means we
-    /// keep this quirk; flag it as a test so future "fixes" to the regex
+    /// Desktop splits on /, ?, and # so hash-routed SPAs and share-link
+    /// queries collapse to the canonical bare name.
+    func testBareENSStripsQueryAndFragment() {
+        XCTAssertEqual(OriginIdentity.from(string: "myapp.eth#/swap")?.key, "myapp.eth")
+        XCTAssertEqual(OriginIdentity.from(string: "myapp.eth?ref=abc")?.key, "myapp.eth")
+    }
+
+    func testBareWeiGweiSuffixesAreENS() {
+        XCTAssertEqual(OriginIdentity.from(string: "foo.wei/x")?.scheme, .ens)
+        XCTAssertEqual(OriginIdentity.from(string: "foo.gwei/x")?.key, "foo.gwei")
+    }
+
+    /// Desktop's regex `^[a-z0-9-]+\.(eth|box|wei|gwei)` is not anchored at
+    /// the end, so inputs like `foo.ethereum.com` match as ENS. Parity means
+    /// we keep this quirk; flag it as a test so future "fixes" to the regex
     /// have to be made on both platforms at once.
     func testBareENSRegexNotAnchoredAtEnd() {
         let id = OriginIdentity.from(string: "foo.ethereum.com/path")!
@@ -63,6 +75,70 @@ final class OriginIdentityTests: XCTestCase {
         let rad = OriginIdentity.from(string: "rad://z123abc/tree")!
         XCTAssertEqual(rad.key, "rad://z123abc")
         XCTAssertFalse(rad.isEligibleForWallet)
+    }
+
+    func testDwebRefStopsAtQueryAndFragment() {
+        XCTAssertEqual(OriginIdentity.from(string: "ipfs://QmABC?x=1")?.key, "ipfs://QmABC")
+        XCTAssertEqual(OriginIdentity.from(string: "bzz://abc123#frag")?.key, "bzz://abc123")
+    }
+
+    // MARK: - Name-host carve-out (desktop origin-utils.js)
+
+    /// The cowswap.eth regression: an ENS name whose contenthash is IPFS
+    /// loads as `ipfs://name.eth/...` — the origin must stay the bare ENS
+    /// name (wallet-eligible), not fork into an ineligible transport key.
+    func testIpfsWithENSHostCarvesOutToENS() {
+        let id = OriginIdentity.from(string: "ipfs://cowswap.eth/#/swap")!
+        XCTAssertEqual(id.key, "cowswap.eth")
+        XCTAssertEqual(id.scheme, .ens)
+        XCTAssertTrue(id.isEligibleForWallet)
+    }
+
+    func testIpnsWithENSHostCarvesOutToENS() {
+        let id = OriginIdentity.from(string: "ipns://myapp.eth/guide")!
+        XCTAssertEqual(id.key, "myapp.eth")
+        XCTAssertEqual(id.scheme, .ens)
+        XCTAssertTrue(id.isEligibleForWallet)
+    }
+
+    func testBzzWithENSHostCarvesOutToENSAndLowercases() {
+        let id = OriginIdentity.from(string: "bzz://MyApp.eth/page")!
+        XCTAssertEqual(id.key, "myapp.eth")
+        XCTAssertEqual(id.scheme, .ens)
+        XCTAssertTrue(id.isEligibleForWallet)
+    }
+
+    func testCarveOutCoversAllNameSuffixes() {
+        XCTAssertEqual(OriginIdentity.from(string: "ipfs://foo.box/")?.key, "foo.box")
+        XCTAssertEqual(OriginIdentity.from(string: "ipfs://foo.wei/")?.key, "foo.wei")
+        XCTAssertEqual(OriginIdentity.from(string: "ipfs://foo.gwei/")?.key, "foo.gwei")
+        XCTAssertEqual(OriginIdentity.from(string: "ipfs://foo.gwei/")?.scheme, .ens)
+    }
+
+    /// Multi-label names carve out too — `isEnsHost` is a suffix check,
+    /// unlike the single-label bare-name regex.
+    func testCarveOutAcceptsSubdomainNames() {
+        let id = OriginIdentity.from(string: "ipns://docs.myapp.eth/")!
+        XCTAssertEqual(id.key, "docs.myapp.eth")
+        XCTAssertEqual(id.scheme, .ens)
+    }
+
+    /// Desktop's rad:// branch has no name-host carve-out; parity keeps
+    /// rad transport-keyed even for `.eth` hosts.
+    func testRadIsExcludedFromCarveOut() {
+        let id = OriginIdentity.from(string: "rad://foo.eth/tree")!
+        XCTAssertEqual(id.key, "rad://foo.eth")
+        XCTAssertEqual(id.scheme, .rad)
+        XCTAssertFalse(id.isEligibleForWallet)
+    }
+
+    /// A CID host that merely contains "eth" must not carve out.
+    func testNonNameHostsStayTransportKeyed() {
+        XCTAssertEqual(
+            OriginIdentity.from(string: "ipfs://bafyeth123/")?.key,
+            "ipfs://bafyeth123"
+        )
+        XCTAssertEqual(OriginIdentity.from(string: "ipfs://bafyeth123/")?.scheme, .ipfs)
     }
 
     // MARK: - Web URLs

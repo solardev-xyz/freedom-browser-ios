@@ -12,7 +12,10 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
     let scheme: Scheme
 
     /// Which origins reach `RPCRouter` (§6.5). Dweb cousins (ipfs/ipns/rad)
-    /// and plaintext http are refused for parity with desktop.
+    /// and plaintext http are refused for parity with desktop. ENS-named
+    /// hosts never carry these schemes: `from(string:)` carves
+    /// `ipfs://name.eth` out to `.ens` before scheme classification, same
+    /// as desktop's name-host carve-out.
     var isEligibleForWallet: Bool {
         switch scheme {
         case .https, .ens, .bzz: return true
@@ -45,24 +48,34 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
         return from(string: url.absoluteString)
     }
 
+    /// Desktop's `isEnsHost` — the single predicate for supported name
+    /// suffixes on both platforms.
+    static func isEnsHost<S: StringProtocol>(_ host: S) -> Bool {
+        let lower = host.lowercased()
+        return lower.hasSuffix(".eth") || lower.hasSuffix(".box")
+            || lower.hasSuffix(".wei") || lower.hasSuffix(".gwei")
+    }
+
     static func from(string raw: String) -> OriginIdentity? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        // Desktop's regex `^[a-z0-9-]+\.(eth|box)` is unanchored at end, so
-        // `foo.ethereum.com` matches as ENS. Parity means we keep the quirk.
+        // Desktop's regex `^[a-z0-9-]+\.(eth|box|wei|gwei)` is unanchored at
+        // end, so `foo.ethereum.com` matches as ENS. Parity means we keep the
+        // quirk. Splitting on /, ?, AND # collapses hash-routed SPAs
+        // (`name.eth#/swap`) and share-link queries to the canonical bare name.
         if trimmed.range(
-            of: #"^[a-z0-9-]+\.(eth|box)"#,
+            of: #"^[a-z0-9-]+\.(eth|box|wei|gwei)"#,
             options: [.regularExpression, .caseInsensitive]
         ) != nil {
-            let host = trimmed.split(separator: "/", maxSplits: 1).first.map(String.init) ?? trimmed
+            let host = trimmed.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
             return .init(key: host.lowercased(), scheme: .ens)
         }
 
         let ensPrefix = "ens://"
         if trimmed.lowercased().hasPrefix(ensPrefix) {
             let tail = trimmed.dropFirst(ensPrefix.count)
-            let name = tail.prefix(while: { $0 != "/" && $0 != "#" })
+            let name = tail.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
             guard !name.isEmpty else { return nil }
             return .init(key: name.lowercased(), scheme: .ens)
         }
@@ -75,8 +88,18 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
             let prefix = "\(name)://"
             if trimmed.lowercased().hasPrefix(prefix) {
                 let tail = trimmed.dropFirst(prefix.count)
-                let ref = tail.prefix(while: { $0 != "/" })
+                let ref = tail.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
                 guard !ref.isEmpty else { return nil }
+                // Name-host carve-out (desktop origin-utils.js): an ENS site
+                // served over a transport scheme keeps its bare name as the
+                // permission key — `ipfs://myapp.eth/docs` → `myapp.eth` —
+                // so grants don't fork between the `ens://` and transport
+                // displays of the same site, and wallet eligibility follows
+                // the name, not the transport. rad:// is excluded, matching
+                // desktop's separate no-carve-out rad branch.
+                if enumCase != .rad, isEnsHost(ref) {
+                    return .init(key: ref.lowercased(), scheme: .ens)
+                }
                 return .init(key: "\(name)://\(ref)", scheme: enumCase)
             }
         }
