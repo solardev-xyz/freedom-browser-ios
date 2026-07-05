@@ -159,7 +159,7 @@ final class ConsensusResolveTests: XCTestCase {
         let counter = ActorCallTracker()
         let bytes = sampleBytes
         let resolver_address = sampleResolver
-        let legRunner: QuorumWave.LegRunner = { url, _, _, _, _, _ in
+        let legRunner: QuorumWave.LegRunner = { url, _, _, _, _, _, _ in
             await counter.increment()
             let n = await counter.value
             let kind: QuorumLeg.Outcome.Kind = n <= 3
@@ -220,7 +220,7 @@ final class ConsensusResolveTests: XCTestCase {
         let counter = ActorCallTracker()
         let bytes = sampleBytes
         let resolver_address = sampleResolver
-        let legRunner: QuorumWave.LegRunner = { url, _, _, _, _, _ in
+        let legRunner: QuorumWave.LegRunner = { url, _, _, _, _, _, _ in
             await counter.increment()
             let n = await counter.value
             let kind: QuorumLeg.Outcome.Kind = n <= 3
@@ -254,7 +254,7 @@ final class ConsensusResolveTests: XCTestCase {
             heads: [custom: 1000, alpha: 9999, bravo: 9999, charlie: 9999],
             hashes: [custom: [992: "0xcustom"]]
         )
-        let legRunner: QuorumWave.LegRunner = { [custom, sampleBytes, sampleResolver] url, _, _, _, _, _ in
+        let legRunner: QuorumWave.LegRunner = { [custom, sampleBytes, sampleResolver] url, _, _, _, _, _, _ in
             XCTAssertEqual(url, custom, "public pool was consulted despite custom RPC toggle")
             return QuorumLeg.Outcome(
                 url: url,

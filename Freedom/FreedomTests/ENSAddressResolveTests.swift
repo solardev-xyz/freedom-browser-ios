@@ -39,7 +39,7 @@ final class ENSAddressResolveTests: XCTestCase {
     private func addrOutcome(_ address: EthereumAddress) -> QuorumWave.LegRunner {
         let payload = paddedAddress(address)
         let resolver = resolverAddress
-        return { url, _, _, _, _, _ in
+        return { url, _, _, _, _, _, _ in
             QuorumLeg.Outcome(
                 url: url,
                 kind: .data(resolvedData: payload, resolverAddress: resolver)
@@ -106,7 +106,7 @@ final class ENSAddressResolveTests: XCTestCase {
         let payload = paddedAddress(vitalik)
         let resolver = ENSResolver(
             pool: pool, settings: settings, anchor: makeAnchor(),
-            legRunner: { url, _, _, _, _, _ in
+            legRunner: { url, _, _, _, _, _, _ in
                 await tracker.increment()
                 return QuorumLeg.Outcome(
                     url: url, kind: .data(resolvedData: payload, resolverAddress: self.resolverAddress)

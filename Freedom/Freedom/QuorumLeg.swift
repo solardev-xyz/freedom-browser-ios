@@ -25,8 +25,15 @@ enum QuorumLeg {
         callData: Data,
         blockHash: String,
         timeout: TimeInterval,
-        enableCcipRead: Bool = false
+        enableCcipRead: Bool = false,
+        nameSystem: NameSystem = .ens
     ) async -> Outcome {
+        if let contract = nameSystem.contractAddress {
+            return await runNameNFT(
+                url: url, contract: contract, callData: callData,
+                blockHash: blockHash, timeout: timeout
+            )
+        }
         do {
             let urCall = try UniversalResolverABI.encodeResolve(name: dnsEncodedName, callData: callData)
             let hex = try await callAndMaybeFollowCCIP(
@@ -57,6 +64,39 @@ enum QuorumLeg {
             // ⇒ a clean leg can still win. Bucketing as NO_CONTENTHASH
             // would pin a verified not-found incorrectly.
             return .init(url: url, kind: .error(err))
+        } catch {
+            return .init(url: url, kind: .error(error))
+        }
+    }
+
+    /// One direct `eth_call` against a NameNFT registry (WNS/GNS) at the
+    /// pinned block. The inner resolver calldata (`selector + node`) goes
+    /// straight to the contract — no `resolve()` envelope, no CCIP — and
+    /// the raw return already matches the UR's inner `resolvedData` shape
+    /// (ABI `bytes` for contenthash, padded address for addr), so the
+    /// consensus grouping and downstream decoders are shared unchanged.
+    /// NameNFT contracts have no UR custom-error vocabulary to classify,
+    /// so every revert/transport failure is a leg error rather than a
+    /// notFound — matching desktop's `nameNftResolverCall`, where a
+    /// throw surfaces as a leg error too. "Name not registered" flows
+    /// through the success path as empty bytes / zero address.
+    private static func runNameNFT(
+        url: URL,
+        contract: EthereumAddress,
+        callData: Data,
+        blockHash: String,
+        timeout: TimeInterval
+    ) async -> Outcome {
+        do {
+            let hex = try await ethCallAtBlockHash(
+                rpcURL: url, to: contract.asString(),
+                dataHex: callData.web3.hexString,
+                blockHash: blockHash, timeout: timeout
+            )
+            guard let bytes = hex.web3.hexData, !bytes.isEmpty else {
+                return .init(url: url, kind: .error(RPCError.emptyResponse))
+            }
+            return .init(url: url, kind: .data(resolvedData: bytes, resolverAddress: contract))
         } catch {
             return .init(url: url, kind: .error(error))
         }

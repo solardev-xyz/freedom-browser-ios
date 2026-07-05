@@ -27,7 +27,7 @@ enum QuorumWave {
         let legs: [URL: QuorumLeg.Outcome]
     }
 
-    typealias LegRunner = @Sendable (URL, Data, Data, String, TimeInterval, Bool) async -> QuorumLeg.Outcome
+    typealias LegRunner = @Sendable (URL, Data, Data, String, TimeInterval, Bool, NameSystem) async -> QuorumLeg.Outcome
 
     /// K parallel UR.resolve() legs at `blockHash`. Each resolvedData value
     /// and each negative reason bucket separately — NO_RESOLVER and
@@ -45,6 +45,7 @@ enum QuorumWave {
         timeout: TimeInterval,
         m: Int,
         enableCcipRead: Bool = false,
+        nameSystem: NameSystem = .ens,
         legRunner: @escaping LegRunner = defaultLegRunner
     ) async -> Outcome {
         var legs: [URL: QuorumLeg.Outcome] = [:]
@@ -55,7 +56,7 @@ enum QuorumWave {
         await withTaskGroup(of: QuorumLeg.Outcome.self) { group in
             for url in providers {
                 group.addTask {
-                    await legRunner(url, dnsEncodedName, callData, blockHash, timeout, enableCcipRead)
+                    await legRunner(url, dnsEncodedName, callData, blockHash, timeout, enableCcipRead, nameSystem)
                 }
             }
 
@@ -118,14 +119,15 @@ enum QuorumWave {
         return .conflict
     }
 
-    nonisolated static let defaultLegRunner: LegRunner = { url, name, data, blockHash, timeout, ccip in
+    nonisolated static let defaultLegRunner: LegRunner = { url, name, data, blockHash, timeout, ccip, system in
         await QuorumLeg.run(
             url: url,
             dnsEncodedName: name,
             callData: data,
             blockHash: blockHash,
             timeout: timeout,
-            enableCcipRead: ccip
+            enableCcipRead: ccip,
+            nameSystem: system
         )
     }
 }

@@ -84,9 +84,12 @@ enum BrowserURL: Hashable {
             return classified
         }
 
-        // Bare ENS name like "vitalik.eth" (case-insensitive).
-        if trimmed.lowercased().hasSuffix(".eth"), !trimmed.contains(" ") {
-            return .ens(name: trimmed.lowercased())
+        // Bare Ethereum name like "vitalik.eth" / "wns.wei" / "apoorv.gwei"
+        // (case-insensitive).
+        let lowerTrimmed = trimmed.lowercased()
+        if !trimmed.contains(" "),
+           NameSystem.navigableSuffixes.contains(where: lowerTrimmed.hasSuffix) {
+            return .ens(name: lowerTrimmed)
         }
 
         if SwarmRef.isValid(trimmed), let url = URL(string: "bzz://\(trimmed)") {

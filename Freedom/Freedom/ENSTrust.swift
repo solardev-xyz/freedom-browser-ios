@@ -42,6 +42,10 @@ struct ENSBlock: Hashable {
 
 struct ENSTrust: Equatable {
     let level: ENSTrustLevel
+    /// Which naming system produced this result (ENS vs the NameNFT-backed
+    /// WNS/GNS). Defaulted so pre-.wei construction sites stay valid; the
+    /// UI uses it to label trust with the right system name.
+    var system: NameSystem = .ens
     let method: ENSResolutionMethod
     let block: ENSBlock
     let agreed: [String]

@@ -59,6 +59,49 @@ final class BrowserURLTests: XCTestCase {
         }
     }
 
+    // MARK: - .wei / .gwei names (WNS / GNS)
+
+    func testBareWeiNameParsesAsENS() {
+        guard case .ens(let name, let path) = BrowserURL.parse("wns.wei") else {
+            return XCTFail()
+        }
+        XCTAssertEqual(name, "wns.wei")
+        XCTAssertEqual(path, "")
+    }
+
+    func testBareGweiNameNormalizesCase() {
+        guard case .ens(let name, _) = BrowserURL.parse("Apoorv.GWEI") else {
+            return XCTFail()
+        }
+        XCTAssertEqual(name, "apoorv.gwei")
+    }
+
+    func testWeiNameWithPathRoutesToENS() {
+        guard case .ens(let name, let path) = BrowserURL.parse("wns.wei/docs") else {
+            return XCTFail()
+        }
+        XCTAssertEqual(name, "wns.wei")
+        XCTAssertEqual(path, "/docs")
+    }
+
+    func testIpfsOnWeiHostRoutesToENSWithPath() {
+        let url = URL(string: "ipfs://wns.wei/x?y=1#z")!
+        guard case .ens(let name, let path) = BrowserURL.classify(url) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(name, "wns.wei")
+        XCTAssertEqual(path, "/x?y=1#z")
+    }
+
+    /// `.box` deliberately stays on plain https — it's a real DNS TLD,
+    /// unlike .eth/.wei/.gwei which have no DNS equivalent. See
+    /// `NameSystem.navigableSuffixes`.
+    func testBoxNameStaysWeb() {
+        guard case .web = BrowserURL.parse("myapp.box") else {
+            return XCTFail()
+        }
+    }
+
     // MARK: - Path preservation through `.eth`-host rewrite
 
     func testBzzOnEthHostRoutesToENSWithPath() {

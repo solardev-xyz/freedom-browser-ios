@@ -49,11 +49,10 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
     }
 
     /// Desktop's `isEnsHost` — the single predicate for supported name
-    /// suffixes on both platforms.
+    /// suffixes on both platforms. Delegates to `NameSystem` so the
+    /// suffix set can't drift between permission keying and resolution.
     static func isEnsHost<S: StringProtocol>(_ host: S) -> Bool {
-        let lower = host.lowercased()
-        return lower.hasSuffix(".eth") || lower.hasSuffix(".box")
-            || lower.hasSuffix(".wei") || lower.hasSuffix(".gwei")
+        NameSystem.isSupportedName(host)
     }
 
     static func from(string raw: String) -> OriginIdentity? {

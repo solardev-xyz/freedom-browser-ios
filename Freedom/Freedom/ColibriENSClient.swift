@@ -49,6 +49,22 @@ final class ColibriENSClient {
         return try UniversalResolverABI.decodeResolveResponse(hex)
     }
 
+    /// One proven eth_call straight to a NameNFT registry (WNS/GNS) with
+    /// the inner resolver calldata — no `resolve()` envelope. The raw
+    /// return already matches the UR's inner `resolvedData` shape (ABI
+    /// `bytes` for contenthash, padded address for addr), so downstream
+    /// decoding is shared with the UR path.
+    func nameNftCall(
+        contract: EthereumAddress,
+        callData: Data
+    ) async throws -> (resolvedData: Data, resolverAddress: EthereumAddress) {
+        let hex = try await provenEthCall(to: contract, callData: callData)
+        guard let bytes = hex.web3.hexData, !bytes.isEmpty else {
+            throw ColibriENSError.unexpectedResponse(hex)
+        }
+        return (bytes, contract)
+    }
+
     /// Universal Resolver `reverse(bytes,uint256)` via Colibri. The UR
     /// internally checks forward-resolution and reverts with
     /// `ReverseAddressMismatch(string,bytes)` on spoofed records — that

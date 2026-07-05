@@ -161,10 +161,13 @@ final class ENSResolver {
         }
         let node = ENSNameEncoding.namehash(normalized)
         let callData = Self.contenthashSelector + node
+        let system = NameSystem.forName(normalized)
 
         let consensus: ConsensusResult
         do {
-            consensus = try await consensusResolve(dnsEncodedName: dnsEncoded, callData: callData)
+            consensus = try await consensusResolve(
+                dnsEncodedName: dnsEncoded, callData: callData, system: system
+            )
         } catch let err as AnchorCorroboration.AnchorError {
             // Security signal — preserve distinct from plain network failure.
             // Short-TTL cached (below) to avoid re-hammering providers during
@@ -281,10 +284,14 @@ final class ENSResolver {
 
     /// Drives the quorum pipeline: feasibility → anchor → wave → optional
     /// second-wave → final trust-labelled result. Matches the desktop
-    /// consensusResolve outcome taxonomy one-to-one.
+    /// consensusResolve outcome taxonomy one-to-one. `system` picks the
+    /// call target per leg: UR resolve() for `.ens`, a direct NameNFT
+    /// contract call for `.wns`/`.gns` — the consensus machinery itself
+    /// is identical either way.
     func consensusResolve(
         dnsEncodedName: Data,
-        callData: Data
+        callData: Data,
+        system: NameSystem = .ens
     ) async throws -> ConsensusResult {
         let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
 
@@ -298,7 +305,8 @@ final class ENSResolver {
         if settings.ensResolutionMethod == .colibri, let colibri {
             do {
                 return try await tryColibri(
-                    dnsEncodedName: dnsEncodedName, callData: callData, client: colibri
+                    dnsEncodedName: dnsEncodedName, callData: callData,
+                    client: colibri, system: system
                 )
             } catch let err as ColibriENSError {
                 if !settings.ensFallbackToQuorum {
@@ -314,7 +322,8 @@ final class ENSResolver {
         // See ENSResolutionError.customRpcFailed — fail-closed by design.
         if settings.ensResolutionMethod == .userConfigured {
             return try await resolveCustomRPC(
-                dnsEncodedName: dnsEncodedName, callData: callData, timeout: timeout
+                dnsEncodedName: dnsEncodedName, callData: callData,
+                timeout: timeout, system: system
             )
         }
 
@@ -329,7 +338,8 @@ final class ENSResolver {
         if quorumDisabled || underpowered || available.count < AnchorCorroboration.minQuorumProviders {
             return try await resolveSingleSource(
                 url: available[0],
-                dnsEncodedName: dnsEncodedName, callData: callData, timeout: timeout
+                dnsEncodedName: dnsEncodedName, callData: callData,
+                timeout: timeout, system: system
             )
         }
 
@@ -341,7 +351,8 @@ final class ENSResolver {
             let fresh = pool.availableProviders()
             return try await resolveSingleSource(
                 url: fresh.first ?? available[0],
-                dnsEncodedName: dnsEncodedName, callData: callData, timeout: timeout
+                dnsEncodedName: dnsEncodedName, callData: callData,
+                timeout: timeout, system: system
             )
         }
 
@@ -351,7 +362,8 @@ final class ENSResolver {
         if waveAvailable.count < AnchorCorroboration.minQuorumProviders {
             return try await resolveSingleSource(
                 url: waveAvailable.first ?? available[0],
-                dnsEncodedName: dnsEncodedName, callData: callData, timeout: timeout
+                dnsEncodedName: dnsEncodedName, callData: callData,
+                timeout: timeout, system: system
             )
         }
 
@@ -364,6 +376,7 @@ final class ENSResolver {
             dnsEncodedName: dnsEncodedName, callData: callData,
             blockHash: block.hash, timeout: timeout, m: effectiveM,
             enableCcipRead: settings.enableCcipRead,
+            nameSystem: system,
             legRunner: legRunner
         )
         feedQuarantine(from: wave)
@@ -385,13 +398,14 @@ final class ENSResolver {
                     blockHash: block.hash, timeout: timeout,
                     m: min(desiredM, secondK),
                     enableCcipRead: settings.enableCcipRead,
+                    nameSystem: system,
                     legRunner: legRunner
                 )
                 feedQuarantine(from: wave)
             }
         }
 
-        return try buildResult(from: wave, block: block)
+        return try buildResult(from: wave, block: block, system: system)
     }
 
     /// Mirror anchor corroboration's quarantine feeding for the resolve
@@ -416,7 +430,8 @@ final class ENSResolver {
     private func tryColibri(
         dnsEncodedName: Data,
         callData: Data,
-        client: ColibriENSClient
+        client: ColibriENSClient,
+        system: NameSystem = .ens
     ) async throws -> ConsensusResult {
         // Colibri pins to head − 1 by construction (sync committee
         // signatures for block N live in block N+1), so we don't have a
@@ -425,7 +440,18 @@ final class ENSResolver {
         // and the trust popover knows to render "verifier-pinned" instead
         // of a block number for `.colibri` results.
         let placeholderBlock = ENSBlock(number: 0, hash: "")
-        let trust = buildColibriTrust(client: client, block: placeholderBlock)
+        let trust = buildColibriTrust(client: client, block: placeholderBlock, system: system)
+        // NameNFT systems: one proven eth_call straight to the registry
+        // contract. Reverts deliberately propagate as `ColibriENSError`
+        // so the caller's quorum fallback handles them — the NameNFT
+        // contracts have no UR error vocabulary to decode here (desktop
+        // parity: a nameNftResolverCall throw falls through to quorum).
+        if let contract = system.contractAddress {
+            let (data, resolver) = try await client.nameNftCall(
+                contract: contract, callData: callData
+            )
+            return .data(resolvedData: data, resolverAddress: resolver, trust: trust)
+        }
         do {
             let (data, resolver) = try await client.universalResolverCall(
                 dnsEncodedName: dnsEncodedName, callData: callData
@@ -444,9 +470,14 @@ final class ENSResolver {
         }
     }
 
-    private func buildColibriTrust(client: ColibriENSClient, block: ENSBlock) -> ENSTrust {
+    private func buildColibriTrust(
+        client: ColibriENSClient,
+        block: ENSBlock,
+        system: NameSystem = .ens
+    ) -> ENSTrust {
         ENSTrust(
             level: .verified,
+            system: system,
             method: .colibri,
             block: block,
             agreed: [client.activeProverHost],
@@ -461,7 +492,8 @@ final class ENSResolver {
         level: ENSTrustLevel = .unverified,
         dnsEncodedName: Data,
         callData: Data,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        system: NameSystem = .ens
     ) async throws -> ConsensusResult {
         let pinned: AnchorCorroboration.PinnedBlock
         do {
@@ -469,10 +501,10 @@ final class ENSResolver {
         } catch {
             throw ConsensusError.allErrored
         }
-        let leg = await legRunner(url, dnsEncodedName, callData, pinned.hash, timeout, settings.enableCcipRead)
+        let leg = await legRunner(url, dnsEncodedName, callData, pinned.hash, timeout, settings.enableCcipRead, system)
         let ensBlock = ENSBlock(number: pinned.number, hash: pinned.hash)
         let trust = buildTrust(
-            level: level, agreed: [url],
+            level: level, system: system, agreed: [url],
             queried: [url], k: 1, m: 1, block: ensBlock
         )
         switch leg.kind {
@@ -488,7 +520,8 @@ final class ENSResolver {
     private func resolveCustomRPC(
         dnsEncodedName: Data,
         callData: Data,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        system: NameSystem = .ens
     ) async throws -> ConsensusResult {
         let trimmed = settings.ensRpcUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed),
@@ -501,7 +534,8 @@ final class ENSResolver {
         do {
             return try await resolveSingleSource(
                 url: url, level: .userConfigured,
-                dnsEncodedName: dnsEncodedName, callData: callData, timeout: timeout
+                dnsEncodedName: dnsEncodedName, callData: callData,
+                timeout: timeout, system: system
             )
         } catch {
             throw ENSResolutionError.customRpcFailed
@@ -510,13 +544,14 @@ final class ENSResolver {
 
     private func buildResult(
         from wave: QuorumWave.Outcome,
-        block: AnchorCorroboration.PinnedBlock
+        block: AnchorCorroboration.PinnedBlock,
+        system: NameSystem = .ens
     ) throws -> ConsensusResult {
         let ensBlock = ENSBlock(number: block.number, hash: block.hash)
 
         func trust(level: ENSTrustLevel, agreed: [URL], dissented: [URL] = []) -> ENSTrust {
             buildTrust(
-                level: level, agreed: agreed, dissented: dissented,
+                level: level, system: system, agreed: agreed, dissented: dissented,
                 queried: wave.queried, k: wave.queried.count, m: wave.mUsed,
                 block: ensBlock
             )
@@ -542,6 +577,7 @@ final class ENSResolver {
 
     private func buildTrust(
         level: ENSTrustLevel,
+        system: NameSystem = .ens,
         agreed: [URL],
         dissented: [URL] = [],
         queried: [URL],
@@ -554,7 +590,7 @@ final class ENSResolver {
         // since a future re-resolution should attempt the full wave).
         let method: ENSResolutionMethod = level == .userConfigured ? .userConfigured : .quorum
         return ENSTrust(
-            level: level, method: method, block: block,
+            level: level, system: system, method: method, block: block,
             agreed: agreed.map(\.hostOrAbsolute),
             dissented: dissented.map(\.hostOrAbsolute),
             queried: queried.map(\.hostOrAbsolute),
@@ -624,10 +660,13 @@ final class ENSResolver {
         }
         let node = ENSNameEncoding.namehash(normalized)
         let callData = Self.addrSelector + node
+        let system = NameSystem.forName(normalized)
 
         let consensus: ConsensusResult
         do {
-            consensus = try await consensusResolve(dnsEncodedName: dnsEncoded, callData: callData)
+            consensus = try await consensusResolve(
+                dnsEncodedName: dnsEncoded, callData: callData, system: system
+            )
         } catch let err as AnchorCorroboration.AnchorError {
             if case .hashDisagreement(let largest, let total, let threshold) = err {
                 return .failure(.anchorDisagreement(
@@ -718,7 +757,13 @@ final class ENSResolver {
         if let cached = reverseCache[key], clock() < cached.expiresAt {
             return cached.result
         }
-        let result = try await fetchReverseName(address: address)
+        var result = try await fetchReverseName(address: address)
+        // Desktop's contract-backed reverse fallback: only when ENS
+        // positively has no primary name (not on transport failure, which
+        // throws above) do we consult the WNS/GNS registries.
+        if case .none = result, let fallback = await contractBackedReverse(address: address) {
+            result = fallback
+        }
         let ttl: TimeInterval
         switch result {
         case .verified, .unverified:
@@ -821,6 +866,89 @@ final class ENSResolver {
         // Every provider failed — transient, not cacheable. Caller's `try?`
         // turns this into a silent .none-ish via XCTUnwrap of the throw.
         throw ReverseError.allProvidersFailed
+    }
+
+    // MARK: - NameNFT reverse fallback (WNS/GNS)
+
+    /// Ask each NameNFT registry's `reverseResolve(address)` in turn and
+    /// return the first claim that forward-verifies. Unlike the UR, the
+    /// NameNFT contracts don't verify reverse records on-chain, so a claim
+    /// only becomes `.verified` after `resolveAddress(claimedName)` round-
+    /// trips to the same address through the full consensus pipeline. A
+    /// claim that fails verification doesn't stop the next system (an
+    /// address can carry a stale .wei record but a valid .gwei primary);
+    /// the first unverified claim is kept as a fallback so its spoof
+    /// warning still surfaces when nothing verifies. Nil = no system
+    /// claimed anything.
+    private func contractBackedReverse(address: EthereumAddress) async -> ENSReverseResolution? {
+        var firstUnverified: ENSReverseResolution?
+        for system in NameSystem.contractBacked {
+            guard let contract = system.contractAddress,
+                  let claimed = await nameNftReverseName(contract: contract, address: address),
+                  !claimed.isEmpty else { continue }
+            let verdict = await verifyContractBackedClaim(claimed, system: system, address: address)
+            if case .verified = verdict { return verdict }
+            if firstUnverified == nil { firstUnverified = verdict }
+        }
+        return firstUnverified
+    }
+
+    private func verifyContractBackedClaim(
+        _ claimed: String,
+        system: NameSystem,
+        address: EthereumAddress
+    ) async -> ENSReverseResolution {
+        // A registry claiming a name outside its own suffix is inherently
+        // unverifiable — forward resolution would consult a different
+        // system than the one that made the claim.
+        guard NameSystem.forName(claimed) == system else {
+            return .unverified(claimedName: claimed)
+        }
+        guard let forward = try? await resolveAddress(claimed),
+              forward.asString().lowercased() == address.asString().lowercased() else {
+            return .unverified(claimedName: claimed)
+        }
+        return .verified(name: claimed)
+    }
+
+    /// Single-shot `reverseResolve(address)` eth_call against a NameNFT
+    /// registry — display-only (same rationale as the ENS reverse path,
+    /// which also skips the consensus wave). Iterates providers on
+    /// transport/parse failure; an RPC error object means the contract
+    /// answered (revert / no record), so that ends the lookup for this
+    /// system rather than burning the remaining providers.
+    private func nameNftReverseName(
+        contract: EthereumAddress,
+        address: EthereumAddress
+    ) async -> String? {
+        guard let callData = try? NameNFTABI.encodeReverseResolve(address: address) else {
+            return nil
+        }
+        let body: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_call",
+            "params": [
+                ["to": contract.asString(), "data": callData.web3.hexString],
+                "latest",
+            ],
+        ]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+            return nil
+        }
+        let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
+        for url in pool.availableProviders() {
+            guard let response = try? await reverseTransport(url, bodyData, timeout),
+                  let envelope = (try? JSONSerialization.jsonObject(with: response)) as? [String: Any]
+            else { continue }
+            if envelope["error"] != nil { return nil }
+            guard let resultHex = envelope["result"] as? String,
+                  let name = NameNFTABI.decodeStringResponse(resultHex) else {
+                continue
+            }
+            return name.isEmpty ? nil : name
+        }
+        return nil
     }
 
     /// Cryptographically-verified reverse via Colibri. A `ColibriError`

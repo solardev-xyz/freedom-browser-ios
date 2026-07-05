@@ -42,7 +42,7 @@ final class ENSResolverTests: XCTestCase {
     private func swarmOutcome(tracker: ActorCallTracker? = nil) -> QuorumWave.LegRunner {
         let encoded = abiEncodeBytes(bzzContenthash())
         let resolver = resolverAddress
-        return { url, _, _, _, _, _ in
+        return { url, _, _, _, _, _, _ in
             if let tracker { await tracker.increment() }
             return QuorumLeg.Outcome(
                 url: url,
@@ -143,7 +143,7 @@ final class ENSResolverTests: XCTestCase {
         let addr = resolverAddress
         let resolver = ENSResolver(
             pool: pool, settings: settings, anchor: makeAnchor(),
-            legRunner: { url, _, _, _, _, _ in
+            legRunner: { url, _, _, _, _, _, _ in
                 QuorumLeg.Outcome(
                     url: url,
                     kind: .data(resolvedData: emptyEncoded, resolverAddress: addr)
@@ -169,7 +169,7 @@ final class ENSResolverTests: XCTestCase {
         let addr = resolverAddress
         let resolver = ENSResolver(
             pool: pool, settings: settings, anchor: makeAnchor(),
-            legRunner: { url, _, _, _, _, _ in
+            legRunner: { url, _, _, _, _, _, _ in
                 QuorumLeg.Outcome(
                     url: url,
                     kind: .data(resolvedData: encoded, resolverAddress: addr)

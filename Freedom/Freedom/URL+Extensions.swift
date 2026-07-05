@@ -7,14 +7,14 @@ extension URL {
         host ?? absoluteString
     }
 
-    /// Lowercased ENS name if the URL's host is `.eth`-suffixed, nil
-    /// otherwise. Used by the scheme handlers + favicon store +
-    /// BrowserTab.reload to detect ENS-origin URLs and bind the name in
-    /// one step. Lowercases internally because custom schemes
-    /// (bzz/ipfs/ipns) preserve host case where standard schemes
-    /// (http/https) normalize it.
+    /// Lowercased Ethereum name if the URL's host carries a resolvable
+    /// name suffix (`.eth` ENS, `.wei` WNS, `.gwei` GNS), nil otherwise.
+    /// Used by the scheme handlers + favicon store + BrowserTab.reload to
+    /// detect name-origin URLs and bind the name in one step. Lowercases
+    /// internally because custom schemes (bzz/ipfs/ipns) preserve host
+    /// case where standard schemes (http/https) normalize it.
     var ensName: String? {
-        let lowered = host?.lowercased()
-        return (lowered?.hasSuffix(".eth") ?? false) ? lowered : nil
+        guard let lowered = host?.lowercased() else { return nil }
+        return NameSystem.navigableSuffixes.contains(where: lowered.hasSuffix) ? lowered : nil
     }
 }
