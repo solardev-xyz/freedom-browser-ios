@@ -458,16 +458,46 @@ final class ENSResolver {
             )
             return .data(resolvedData: data, resolverAddress: resolver, trust: trust)
         } catch ColibriENSError.revert(let revertHex) {
-            // An `OffchainLookup` revert means the name has content behind
-            // a CCIP gateway — NOT "no content". Rethrow so the quorum
-            // fallback (which drives CCIP via `CCIPResolver`) handles it.
-            // Any other verified revert is a genuine "no contenthash"
-            // outcome — same as desktop's NO_CONTENTHASH bucket.
-            if CCIPResolver.selectorOf(revertHex) == CCIPResolver.offchainLookupSelector {
+            switch Self.classifyColibriRevert(revertHex) {
+            case .offchainLookup:
+                // An `OffchainLookup` revert means the name has content
+                // behind a CCIP gateway — NOT "no content". Rethrow so the
+                // quorum fallback (which drives CCIP via `CCIPResolver`)
+                // handles it.
                 throw ColibriENSError.revert(data: revertHex)
+            case .dataless:
+                // Desktop-parity hardening (freedom-browser #116): a revert
+                // carrying no return data is ambiguous — a degraded prover
+                // hop can surface that shape — so it must not mint a
+                // verified "no contenthash". Rethrow as transient so the
+                // quorum fallback re-probes instead.
+                throw ColibriENSError.proofFailed(
+                    message: "verified revert without return data — falling back to quorum"
+                )
+            case .verifiedNotFound:
+                // Verified revert with a real (non-CCIP) payload — a genuine
+                // "no contenthash" outcome, same as desktop's NO_CONTENTHASH
+                // bucket.
+                return .notFound(reason: .noContenthash, trust: trust)
             }
-            return .notFound(reason: .noContenthash, trust: trust)
         }
+    }
+
+    /// How a verified Colibri revert should be handled. Pure so the
+    /// decision table is unit-testable without a live prover.
+    enum ColibriRevertClass: Equatable {
+        case offchainLookup
+        case dataless
+        case verifiedNotFound
+    }
+
+    static func classifyColibriRevert(_ revertHex: String) -> ColibriRevertClass {
+        if CCIPResolver.selectorOf(revertHex) == CCIPResolver.offchainLookupSelector {
+            return .offchainLookup
+        }
+        let stripped = revertHex.lowercased().hasPrefix("0x")
+            ? revertHex.dropFirst(2) : revertHex[...]
+        return stripped.isEmpty ? .dataless : .verifiedNotFound
     }
 
     private func buildColibriTrust(

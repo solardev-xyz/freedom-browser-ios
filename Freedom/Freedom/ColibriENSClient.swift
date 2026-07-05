@@ -122,6 +122,17 @@ final class ColibriENSClient {
         client.provers = [resolvedProverURL]
         client.zkProof = settings.ensColibriZkProof
         client.privacyMode = .basic
+        // Explicit freshness window for "latest"-tag proofs (desktop parity,
+        // freedom-browser #116). The 1.1.30 verifier rejects proofs whose
+        // block timestamp is older than this, closing the stale-proof gap —
+        // set explicitly rather than relying on the binding's default so a
+        // future default change upstream can't silently widen our window.
+        client.maxLatestAgeSeconds = 60
+        // `checkpointz` is left empty on purpose: since 1.1.30 the binding
+        // falls back to its per-chain public checkpointz defaults at
+        // runtime (plus witness verification across the Weak Subjectivity
+        // Period in zk mode), which is exactly the hardened behavior we
+        // asked corpus-core for.
         // `.basic` (PAP) mode does optimistic `eth_call` execution against
         // execution-layer data (`eth_getProof`, `eth_getCode`) fetched from
         // these RPCs and verified locally against the prover-attested state

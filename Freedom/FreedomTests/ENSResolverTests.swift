@@ -207,4 +207,26 @@ final class ENSResolverTests: XCTestCase {
             XCTFail("expected notFound, got \(error)")
         }
     }
+
+    // MARK: - Colibri revert classification (freedom-browser #116 parity)
+
+    /// A verified revert only counts as "no contenthash" when it carries
+    /// return data. A dataless revert can be a degraded prover hop and
+    /// must fall back to the quorum path instead of minting a verified
+    /// negative.
+    func testColibriRevertClassification() {
+        XCTAssertEqual(ENSResolver.classifyColibriRevert("0x"), .dataless)
+        XCTAssertEqual(ENSResolver.classifyColibriRevert(""), .dataless)
+        // Any real payload (e.g. an unknown UR custom error selector) is a
+        // verified negative.
+        XCTAssertEqual(ENSResolver.classifyColibriRevert("0x77209fe8"), .verifiedNotFound)
+        XCTAssertEqual(
+            ENSResolver.classifyColibriRevert("0xdeadbeef00000000"), .verifiedNotFound
+        )
+        // OffchainLookup (EIP-3668) routes to the CCIP-capable quorum path.
+        let lookup = encodeOffchainLookupRevert(
+            address: resolverAddress, urls: ["https://gateway.example/{data}"]
+        ).web3.hexString
+        XCTAssertEqual(ENSResolver.classifyColibriRevert(lookup), .offchainLookup)
+    }
 }
