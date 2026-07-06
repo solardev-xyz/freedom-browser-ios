@@ -13,7 +13,9 @@ import XCTest
 @MainActor
 final class AdblockUpdateLiveTests: XCTestCase {
     private static let nodeURL = URL(string: "http://127.0.0.1:1699")!
-    private static let feedOwner = "0xf6aa84e06Ed0C5fF6DD707fba16F0c1BA459FCE0"
+    /// The production feed (see AdblockUpdateFeed) — the e2e exercises the
+    /// exact feed shipped clients will read.
+    private static let feedOwner = "0xb818FF019BC15BC3DfbdaD4CE0ab66A6f74e8f1E"
 
     private var root: URL!
 
@@ -121,7 +123,7 @@ final class AdblockUpdateLiveTests: XCTestCase {
         guard case .applied(let version) = outcome else {
             return XCTFail("expected .applied, got \(outcome)")
         }
-        XCTAssertGreaterThanOrEqual(version, 4, "live feed is at v4+")
+        XCTAssertGreaterThanOrEqual(version, 1, "production feed starts at v1")
         XCTAssertEqual(activated.count, 1)
         XCTAssertGreaterThanOrEqual(compiled.count, 10, "all live iOS shards compiled (15 at v4)")
 

@@ -23,21 +23,23 @@ enum AdblockUpdateFeed {
     /// `Topic.fromString` parity), 64-char lowercase hex.
     static let feedTopicHex = FeedTopic.fromString(feedTopicString)
 
-    // PLACEHOLDERS — filled once the production publisher key exists. Until
-    // then `isTrustAnchorConfigured` is false and the update service stays
-    // dormant, so the app ships on bundled lists (the permanent floor) with
-    // no live updates. Do NOT enable the update path against a zero address.
+    // The production publisher's address (key ceremony 2026-07-06; the key
+    // lives only in the publisher's deployment secrets and the password
+    // manager — see docs/adblock-production-key-ceremony.md). One key
+    // currently fills both roles; they are pinned separately for
+    // key-rotation headroom.
     //
     // The env overrides let a dev/simulator build point at a test publisher's
     // feed without recompiling; production relies on the hardcoded constants.
     private static let zeroAddress = "0x0000000000000000000000000000000000000000"
+    private static let productionPublisher = "0xb818FF019BC15BC3DfbdaD4CE0ab66A6f74e8f1E"
 
     static var feedOwnerAddress: String {
-        ProcessInfo.processInfo.environment["FREEDOM_ADBLOCK_FEED_OWNER"] ?? zeroAddress
+        ProcessInfo.processInfo.environment["FREEDOM_ADBLOCK_FEED_OWNER"] ?? productionPublisher
     }
 
     static var manifestSigAddress: String {
-        ProcessInfo.processInfo.environment["FREEDOM_ADBLOCK_SIG_ADDRESS"] ?? zeroAddress
+        ProcessInfo.processInfo.environment["FREEDOM_ADBLOCK_SIG_ADDRESS"] ?? productionPublisher
     }
 
     /// Whether real publisher-key constants have been compiled in. The update
