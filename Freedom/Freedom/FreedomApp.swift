@@ -28,6 +28,8 @@ struct FreedomApp: App {
     @State private var swarmFeedStore: SwarmFeedStore
     @State private var swarmPublishHistoryStore: SwarmPublishHistoryStore
     @State private var adblock: AdblockService
+    @State private var adblockUpdate: AdblockUpdateService
+    @Environment(\.scenePhase) private var scenePhase
     private let modelContainer: ModelContainer
 
     init() {
@@ -144,6 +146,10 @@ struct FreedomApp: App {
             )
             let adblockService = AdblockService(settings: settings)
             self._adblock = State(wrappedValue: adblockService)
+            self._adblockUpdate = State(wrappedValue: AdblockUpdateService(
+                settings: settings,
+                io: .live(adblock: adblockService, bee: swarmBee)
+            ))
             self._tabStore = State(wrappedValue: TabStore(
                 context: container.mainContext,
                 historyStore: history,
@@ -200,6 +206,22 @@ struct FreedomApp: App {
                 // (same identifier) finish in ms; cold compiles ~1s for the
                 // largest shards. Off the main path so first frame isn't blocked.
                 .task { await adblock.compileBundledIfNeeded() }
+                // Check the Swarm feed for fresher lists. Delayed so the
+                // embedded node has time to come up; a feed-unavailable
+                // outcome doesn't burn the 6h window, so a slow node start
+                // just means the foreground hook below retries. No-op until
+                // the trust anchor is compiled in.
+                .task {
+                    try? await Task.sleep(for: .seconds(30))
+                    await adblockUpdate.checkIfDue()
+                }
+                // Foreground retry: the 6h gate makes this a cheap no-op most
+                // of the time, and it picks up checks the launch task missed
+                // (node not up yet, app long-suspended).
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active else { return }
+                    Task { await adblockUpdate.checkIfDue() }
+                }
                 // Process-killed-mid-publish rows have no in-memory state
                 // to resume from; flip them to `failed` once on cold start.
                 // Off the init critical path — fetch is unbounded and

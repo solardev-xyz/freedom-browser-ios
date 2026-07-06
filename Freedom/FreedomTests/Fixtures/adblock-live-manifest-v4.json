@@ -1,0 +1,188 @@
+{
+  "schema": 1,
+  "version": 4,
+  "generated_at": "2026-07-06T16:38:45.713Z",
+  "engines": {
+    "adblock_rs": "0.12.3"
+  },
+  "platforms": {
+    "desktop": {
+      "lists": [
+        {
+          "category": "ads",
+          "list_id": "easylist",
+          "title": "EasyList",
+          "source_url": "https://easylist.to/easylist/easylist.txt",
+          "license": "GPLv3+ / CC BY-SA 3.0+",
+          "ref": "f1036f7a2f617ed4c673e96ee971fb1c062c4e05e045218a64b2fb3a77a2bd8b",
+          "sha256": "f3b30be935527322c53733389d5d6cd98a077d61a9745bd06edf02c082a74e8e",
+          "bytes": 2057012,
+          "rule_count": 77693
+        },
+        {
+          "category": "privacy",
+          "list_id": "easyprivacy",
+          "title": "EasyPrivacy",
+          "source_url": "https://easylist.to/easylist/easyprivacy.txt",
+          "license": "GPLv3+ / CC BY-SA 3.0+",
+          "ref": "0ce50dc3708aedd098fb56beb936b68c3f69482ca563c1875de0ebe6cd4737de",
+          "sha256": "96621e06013cb103104ea2662fb768f876eff74be007af38f904ccc3ce3e4b54",
+          "bytes": 1487478,
+          "rule_count": 55501
+        },
+        {
+          "category": "cookies",
+          "list_id": "easylist-cookies",
+          "title": "Easylist Cookie List",
+          "source_url": "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt",
+          "license": "GPLv3+ / CC BY-SA 3.0+",
+          "ref": "e0db0f49edd0ab67985db72dd3455711998d9c3e6099621ada89c4b4780da90b",
+          "sha256": "3f2c5331c97633cddc067226d66ba742787f757c655d766e6912557c06cb45d8",
+          "bytes": 873809,
+          "rule_count": 24965
+        },
+        {
+          "category": "annoyances",
+          "list_id": "easylist-annoyances",
+          "title": "Fanboy's Annoyance List",
+          "source_url": "https://secure.fanboy.co.nz/fanboy-annoyance.txt",
+          "license": "GPLv3+ / CC BY-SA 3.0+",
+          "ref": "47af1bb1c6d66745bc64ae2054754a6bf8e4ef68de798c1ce93c129ebcae4148",
+          "sha256": "bf98a3e64ec1dbb9868f32bd210a208ff39e5d4ef050090d78d79bb9d20fa041",
+          "bytes": 2119703,
+          "rule_count": 53234
+        }
+      ]
+    },
+    "ios": {
+      "lists": [
+        {
+          "list_id": "easylist",
+          "shards": [
+            {
+              "filename": "easylist-1.json",
+              "ref": "018d06f6d8038e4c657656e0f92c2b8244e09589c8057e7a4e87e66b26eb42f0",
+              "sha256": "a0a20509dcb40c6feb889bd5e78e5d6c3bbfe9a2da49ad73687e60dc768d8f49",
+              "bytes": 1899979,
+              "rule_count": 19141
+            },
+            {
+              "filename": "easylist-2.json",
+              "ref": "4e4f9781e679706aa5eecd5de6545d7bcf1d352b5db065de7c936f2c819dea90",
+              "sha256": "21e2d5db48e98a483a8f27b71d452143ad459306e8af9cf1a3551d4fac6c683d",
+              "bytes": 1899936,
+              "rule_count": 19125
+            },
+            {
+              "filename": "easylist-3.json",
+              "ref": "ca8e1e8d417d5864ad3c3f4efd4670b1aeddeb1a2c00c9842aa7822d69d9a871",
+              "sha256": "17a5d0cf80cd823ee6e8a06a7b1425cb17dd2af6d114a2d49e0a178caae4dee7",
+              "bytes": 1899980,
+              "rule_count": 18406
+            },
+            {
+              "filename": "easylist-4.json",
+              "ref": "b0a78c49f7d97c44a2da3d583cc048a0d6912ff1cebe1d4d0a22501684694335",
+              "sha256": "d2a875a99755c4404d2f396b9ecc005e46c2c7fa7d64dc2ddc720cb3fc4eb0e3",
+              "bytes": 1899984,
+              "rule_count": 15093
+            },
+            {
+              "filename": "easylist-5.json",
+              "ref": "e149ba8ece15e7d781a72df1be764d013fcb9da4677ce9b967a5d40b04339c58",
+              "sha256": "716619757c4f377ee49140b93ebb33350d3e930353f8e9e94cc889f7f736c489",
+              "bytes": 358453,
+              "rule_count": 2328
+            }
+          ]
+        },
+        {
+          "list_id": "easyprivacy",
+          "shards": [
+            {
+              "filename": "easyprivacy-1.json",
+              "ref": "592c99ba3325045acfd9ac11f68a64ac3d8951805d3f820315fd87feaf86681a",
+              "sha256": "25cb4f78642a208b031367f7d341c6ec3e32a6262315ccf3e4f68bb8708b8b6b",
+              "bytes": 1899958,
+              "rule_count": 18288
+            },
+            {
+              "filename": "easyprivacy-2.json",
+              "ref": "a54783fc9f8057c53f498c8b7c087efdaffffb5147d2a0374850723f0b5053a5",
+              "sha256": "deaf1b93b3ce0775766501b31f5f4faaf8897edb54ecba32fabca57fe9051c1a",
+              "bytes": 1899905,
+              "rule_count": 17960
+            },
+            {
+              "filename": "easyprivacy-3.json",
+              "ref": "4515dbc4f7a0707a477ea919292af5e4bfa82696e700d675ed09726d202fdec3",
+              "sha256": "b82f8a4a829f82a14c7f225118eee14169e93fd7d27a39e4ab8b3a89d033de4a",
+              "bytes": 1899941,
+              "rule_count": 18202
+            },
+            {
+              "filename": "easyprivacy-4.json",
+              "ref": "e72e6945f51622b0a3b89bb1644e9b7d3b87ba7460593e5e7701ba9caf807161",
+              "sha256": "2e1b8dfb4a7f685726c8e7a421de47fb327b707559054023a6a285272a73b0b3",
+              "bytes": 180554,
+              "rule_count": 963
+            }
+          ]
+        },
+        {
+          "list_id": "easylist-cookies",
+          "shards": [
+            {
+              "filename": "easylist-cookies-1.json",
+              "ref": "ff442ab384e0aabaf42004b6d4d8ab034d3d91373e84b9fb16656ba190420aaa",
+              "sha256": "ff10842a500fc02274ce10371c1c8305cf9579563bdf145ec0b45b995c926777",
+              "bytes": 1899965,
+              "rule_count": 18175
+            },
+            {
+              "filename": "easylist-cookies-2.json",
+              "ref": "d93cc36607fa0cb4b77ddefac9bc413e7a8f5a898e629414df2a5e61b5c78fa8",
+              "sha256": "7c27e2693eeeb5daf0fe57eedd0d072b65a4a54192d12e6b7367769e2a5efe5b",
+              "bytes": 1103362,
+              "rule_count": 6721
+            }
+          ]
+        },
+        {
+          "list_id": "easylist-annoyances",
+          "shards": [
+            {
+              "filename": "easylist-annoyances-1.json",
+              "ref": "10c907fde4e05210b58c856d30b2eea5582582c3ea6824d6a9a56281650cccef",
+              "sha256": "79f08e927b4fe45a07ead5fb3fdbdaf8bcbf0be96f2e1412c87ea11a7a44d66d",
+              "bytes": 1899982,
+              "rule_count": 17335
+            },
+            {
+              "filename": "easylist-annoyances-2.json",
+              "ref": "161f0afa996ddb7760321d2a8010e9e82a15e308013e74c983554058e00525d2",
+              "sha256": "425202306827d523912b38dc8fde05f48f8cfd2d169eed3c68e5013dba54b56b",
+              "bytes": 1899956,
+              "rule_count": 17529
+            },
+            {
+              "filename": "easylist-annoyances-3.json",
+              "ref": "f17e2303fd6354f46dd12ec67751bc25029309dd383a1a860cf529552096dee6",
+              "sha256": "4cf6be8070cc1b4d6fc7b2a69b389e08b5fe27e0c39afb1233491a7c33c5e70d",
+              "bytes": 1899922,
+              "rule_count": 12403
+            },
+            {
+              "filename": "easylist-annoyances-4.json",
+              "ref": "ec3feec04f8215fb0948a75a8f62fd5f82acee43a8823bb92566b86dbbd5013e",
+              "sha256": "b90f6dea7c003bf2bc33279ac358620310e0d50f0b58981990e798c8c78759d6",
+              "bytes": 352041,
+              "rule_count": 2215
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "sig": "0x5b5fc017a4c11faa3908ef27d86b3ca902954692fc697cf61da2e812d7e5014076cbe6bc37efa1a8981a7a71d1810fbec0252295bbb452dff3c7c74976677c7f1b"
+}

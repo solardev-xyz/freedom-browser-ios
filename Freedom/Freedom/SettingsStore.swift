@@ -136,6 +136,11 @@ final class SettingsStore {
     var adblockAllowlist: [String] {
         didSet { defaults.set(adblockAllowlist, forKey: Keys.adblockAllowlist) }
     }
+    /// Keep filter lists fresh from the Swarm update feed. Default on; a
+    /// no-op until the feed trust anchor is compiled in (AdblockUpdateFeed).
+    var adblockAutoUpdateEnabled: Bool {
+        didSet { defaults.set(adblockAutoUpdateEnabled, forKey: Keys.adblockAutoUpdateEnabled) }
+    }
     /// Whether the embedded Swarm (bee) node should be running. User-
     /// togglable from the Swarm node sheet. Default true preserves the
     /// historical behavior. False means the node never starts on app
@@ -183,6 +188,7 @@ final class SettingsStore {
             Keys.adblockCookiesEnabled: false,
             Keys.adblockAnnoyancesEnabled: false,
             Keys.adblockAllowlist: [String](),
+            Keys.adblockAutoUpdateEnabled: true,
             Keys.swarmNodeEnabled: true,
             Keys.ipfsNodeEnabled: true,
         ])
@@ -214,6 +220,7 @@ final class SettingsStore {
         self.adblockCookiesEnabled = defaults.bool(forKey: Keys.adblockCookiesEnabled)
         self.adblockAnnoyancesEnabled = defaults.bool(forKey: Keys.adblockAnnoyancesEnabled)
         self.adblockAllowlist = defaults.stringArray(forKey: Keys.adblockAllowlist) ?? []
+        self.adblockAutoUpdateEnabled = defaults.bool(forKey: Keys.adblockAutoUpdateEnabled)
         self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
         self.ipfsNodeEnabled = defaults.bool(forKey: Keys.ipfsNodeEnabled)
     }
@@ -284,6 +291,7 @@ final class SettingsStore {
         static let adblockCookiesEnabled = "adblockCookiesEnabled"
         static let adblockAnnoyancesEnabled = "adblockAnnoyancesEnabled"
         static let adblockAllowlist = "adblockAllowlist"
+        static let adblockAutoUpdateEnabled = "adblockAutoUpdateEnabled"
         static let swarmNodeEnabled = "swarmNodeEnabled"
         static let ipfsNodeEnabled = "ipfsNodeEnabled"
     }

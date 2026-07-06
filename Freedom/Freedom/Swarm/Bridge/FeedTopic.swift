@@ -9,7 +9,12 @@ import web3
 /// must be able to read/write the same feed on both.
 enum FeedTopic {
     static func derive(origin: String, name: String) -> String {
-        let combined = "\(origin)/\(name)"
-        return Data(combined.utf8).web3.keccak256.web3.hexString.web3.noHexPrefix
+        fromString("\(origin)/\(name)")
+    }
+
+    /// bee-js `Topic.fromString` parity: keccak256 of the raw string, 64
+    /// lowercase hex chars, no `0x`.
+    static func fromString(_ string: String) -> String {
+        Data(string.utf8).web3.keccak256.web3.hexString.web3.noHexPrefix
     }
 }

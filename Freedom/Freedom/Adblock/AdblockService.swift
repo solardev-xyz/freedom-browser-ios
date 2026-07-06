@@ -66,14 +66,19 @@ final class AdblockService {
     @ObservationIgnored private var compiledByCategory: [Category: [WKContentRuleList]] = [:]
     @ObservationIgnored private(set) var manifest: BundledAdblockManifest?
     @ObservationIgnored private var attachments: [Attachment] = []
+    /// Where the active lists come from: the bundled resources (floor) or a
+    /// Swarm-delivered update on disk (see `AdblockUpdateService`).
+    @ObservationIgnored private(set) var listSource: AdblockListSource
 
     init(settings: SettingsStore) {
         self.settings = settings
         self.store = WKContentRuleListStore.default()
+        self.listSource = AdblockUpdateService.currentSource()
     }
 
-    /// Loads `metadata.json`, compiles each shard via `WKContentRuleListStore`.
-    /// Idempotent — a second call while compiling or already ready is a no-op.
+    /// Loads `metadata.json` (from the applied update if one exists, else the
+    /// bundle), compiles each shard via `WKContentRuleListStore`. Idempotent —
+    /// a second call while compiling or already ready is a no-op.
     func compileBundledIfNeeded() async {
         guard status == .idle else { return }
         guard store != nil else {
@@ -83,37 +88,115 @@ final class AdblockService {
         }
         status = .compiling
 
+        // A broken on-disk update must never brick blocking: fall back to
+        // the bundled floor if compiling the updated lists fails.
+        if case .updated = listSource {
+            do {
+                try await compileAll(source: listSource)
+                finishCompile()
+                return
+            } catch {
+                log.error("updated lists failed to compile, falling back to bundled: \(String(describing: error), privacy: .public)")
+                listSource = .bundled
+                compiledByCategory = [:]
+            }
+        }
+
         do {
-            let manifest = try loadManifest()
-            self.manifest = manifest
-
-            for category in Category.allCases {
-                guard let entry = manifest.category(category) else {
-                    log.warning("manifest missing \(category.rawValue, privacy: .public)")
-                    continue
-                }
-                var compiled: [WKContentRuleList] = []
-                for shard in entry.shards {
-                    let list = try await compile(category: category, shard: shard)
-                    compiled.append(list)
-                }
-                compiledByCategory[category] = compiled
-                log.info("compiled \(compiled.count) shard(s) for \(category.rawValue, privacy: .public)")
-            }
-
-            // Defensive: rewrite any non-canonical allowlist entries
-            // (URL-form, www-prefixed, port-suffixed) back to canonical form.
-            let normalized = settings.adblockAllowlist.compactMap { normalizedHost($0) }
-            let deduped = Array(Set(normalized)).sorted()
-            if deduped != settings.adblockAllowlist {
-                settings.adblockAllowlist = deduped
-            }
-
-            status = .ready
-            refreshAllAttachments()
+            try await compileAll(source: .bundled)
+            finishCompile()
         } catch {
             log.error("compile failed: \(String(describing: error), privacy: .public)")
             status = .failed(message: error.localizedDescription)
+        }
+    }
+
+    /// Compile every category's shards for `source` into `compiledByCategory`.
+    private func compileAll(source: AdblockListSource) async throws {
+        let manifest = try loadManifest(source: source)
+        self.manifest = manifest
+
+        for category in Category.allCases {
+            guard let entry = manifest.category(category) else {
+                log.warning("manifest missing \(category.rawValue, privacy: .public)")
+                continue
+            }
+            var compiled: [WKContentRuleList] = []
+            for shard in entry.shards {
+                let list = try await compile(shard: shard, source: source)
+                compiled.append(list)
+            }
+            compiledByCategory[category] = compiled
+            log.info("compiled \(compiled.count) shard(s) for \(category.rawValue, privacy: .public) [\(source.debugLabel, privacy: .public)]")
+        }
+    }
+
+    private func finishCompile() {
+        // Defensive: rewrite any non-canonical allowlist entries
+        // (URL-form, www-prefixed, port-suffixed) back to canonical form.
+        let normalized = settings.adblockAllowlist.compactMap { normalizedHost($0) }
+        let deduped = Array(Set(normalized)).sorted()
+        if deduped != settings.adblockAllowlist {
+            settings.adblockAllowlist = deduped
+        }
+
+        status = .ready
+        refreshAllAttachments()
+    }
+
+    // MARK: - Swarm updates (AdblockUpdateService hooks)
+
+    /// Compile every shard of a staged (not yet promoted) update. Runs before
+    /// the update is activated so a WebKit compile failure aborts the update
+    /// with the active lists untouched. Compiled lists land in WebKit's cache
+    /// under this feed version's identifiers, so activation is a cache hit.
+    func precompileUpdate(manifest: BundledAdblockManifest, dir: URL, feedVersion: Int) async throws {
+        let source = AdblockListSource.updated(feedVersion: feedVersion, dir: dir)
+        for entry in manifest.categories {
+            for shard in entry.shards {
+                _ = try await compile(shard: shard, source: source)
+            }
+        }
+    }
+
+    /// Swap the active lists to a promoted update. Everything is verified and
+    /// precompiled by now, so failures are unexpected; on one, fall back
+    /// through the normal boot path (which lands on the bundled floor).
+    func activateUpdate(feedVersion: Int, dir: URL) async {
+        let source = AdblockListSource.updated(feedVersion: feedVersion, dir: dir)
+        do {
+            compiledByCategory = [:]
+            try await compileAll(source: source)
+            listSource = source
+            finishCompile()
+            log.info("activated filter-list update v\(feedVersion)")
+            await removeStaleCompiles()
+        } catch {
+            log.error("update activation failed: \(String(describing: error), privacy: .public)")
+            compiledByCategory = [:]
+            status = .idle
+            await compileBundledIfNeeded()
+        }
+    }
+
+    /// Garbage-collect compiled rule lists from superseded update versions.
+    /// Each applied update compiles ~15 lists (several MB each) under
+    /// `freedom-adblock.v<N>.*` identifiers in WebKit's store; without this
+    /// they accumulate forever. The unversioned bundled compiles are kept —
+    /// they are the permanent floor.
+    private func removeStaleCompiles() async {
+        guard let store else { return }
+        let keepPrefix = listSource.identifierPrefix
+        let identifiers: [String] = await withCheckedContinuation { cont in
+            store.getAvailableContentRuleListIdentifiers { cont.resume(returning: $0 ?? []) }
+        }
+        for identifier in identifiers
+        where identifier.hasPrefix("freedom-adblock.v") && !identifier.hasPrefix(keepPrefix) {
+            store.removeContentRuleList(forIdentifier: identifier) { error in
+                if let error {
+                    log.warning("stale rule-list cleanup failed for \(identifier, privacy: .public): \(String(describing: error), privacy: .public)")
+                }
+            }
         }
     }
 
@@ -328,15 +411,18 @@ final class AdblockService {
 
     // MARK: - Compile pipeline
 
+    @discardableResult
     private func compile(
-        category: Category,
-        shard: BundledAdblockManifest.Shard
+        shard: BundledAdblockManifest.Shard,
+        source: AdblockListSource
     ) async throws -> WKContentRuleList {
-        let identifier = "freedom-adblock.\(shard.filenameStem)"
+        // Updated lists compile under version-scoped identifiers so a lookUp
+        // can never return a stale compile from a different list version.
+        let identifier = "\(source.identifierPrefix)\(shard.filenameStem)"
         if let cached = await lookUp(identifier: identifier) {
             return cached
         }
-        let json = try loadShardJSON(filename: shard.filename)
+        let json = try loadShardJSON(filename: shard.filename, source: source)
         return try await compile(identifier: identifier, json: json)
     }
 
@@ -372,21 +458,32 @@ final class AdblockService {
         }
     }
 
-    // MARK: - Bundle I/O
+    // MARK: - List I/O (bundle or applied-update dir)
 
-    private func loadManifest() throws -> BundledAdblockManifest {
-        let url = try resourceURL(forResource: "metadata", withExtension: "json")
-        let data = try Data(contentsOf: url)
+    private func loadManifest(source: AdblockListSource) throws -> BundledAdblockManifest {
+        let data: Data
+        switch source {
+        case .bundled:
+            let url = try resourceURL(forResource: "metadata", withExtension: "json")
+            data = try Data(contentsOf: url)
+        case .updated(_, let dir):
+            data = try Data(contentsOf: dir.appendingPathComponent("metadata.json"))
+        }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(BundledAdblockManifest.self, from: data)
     }
 
-    private func loadShardJSON(filename: String) throws -> String {
-        let stem = (filename as NSString).deletingPathExtension
-        let ext = (filename as NSString).pathExtension
-        let url = try resourceURL(forResource: stem, withExtension: ext)
-        return try String(contentsOf: url, encoding: .utf8)
+    private func loadShardJSON(filename: String, source: AdblockListSource) throws -> String {
+        switch source {
+        case .bundled:
+            let stem = (filename as NSString).deletingPathExtension
+            let ext = (filename as NSString).pathExtension
+            let url = try resourceURL(forResource: stem, withExtension: ext)
+            return try String(contentsOf: url, encoding: .utf8)
+        case .updated(_, let dir):
+            return try String(contentsOf: dir.appendingPathComponent(filename), encoding: .utf8)
+        }
     }
 
     /// Look up a resource that may be in `Resources/adblock/` (folder
@@ -409,6 +506,31 @@ final class AdblockService {
         weak var controller: WKUserContentController?
         var currentHost: String?
         var attachedLists: [WKContentRuleList]
+    }
+}
+
+/// Where the active filter lists come from. Bundled resources are the
+/// permanent floor; `.updated` points at a Swarm-delivered update directory
+/// written by `AdblockUpdateService` (Application Support/adblock/updated).
+enum AdblockListSource: Equatable {
+    case bundled
+    case updated(feedVersion: Int, dir: URL)
+
+    /// WKContentRuleList identifier prefix. Version-scoped for updates so
+    /// WebKit's compile cache can never serve a shard from a different list
+    /// version under the same identifier.
+    var identifierPrefix: String {
+        switch self {
+        case .bundled: return "freedom-adblock."
+        case .updated(let feedVersion, _): return "freedom-adblock.v\(feedVersion)."
+        }
+    }
+
+    var debugLabel: String {
+        switch self {
+        case .bundled: return "bundled"
+        case .updated(let feedVersion, _): return "updated v\(feedVersion)"
+        }
     }
 }
 

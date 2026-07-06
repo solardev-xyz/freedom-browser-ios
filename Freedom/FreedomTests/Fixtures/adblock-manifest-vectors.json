@@ -1,0 +1,65 @@
+{
+  "signer_address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+  "canonical": "{\"engines\":{\"adblock_rs\":\"0.12.3\"},\"generated_at\":\"2026-07-06T00:00:00.000Z\",\"platforms\":{\"desktop\":{\"lists\":[{\"bytes\":123456,\"category\":\"ads\",\"license\":\"GPLv3+ / CC BY-SA 3.0+\",\"list_id\":\"easylist\",\"ref\":\"abababababababababababababababababababababababababababababababab\",\"rule_count\":789,\"sha256\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"source_url\":\"https://easylist.to/easylist/easylist.txt\",\"title\":\"EasyList\"},{\"bytes\":1,\"category\":\"privacy\",\"license\":\"GPLv3+ / CC BY-SA 3.0+\",\"list_id\":\"easyprivacy\",\"ref\":\"1212121212121212121212121212121212121212121212121212121212121212\",\"rule_count\":0,\"sha256\":\"3434343434343434343434343434343434343434343434343434343434343434\",\"source_url\":\"https://easylist.to/easylist/easyprivacy.txt\",\"title\":null}]},\"ios\":{\"lists\":[{\"list_id\":\"easylist\",\"shards\":[{\"bytes\":1899965,\"filename\":\"easylist-1.json\",\"ref\":\"5656565656565656565656565656565656565656565656565656565656565656\",\"rule_count\":18175,\"sha256\":\"7878787878787878787878787878787878787878787878787878787878787878\"},{\"bytes\":1103362,\"filename\":\"easylist-2.json\",\"ref\":\"9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a\",\"rule_count\":6721,\"sha256\":\"bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc\"}]}]}},\"schema\":1,\"version\":7}",
+  "sig": "0xef7c94b7854cc82a2d0c5288fa676786c79c08f9f144a5ff80065df1c3a5e48c7b9cd3b62acd3f846ebc7c71a6fc44e4d98d79c430815cc2976cf56314149b6c1c",
+  "manifest_pretty": {
+    "schema": 1,
+    "version": 7,
+    "generated_at": "2026-07-06T00:00:00.000Z",
+    "engines": {
+      "adblock_rs": "0.12.3"
+    },
+    "platforms": {
+      "desktop": {
+        "lists": [
+          {
+            "category": "ads",
+            "list_id": "easylist",
+            "title": "EasyList",
+            "source_url": "https://easylist.to/easylist/easylist.txt",
+            "license": "GPLv3+ / CC BY-SA 3.0+",
+            "ref": "abababababababababababababababababababababababababababababababab",
+            "sha256": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            "bytes": 123456,
+            "rule_count": 789
+          },
+          {
+            "category": "privacy",
+            "list_id": "easyprivacy",
+            "title": null,
+            "source_url": "https://easylist.to/easylist/easyprivacy.txt",
+            "license": "GPLv3+ / CC BY-SA 3.0+",
+            "ref": "1212121212121212121212121212121212121212121212121212121212121212",
+            "sha256": "3434343434343434343434343434343434343434343434343434343434343434",
+            "bytes": 1,
+            "rule_count": 0
+          }
+        ]
+      },
+      "ios": {
+        "lists": [
+          {
+            "list_id": "easylist",
+            "shards": [
+              {
+                "filename": "easylist-1.json",
+                "ref": "5656565656565656565656565656565656565656565656565656565656565656",
+                "sha256": "7878787878787878787878787878787878787878787878787878787878787878",
+                "bytes": 1899965,
+                "rule_count": 18175
+              },
+              {
+                "filename": "easylist-2.json",
+                "ref": "9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+                "sha256": "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc",
+                "bytes": 1103362,
+                "rule_count": 6721
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "sig": "0xef7c94b7854cc82a2d0c5288fa676786c79c08f9f144a5ff80065df1c3a5e48c7b9cd3b62acd3f846ebc7c71a6fc44e4d98d79c430815cc2976cf56314149b6c1c"
+  }
+}

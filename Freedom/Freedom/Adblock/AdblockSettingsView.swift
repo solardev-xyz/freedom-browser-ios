@@ -9,6 +9,13 @@ struct AdblockSettingsView: View {
     @State private var isAddingSite = false
     @State private var newSiteText = ""
 
+    private var versionLabel: String {
+        if case .updated(let feedVersion, _) = adblock.listSource {
+            return "List version (update \(feedVersion))"
+        }
+        return "Bundled version"
+    }
+
     var body: some View {
         Form {
             Section {
@@ -32,10 +39,14 @@ struct AdblockSettingsView: View {
 
             if let manifest = adblock.manifest {
                 Section {
-                    LabeledContent("Bundled version", value: manifest.version)
+                    LabeledContent(versionLabel, value: manifest.version)
                     LabeledContent("Converter", value: manifest.libVersion)
+                    if AdblockUpdateFeed.isTrustAnchorConfigured {
+                        @Bindable var settings = settings
+                        Toggle("Keep lists up to date", isOn: $settings.adblockAutoUpdateEnabled)
+                    }
                 } header: {
-                    Text("About the bundled lists")
+                    Text("About the lists")
                 } footer: {
                     Text("Filter data is © the respective list authors and dual-licensed GPLv3+ / CC BY-SA 3.0+. EasyList family — see easylist.to.")
                 }
