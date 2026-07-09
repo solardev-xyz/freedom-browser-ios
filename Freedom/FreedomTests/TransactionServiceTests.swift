@@ -32,14 +32,21 @@ final class TransactionServiceTests: XCTestCase {
 
     /// Deterministic RPC responses keyed by method name. The transport
     /// records every payload the service emits so we can assert on the
-    /// wire format.
+    /// wire format. `prepare` fires its three RPCs concurrently (async
+    /// let), so the transport closure runs on multiple threads at once —
+    /// the lock is what makes the `@unchecked Sendable` claim true
+    /// (unsynchronized, this corrupted the heap and crashed whichever
+    /// test ran next, a long-standing intermittent suite flake).
     private final class StubRPC: @unchecked Sendable {
+        private let lock = NSLock()
         var responses: [String: [Data]] = [:]
         private(set) var capturedBodies: [Data] = []
 
         var transport: WalletRPC.Transport {
             { [weak self] _, body in
                 guard let self else { throw URLError(.cancelled) }
+                self.lock.lock()
+                defer { self.lock.unlock() }
                 self.capturedBodies.append(body)
                 let parsed = try JSONSerialization.jsonObject(with: body) as? [String: Any]
                 let method = parsed?["method"] as? String ?? ""
