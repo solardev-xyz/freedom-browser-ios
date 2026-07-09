@@ -91,6 +91,13 @@ struct QRScannerView: UIViewControllerRepresentable {
                 .forEach { $0.frame = view.bounds }
         }
 
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            // Allow re-scanning the same QR on a fresh visit (retry
+            // after a failed session) — dedupe only within one stay.
+            lastCode = nil
+        }
+
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
             sessionQueue.async { [session] in

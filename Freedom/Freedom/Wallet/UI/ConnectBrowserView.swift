@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// Entry point for openlv remote signing: scan the QR freedom desktop
-/// shows (or paste its link) to let that browser send signing requests
-/// to this wallet. Every request still gets its own approval sheet —
-/// this screen only establishes the encrypted session.
+/// shows (or paste its link). Desktop creates one session per job —
+/// connecting an account AND every later signing request each show
+/// their own QR — so the scanner stays available regardless of session
+/// state, and a new scan supersedes whatever session was live.
 @MainActor
 struct ConnectBrowserView: View {
     @Environment(OpenLVWalletSession.self) private var session
@@ -16,12 +17,10 @@ struct ConnectBrowserView: View {
     var body: some View {
         List {
             statusSection
-            if !session.isActive {
-                scanSection
-                pasteSection
-            }
+            scanSection
+            pasteSection
         }
-        .navigationTitle("Connect Browser")
+        .navigationTitle("Scan from Desktop")
         .navigationBarTitleDisplayMode(.inline)
     }
 
@@ -29,7 +28,7 @@ struct ConnectBrowserView: View {
         Section {
             switch session.status {
             case .idle:
-                Text("Scan the QR code shown in Freedom on your computer to approve its signing requests on this phone.")
+                Text("Scan the QR code shown in Freedom on your computer — to connect this wallet, or to approve a signing request. Each request on the desktop shows its own code.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             case .connecting:

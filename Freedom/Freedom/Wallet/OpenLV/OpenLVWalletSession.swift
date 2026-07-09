@@ -75,6 +75,12 @@ final class OpenLVWalletSession {
     func start(uri: String) async throws {
         let engine = self.engine ?? engineFactory()
         self.engine = engine
+        // A fresh scan always wins: the desktop mints one session per
+        // job, so whatever session was live is stale the moment the
+        // user scans a new QR. Close it and deny anything parked.
+        engine.stop()
+        resolvePendingApproval(.denied)
+        sessionAccount = nil
         engine.requestHandler = { [weak self] method, params in
             await self?.handleRequest(method: method, params: params)
                 ?? .error(code: -32603, message: "Session closed.")

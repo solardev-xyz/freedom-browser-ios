@@ -316,8 +316,30 @@ final class OpenLVWalletSessionTests: XCTestCase {
         session.stop()
         let resolved = await response
         XCTAssertEqual(errorCode(of: resolved), 4001)
-        XCTAssertEqual(engine.stopCount, 1)
+        // One stop from start()'s supersede, one from stop() itself.
+        XCTAssertEqual(engine.stopCount, 2)
         XCTAssertEqual(session.status, .idle)
+    }
+
+    /// Desktop mints one session per job, so scanning a new QR must
+    /// supersede whatever session is live — close it and deny anything
+    /// parked, without requiring an explicit disconnect first.
+    func testNewScanSupersedesLiveSession() async throws {
+        try await session.start(uri: "openlv://first@1?h=00&k=00&p=mqtt&s=x")
+        engine.statusHandler?(.connected)
+        async let parked = session.handleRequest(method: "eth_requestAccounts", params: [])
+        let deadline = Date().addingTimeInterval(5)
+        while session.pendingApproval == nil, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        try await session.start(uri: "openlv://second@1?h=00&k=00&p=mqtt&s=x")
+
+        let superseded = await parked
+        XCTAssertEqual(errorCode(of: superseded), 4001)
+        XCTAssertNil(session.pendingApproval)
+        XCTAssertEqual(engine.startedURIs.count, 2)
+        XCTAssertEqual(session.status, .connecting)
     }
 
     func testStartWiresEngineAndTracksStatus() async throws {
@@ -350,6 +372,12 @@ final class OpenLVWalletSessionTests: XCTestCase {
                 from: "https://freedom.florianglatz.eth.limo/#openlv://abc@1?h=x&s=wss%3A%2F%2Fbroker%2Fmqtt"
             ),
             "openlv://abc@1?h=x&s=wss://broker/mqtt"
+        )
+        // The bridge page's "Open in Freedom" button: custom scheme with
+        // the session URI percent-encoded into the fragment.
+        XCTAssertEqual(
+            OpenLVWalletSession.extractOpenLVURI(from: "freedom://openlv#openlv%3A%2F%2Fabc%401%3Fp%3Dmqtt"),
+            "openlv://abc@1?p=mqtt"
         )
         XCTAssertNil(OpenLVWalletSession.extractOpenLVURI(from: "https://example.com/#not-a-session"))
         XCTAssertNil(OpenLVWalletSession.extractOpenLVURI(from: "hello"))

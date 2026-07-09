@@ -122,7 +122,7 @@ struct WalletHomeView: View {
             ConnectBrowserView()
         } label: {
             HStack {
-                Label("Connect desktop browser", systemImage: "qrcode.viewfinder")
+                Label("Scan from Freedom desktop", systemImage: "qrcode.viewfinder")
                 Spacer()
                 if openlvSession.isActive {
                     Circle()
