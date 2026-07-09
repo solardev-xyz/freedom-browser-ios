@@ -111,6 +111,35 @@ final class TransactionService {
         }
     }
 
+    /// Quote for a dapp-shaped tx: skip the 3-RPC `prepare` when the
+    /// request supplied every override (common for established dapps
+    /// that compute their own gas). Partial overrides still go through
+    /// prepare and patch the missing slots. Shared by the dapp bridge
+    /// and the openlv wallet endpoint.
+    func quote(
+        for decoded: TransactionParamsCoder.Decoded,
+        on chain: Chain
+    ) async throws -> Quote {
+        if let nonce = decoded.nonce,
+           let gasPrice = decoded.gasPriceWei,
+           let gasLimit = decoded.gasLimit {
+            return Quote(from: decoded.from, nonce: nonce, gasPrice: gasPrice, gasLimit: gasLimit)
+        }
+        let estimated = try await prepare(
+            from: decoded.from,
+            to: decoded.to,
+            valueWei: decoded.valueWei,
+            data: decoded.data,
+            on: chain
+        )
+        return Quote(
+            from: decoded.from,
+            nonce: decoded.nonce ?? estimated.nonce,
+            gasPrice: decoded.gasPriceWei ?? estimated.gasPrice,
+            gasLimit: decoded.gasLimit ?? estimated.gasLimit
+        )
+    }
+
     /// Build → sign → broadcast. Caller pre-committed to `quote`. Returns
     /// the tx hash on success; on broadcast failure the nonce is
     /// invalidated so the next `prepare` re-fetches from chain.

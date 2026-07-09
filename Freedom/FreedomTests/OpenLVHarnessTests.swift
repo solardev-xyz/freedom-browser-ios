@@ -1,3 +1,5 @@
+import SwiftData
+import web3
 import WebKit
 import XCTest
 @testable import Freedom
@@ -71,6 +73,70 @@ final class OpenLVHarnessTests: XCTestCase {
         XCTAssertEqual(response(2)?["result"] as? String, Self.signature)
     }
 
+    /// Same wire, full native pipeline: `OpenLVWalletSession` +
+    /// `WebViewOpenLVEngine` + a real vault, with the approval parking
+    /// resolved programmatically (standing in for the sheets). The
+    /// signature the host records must recover to the vault account —
+    /// exactly the verification desktop's remote signer performs.
+    func testWalletSessionEndToEnd() async throws {
+        guard let base = ProcessInfo.processInfo.environment["OPENLV_HARNESS_URL"] else {
+            throw XCTSkip("OPENLV_HARNESS_URL not set — run scripts/openlv-e2e.sh")
+        }
+
+        let savedChainID = UserDefaults.standard.integer(forKey: WalletDefaults.activeChainID)
+        let vaultService = "com.freedom.wallet.test.\(UUID().uuidString)"
+        let vault = Vault(crypto: VaultCrypto(service: vaultService, preferred: .deviceBound))
+        try await vault.create(mnemonic: Mnemonic(phrase: hardhatMnemonic))
+
+        let bundle = try ChainStackBundle()
+        let (services, containers) = try makeWalletServices(vault: vault, bundle: bundle)
+        _ = containers // kept alive for the duration of the test
+        let chainStore = bundle.chainStore
+        let session = OpenLVWalletSession(
+            services: services,
+            activeChain: { chainStore.chain(id: Chain.defaultChain.id) ?? Chain.defaultChain }
+        )
+        defer {
+            session.stop()
+            UserDefaults.standard.set(savedChainID, forKey: WalletDefaults.activeChainID)
+            try? VaultCrypto(service: vaultService).wipe()
+        }
+
+        // Stand-in for the approval sheets: approve whatever parks.
+        let approver = Task { @MainActor in
+            while !Task.isCancelled {
+                if session.pendingApproval != nil {
+                    session.resolvePendingApproval(.approved)
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        defer { approver.cancel() }
+
+        let uri = try await fetchURI(base: base)
+        try await session.start(uri: uri)
+
+        let state = try await pollUntilDone(base: base, timeout: 90)
+        XCTAssertNil(state["error"] as? String)
+
+        let exchanges = state["exchanges"] as? [[String: Any]] ?? []
+        XCTAssertEqual(exchanges.map { $0["method"] as? String },
+                       ["eth_requestAccounts", "wallet_switchEthereumChain", "personal_sign"])
+
+        let accounts = (exchanges.first?["response"] as? [String: Any])?["result"] as? [String]
+        XCTAssertEqual(accounts?.first?.lowercased(), hardhatAccount0)
+
+        // Recover the recorded signature — must be the vault account.
+        let signPayload = exchanges.last?["response"] as? [String: Any]
+        let signatureHex = try XCTUnwrap(signPayload?["result"] as? String)
+        let sigBytes = try XCTUnwrap(signatureHex.web3.hexData)
+        let message = Data("freedom openlv ios harness".utf8)
+        var prefixed = Data("\u{19}Ethereum Signed Message:\n\(message.count)".utf8)
+        prefixed.append(message)
+        let recovered = try KeyUtil.recoverPublicKey(message: prefixed.web3.keccak256, signature: sigBytes)
+        XCTAssertEqual(recovered.lowercased(), hardhatAccount0)
+    }
+
     // MARK: - Harness control surface
 
     private func fetchJSON(_ url: URL) async throws -> [String: Any] {
@@ -78,9 +144,20 @@ final class OpenLVHarnessTests: XCTestCase {
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    /// Each test consumes one host session; `/reset` reloads the host
+    /// page, and the fresh session's URI appears shortly after.
     private func fetchURI(base: String) async throws -> String {
-        let payload = try await fetchJSON(XCTUnwrap(URL(string: "\(base)/uri")))
-        return try XCTUnwrap(payload["uri"] as? String, "harness has no session URI yet")
+        _ = try? await fetchJSON(XCTUnwrap(URL(string: "\(base)/reset")))
+        let url = try XCTUnwrap(URL(string: "\(base)/uri"))
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if let uri = (try? await fetchJSON(url))?["uri"] as? String { return uri }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        // The harness is up (env var set) but broken — that's a failure,
+        // not a skip.
+        XCTFail("harness never produced a session URI after reset")
+        throw CancellationError()
     }
 
     private func pollUntilDone(base: String, timeout: TimeInterval) async throws -> [String: Any] {

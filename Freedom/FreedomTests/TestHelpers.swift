@@ -74,6 +74,32 @@ final class ChainStackBundle {
 /// docs match a single source.
 let hardhatMnemonic = "test test test test test test test test test test test junk"
 
+/// Address `hardhatMnemonic` derives at m/44'/60'/0'/0/0 — lowercase, as
+/// `KeyUtil.recoverPublicKey` returns it.
+let hardhatAccount0 = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+
+/// One-stop `WalletServices` over a `ChainStackBundle` for wallet-endpoint
+/// tests: in-memory permission + auto-approve stores. The containers are
+/// returned so callers can keep them alive for the test's duration.
+@MainActor
+func makeWalletServices(
+    vault: Vault,
+    bundle: ChainStackBundle
+) throws -> (services: WalletServices, containers: [ModelContainer]) {
+    let permissionContainer = try inMemoryContainer(for: DappPermission.self)
+    let autoApproveContainer = try inMemoryContainer(for: AutoApproveRule.self)
+    let services = WalletServices(
+        vault: vault,
+        chainRegistry: bundle.registry,
+        chainStore: bundle.chainStore,
+        permissionStore: PermissionStore(context: permissionContainer.mainContext),
+        autoApproveStore: AutoApproveStore(context: autoApproveContainer.mainContext),
+        transactionService: TransactionService(vault: vault, registry: bundle.registry),
+        ensResolver: ENSResolver(pool: bundle.mainnetPool, settings: bundle.settings)
+    )
+    return (services, [permissionContainer, autoApproveContainer])
+}
+
 final class MutableClock {
     var now: Date
     init(now: Date) { self.now = now }

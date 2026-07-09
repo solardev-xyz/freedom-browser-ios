@@ -261,7 +261,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
 
         let typedData: TypedData
         do {
-            typedData = try decodeTypedData(params[1])
+            typedData = try TypedDataCoder.decode(params[1])
         } catch {
             return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.invalidParams, message: "Invalid typed-data payload: \(error.localizedDescription)"))
         }
@@ -332,7 +332,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         // depend on each other, and the sheet only shows once both land.
         // Swallows reverse errors: recipientName is decorative, the hex
         // is canonical regardless.
-        async let quoteTask = composeQuote(decoded: decoded, on: chain)
+        async let quoteTask = transactionService.quote(for: decoded, on: chain)
         async let nameTask: ENSReverseResolution = (try? services.ensResolver.reverseResolve(address: decoded.to)) ?? .none
 
         let quote: TransactionService.Quote
@@ -371,7 +371,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
     ) async {
         let quote: TransactionService.Quote
         do {
-            quote = try await composeQuote(decoded: decoded, on: chain)
+            quote = try await transactionService.quote(for: decoded, on: chain)
         } catch {
             return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.internalError, message: "Couldn't estimate gas: \(error.localizedDescription)"))
         }
@@ -434,49 +434,6 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         case .denied:
             reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.userRejected, message: "User rejected the request."))
         }
-    }
-
-    /// Skip the 3-RPC `prepare` call when the dapp supplied every override
-    /// (common for established dapps that compute their own gas). Partial
-    /// overrides still go through prepare and patch the missing slots.
-    private func composeQuote(
-        decoded: TransactionParamsCoder.Decoded,
-        on chain: Chain
-    ) async throws -> TransactionService.Quote {
-        if let nonce = decoded.nonce,
-           let gasPrice = decoded.gasPriceWei,
-           let gasLimit = decoded.gasLimit {
-            return TransactionService.Quote(
-                from: decoded.from, nonce: nonce, gasPrice: gasPrice, gasLimit: gasLimit
-            )
-        }
-        let estimated = try await transactionService.prepare(
-            from: decoded.from,
-            to: decoded.to,
-            valueWei: decoded.valueWei,
-            data: decoded.data,
-            on: chain
-        )
-        return TransactionService.Quote(
-            from: decoded.from,
-            nonce: decoded.nonce ?? estimated.nonce,
-            gasPrice: decoded.gasPriceWei ?? estimated.gasPrice,
-            gasLimit: decoded.gasLimit ?? estimated.gasLimit
-        )
-    }
-
-    /// Dapps pass `typedData` either as a JSON string or as a JSON object —
-    /// decode both via JSONSerialization, then through the typed decoder.
-    private func decodeTypedData(_ param: Any) throws -> TypedData {
-        let data: Data
-        if let string = param as? String {
-            data = Data(string.utf8)
-        } else if let object = param as? [String: Any] {
-            data = try JSONSerialization.data(withJSONObject: object)
-        } else {
-            throw PersonalSignCoder.Error.badParams
-        }
-        return try JSONDecoder().decode(TypedData.self, from: data)
     }
 
     // MARK: - Event emission

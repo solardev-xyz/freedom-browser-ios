@@ -11,6 +11,7 @@ struct WalletHomeView: View {
     @Environment(PermissionStore.self) private var permissions
     @Environment(ENSResolver.self) private var ensResolver
     @Environment(TabStore.self) private var tabStore
+    @Environment(OpenLVWalletSession.self) private var openlvSession
 
     @AppStorage(WalletDefaults.activeChainID) private var activeChainID: Int = Chain.defaultChain.id
 
@@ -73,6 +74,7 @@ struct WalletHomeView: View {
                 chainPicker
                 assetsCard
                 sendReceiveButtons
+                connectBrowserRow
                 activeTabSiteCard
             }
             .padding(20)
@@ -111,6 +113,33 @@ struct WalletHomeView: View {
             }
             .buttonStyle(PrimaryActionStyle())
         }
+    }
+
+    /// Openlv remote signing: scan the desktop browser's QR and approve
+    /// its requests here. Shows live status once a session is up.
+    private var connectBrowserRow: some View {
+        NavigationLink {
+            ConnectBrowserView()
+        } label: {
+            HStack {
+                Label("Connect desktop browser", systemImage: "qrcode.viewfinder")
+                Spacer()
+                if openlvSession.isActive {
+                    Circle()
+                        .fill(.green)
+                        .frame(width: 8, height: 8)
+                    Text("Connected")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
     }
 
     private var chainPicker: some View {

@@ -6,6 +6,11 @@ import Foundation
 struct OriginIdentity: Equatable, Hashable, Sendable {
     enum Scheme: String, Sendable {
         case ens, bzz, ipfs, ipns, rad, https, http, other
+        /// A remote browser connected over an openlv session (QR scan /
+        /// pasted link). Constructed directly by `OpenLVWalletSession`
+        /// for its approval sheets — never parsed from a tab URL and
+        /// never persisted to a permission store.
+        case openlv
     }
 
     let key: String
@@ -19,14 +24,20 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
     var isEligibleForWallet: Bool {
         switch scheme {
         case .https, .ens, .bzz: return true
-        case .http, .ipfs, .ipns, .rad, .other: return false
+        // .openlv never arrives via a tab — its requests bypass the
+        // dapp bridge entirely, so tab-side eligibility stays false.
+        case .http, .ipfs, .ipns, .rad, .other, .openlv: return false
         }
     }
 
     /// ENS keys are stored bare but users expect to see `ens://foo.eth` in
     /// approval sheets — reassemble the scheme for UI rendering only.
     var displayString: String {
-        scheme == .ens ? "ens://\(key)" : key
+        switch scheme {
+        case .ens: return "ens://\(key)"
+        case .openlv: return "Connected browser"
+        default: return key
+        }
     }
 
     /// Human label for approval-sheet scheme subtitles.
@@ -40,6 +51,7 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
         case .ipns: return "IPNS name"
         case .rad: return "Radicle"
         case .other: return "Unknown origin"
+        case .openlv: return "Remote signing session (OpenLV)"
         }
     }
 

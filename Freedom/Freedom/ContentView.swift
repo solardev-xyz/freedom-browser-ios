@@ -13,6 +13,7 @@ struct ContentView: View {
     @Environment(Vault.self) private var vault
     @Environment(BeeIdentityCoordinator.self) private var beeIdentity
     @Environment(SettingsStore.self) private var settings
+    @Environment(OpenLVWalletSession.self) private var openlvSession
     @Environment(\.scenePhase) private var scenePhase
 
     // Drives the menu's bookmark-toggle row (star fill + label text).
@@ -52,27 +53,52 @@ struct ContentView: View {
 
     private var activeURL: URL? { tabStore.activeTab?.displayURL }
 
-    /// Swipe-dismiss goes through `resolvePendingApproval(.denied)` on the
-    /// tab, which is the single point that resumes the bridge's parked
-    /// continuation.
-    private var approvalBinding: Binding<ApprovalRequest?> {
+    /// Sheet binding for a parked approval: swipe-dismiss (set to nil)
+    /// resolves it as denied — the single point that resumes the parked
+    /// continuation, for all three approval sources.
+    private func approvalBinding(
+        get: @escaping () -> ApprovalRequest?,
+        deny: @escaping () -> Void
+    ) -> Binding<ApprovalRequest?> {
         Binding(
-            get: { tabStore.activeTab?.pendingEthereumApproval },
+            get: get,
             set: { newValue in
-                if newValue == nil {
-                    tabStore.activeTab?.resolvePendingApproval(.denied)
-                }
+                if newValue == nil { deny() }
             }
         )
     }
 
+    private var approvalBinding: Binding<ApprovalRequest?> {
+        approvalBinding(
+            get: { tabStore.activeTab?.pendingEthereumApproval },
+            deny: { tabStore.activeTab?.resolvePendingApproval(.denied) }
+        )
+    }
+
     private var swarmApprovalBinding: Binding<ApprovalRequest?> {
-        Binding(
+        approvalBinding(
             get: { tabStore.activeTab?.pendingSwarmApproval },
-            set: { newValue in
-                if newValue == nil {
-                    tabStore.activeTab?.resolvePendingSwarmApproval(.denied)
-                }
+            deny: { tabStore.activeTab?.resolvePendingSwarmApproval(.denied) }
+        )
+    }
+
+    /// The openlv sheet presents a MIRROR of `pendingApproval`, not the
+    /// live value: desktop signing jobs send back-to-back requests
+    /// (chain-switch pre-flight → transaction), and the next request
+    /// parks faster than the previous sheet's dismiss animation. SwiftUI
+    /// silently drops a presentation started mid-dismissal, so the
+    /// mirror only advances when no dismissal is in flight; `onDismiss`
+    /// picks up whatever parked during the animation.
+    @State private var presentedOpenlvApproval: ApprovalRequest?
+    @State private var openlvSheetSettling = false
+
+    private var openlvApprovalBinding: Binding<ApprovalRequest?> {
+        approvalBinding(
+            get: { presentedOpenlvApproval },
+            deny: {
+                presentedOpenlvApproval = nil
+                openlvSheetSettling = true
+                openlvSession.resolvePendingApproval(.denied)
             }
         )
     }
@@ -142,19 +168,21 @@ struct ContentView: View {
             IpfsNodeSheet(isPresented: $isShowingIpfsNode)
         }
         .sheet(item: approvalBinding) { approval in
-            switch approval.kind {
-            case .connect:
-                ApproveConnectSheet(approval: approval)
-            case .personalSign(let preview):
-                ApproveSignSheet(approval: approval, kind: .personalSign(preview))
-            case .typedData(let typed):
-                ApproveSignSheet(approval: approval, kind: .typedData(typed))
-            case .sendTransaction(let details):
-                ApproveTxSheet(approval: approval, details: details)
-            case .switchChain(let details):
-                ApproveChainSwitchSheet(approval: approval, details: details)
-            case .swarmConnect, .swarmPublish, .swarmFeedAccess:
-                EmptyView()  // routed via swarmApprovalBinding's sheet
+            EthereumApprovalSheet(approval: approval)
+        }
+        .sheet(item: openlvApprovalBinding, onDismiss: {
+            openlvSheetSettling = false
+            presentedOpenlvApproval = openlvSession.pendingApproval
+        }) { approval in
+            EthereumApprovalSheet(approval: approval)
+        }
+        .onChange(of: openlvSession.pendingApproval?.id) { _, approvalID in
+            guard approvalID != nil else { return }
+            // A sheet can't present over another — the wallet sheet
+            // (where the user just scanned) has to step aside first.
+            isShowingWallet = false
+            if presentedOpenlvApproval == nil, !openlvSheetSettling {
+                presentedOpenlvApproval = openlvSession.pendingApproval
             }
         }
         .sheet(item: swarmApprovalBinding) { approval in

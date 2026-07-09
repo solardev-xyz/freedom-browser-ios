@@ -20,6 +20,7 @@ struct FreedomApp: App {
     @State private var transactionService: TransactionService
     @State private var permissionStore: PermissionStore
     @State private var autoApproveStore: AutoApproveStore
+    @State private var openlvSession: OpenLVWalletSession
     @State private var beeIdentity: BeeIdentityCoordinator
     @State private var beeReadiness: BeeReadiness
     @State private var stampService: StampService
@@ -83,6 +84,11 @@ struct FreedomApp: App {
                 transactionService: txService,
                 ensResolver: resolver
             )
+            let openlv = OpenLVWalletSession(
+                services: wallet,
+                activeChain: { WalletDefaults.activeChain(in: chainStore) }
+            )
+            self._openlvSession = State(wrappedValue: openlv)
             self._vault = State(wrappedValue: vault)
             self._chainRegistry = State(wrappedValue: registry)
             self._chainStore = State(wrappedValue: chainStore)
@@ -196,6 +202,16 @@ struct FreedomApp: App {
                 .environment(swarmFeedStore)
                 .environment(swarmPublishHistoryStore)
                 .environment(adblock)
+                .environment(openlvSession)
+                // openlv links arrive via the custom `freedom://` scheme
+                // (and, once the production bridge deploy serves an AASA
+                // file + the Associated Domains entitlement lands, via
+                // universal links on the bridge origin). Anything else
+                // is not ours to handle here.
+                .onOpenURL { url in
+                    guard let uri = OpenLVWalletSession.extractOpenLVURI(from: url.absoluteString) else { return }
+                    Task { try? await openlvSession.start(uri: uri) }
+                }
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
                 .task { startIpfsIfNeeded() }

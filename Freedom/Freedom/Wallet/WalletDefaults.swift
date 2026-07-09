@@ -7,6 +7,17 @@ import Foundation
 enum WalletDefaults {
     static let activeChainID = "walletActiveChainID"
 
+    /// Single read path for the active chain — the per-tab RPCRouters,
+    /// the openlv session, and the wallet UI must all agree on it.
+    /// Falls back to the default chain when nothing was persisted yet
+    /// or the persisted chain was since removed from the store.
+    @MainActor
+    static func activeChain(in chainStore: ChainStore) -> Chain {
+        let raw = UserDefaults.standard.integer(forKey: activeChainID)
+        let id = raw == 0 ? Chain.defaultChain.id : raw
+        return chainStore.chain(id: id) ?? Chain.defaultChain
+    }
+
     /// Single write path for the active chain. Use this from both the
     /// wallet UI's chain picker and the bridge's `wallet_switchEthereumChain`
     /// handler — guarantees exactly one `walletActiveChainChanged`

@@ -218,11 +218,7 @@ final class BrowserTab {
         let router = RPCRouter(
             registry: wallet.chainRegistry,
             permissionStore: wallet.permissionStore,
-            activeChain: {
-                let raw = UserDefaults.standard.integer(forKey: WalletDefaults.activeChainID)
-                let id = raw == 0 ? Chain.defaultChain.id : raw
-                return chainStore.chain(id: id) ?? Chain.defaultChain
-            }
+            activeChain: { WalletDefaults.activeChain(in: chainStore) }
         )
         self.walletBridge = EthereumBridge(
             tab: self,

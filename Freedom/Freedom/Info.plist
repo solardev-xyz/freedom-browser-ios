@@ -9,7 +9,20 @@
 		<string>_p2p._udp</string>
 		<string>_p2p._tcp</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Freedom uses the camera to scan the connection QR code shown by Freedom on your computer.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Freedom uses Face ID to unlock your wallet.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>baby.freedom.browser</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>freedom</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
