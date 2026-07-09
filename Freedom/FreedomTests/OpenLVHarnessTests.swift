@@ -137,6 +137,102 @@ final class OpenLVHarnessTests: XCTestCase {
         XCTAssertEqual(recovered.lowercased(), hardhatAccount0)
     }
 
+    /// The wallet endpoint builds the ENTIRE transaction itself — nonce
+    /// from its tracker, gas from its oracle, legacy EIP-155 signature,
+    /// broadcast through its own RPC pool. This runs that path against a
+    /// local anvil (chain-id 100, prefunded hardhat accounts) and
+    /// asserts the transaction actually MINES — separating "signed and
+    /// broadcast without error" from "constructed something the chain
+    /// accepts". Needs anvil; scripts/openlv-e2e.sh starts it.
+    func testTransactionBroadcastMinesOnLocalChain() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let base = env["OPENLV_HARNESS_URL"] else {
+            throw XCTSkip("OPENLV_HARNESS_URL not set — run scripts/openlv-e2e.sh")
+        }
+        guard let anvil = env["OPENLV_ANVIL_URL"], !anvil.isEmpty else {
+            throw XCTSkip("OPENLV_ANVIL_URL not set — anvil unavailable")
+        }
+
+        let savedChainID = UserDefaults.standard.integer(forKey: WalletDefaults.activeChainID)
+        let vaultService = "com.freedom.wallet.test.\(UUID().uuidString)"
+        let vault = Vault(crypto: VaultCrypto(service: vaultService, preferred: .deviceBound))
+        try await vault.create(mnemonic: Mnemonic(phrase: hardhatMnemonic))
+
+        let bundle = try ChainStackBundle()
+        // Point the wallet's Gnosis RPCs at anvil — nonce fetch, gas
+        // price, estimation, and the broadcast all go through this pool.
+        bundle.chainStore.updateRPCURLs(forChainID: Chain.defaultChain.id, [anvil])
+
+        let (services, containers) = try makeWalletServices(vault: vault, bundle: bundle)
+        _ = containers
+        let chainStore = bundle.chainStore
+        let session = OpenLVWalletSession(
+            services: services,
+            activeChain: { chainStore.chain(id: Chain.defaultChain.id) ?? Chain.defaultChain }
+        )
+        defer {
+            session.stop()
+            UserDefaults.standard.set(savedChainID, forKey: WalletDefaults.activeChainID)
+            try? VaultCrypto(service: vaultService).wipe()
+        }
+
+        let approver = Task { @MainActor in
+            while !Task.isCancelled {
+                if session.pendingApproval != nil {
+                    session.resolvePendingApproval(.approved)
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        defer { approver.cancel() }
+
+        let uri = try await fetchURI(base: base, mode: "tx")
+        try await session.start(uri: uri)
+
+        let state = try await pollUntilDone(base: base, timeout: 90)
+        XCTAssertNil(state["error"] as? String)
+
+        let exchanges = state["exchanges"] as? [[String: Any]] ?? []
+        XCTAssertEqual(exchanges.map { $0["method"] as? String },
+                       ["eth_requestAccounts", "wallet_switchEthereumChain", "eth_sendTransaction"])
+
+        let txPayload = exchanges.last?["response"] as? [String: Any]
+        let hash = try XCTUnwrap(txPayload?["result"] as? String,
+                                 "no tx hash — response was \(String(describing: txPayload))")
+        XCTAssertEqual(hash.count, 66)
+
+        // The decisive part: the receipt must exist and be successful.
+        let receipt = try await pollReceipt(anvil: anvil, hash: hash, timeout: 30)
+        XCTAssertEqual(receipt["status"] as? String, "0x1", "tx mined but reverted")
+        XCTAssertNotNil(receipt["blockNumber"])
+    }
+
+    private func pollReceipt(
+        anvil: String, hash: String, timeout: TimeInterval
+    ) async throws -> [String: Any] {
+        let url = try XCTUnwrap(URL(string: anvil))
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "jsonrpc": "2.0", "id": 1,
+                "method": "eth_getTransactionReceipt", "params": [hash],
+            ])
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            if let receipt = envelope?["result"] as? [String: Any] {
+                return receipt
+            }
+            if Date() > deadline {
+                XCTFail("tx \(hash) never got a receipt — not mined")
+                throw CancellationError()
+            }
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
+
     // MARK: - Harness control surface
 
     private func fetchJSON(_ url: URL) async throws -> [String: Any] {
@@ -145,9 +241,12 @@ final class OpenLVHarnessTests: XCTestCase {
     }
 
     /// Each test consumes one host session; `/reset` reloads the host
-    /// page, and the fresh session's URI appears shortly after.
-    private func fetchURI(base: String) async throws -> String {
-        _ = try? await fetchJSON(XCTUnwrap(URL(string: "\(base)/reset")))
+    /// page, and the fresh session's URI appears shortly after. `mode`
+    /// picks the request sequence the host sends (nil: personal_sign;
+    /// "tx": eth_sendTransaction).
+    private func fetchURI(base: String, mode: String? = nil) async throws -> String {
+        let reset = mode.map { "\(base)/reset?mode=\($0)" } ?? "\(base)/reset"
+        _ = try? await fetchJSON(XCTUnwrap(URL(string: reset)))
         let url = try XCTUnwrap(URL(string: "\(base)/uri"))
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {

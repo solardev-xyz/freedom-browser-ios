@@ -21,7 +21,20 @@ fi
 
 OPENLV_HARNESS_PORT="$PORT" node "$BROWSER_REPO/scripts/openlv-ios-harness.js" &
 HARNESS_PID=$!
-trap 'kill "$HARNESS_PID" 2>/dev/null || true' EXIT
+
+# Local chain for the broadcast test: chain-id 100 so the wallet treats
+# it as Gnosis; anvil prefunds the hardhat accounts the tests sign with.
+ANVIL_PID=""
+ANVIL_URL=""
+if command -v anvil >/dev/null 2>&1; then
+  anvil --chain-id 100 --port 8545 --silent &
+  ANVIL_PID=$!
+  ANVIL_URL="http://127.0.0.1:8545"
+else
+  echo "anvil not found — skipping the broadcast test" >&2
+fi
+
+trap 'kill "$HARNESS_PID" 2>/dev/null || true; [ -n "$ANVIL_PID" ] && kill "$ANVIL_PID" 2>/dev/null || true' EXIT
 
 echo "waiting for the harness session URI on port $PORT ..."
 for _ in $(seq 1 30); do
@@ -36,7 +49,8 @@ curl -fsS "http://127.0.0.1:$PORT/uri" | grep -q 'openlv://' || {
 }
 
 cd "$SCRIPT_DIR/../Freedom"
-TEST_RUNNER_OPENLV_HARNESS_URL="http://127.0.0.1:$PORT" xcodebuild test \
+env TEST_RUNNER_OPENLV_HARNESS_URL="http://127.0.0.1:$PORT" \
+  TEST_RUNNER_OPENLV_ANVIL_URL="$ANVIL_URL" xcodebuild test \
   -project Freedom.xcodeproj \
   -scheme Freedom \
   -destination "platform=iOS Simulator,name=$SIM_NAME" \
