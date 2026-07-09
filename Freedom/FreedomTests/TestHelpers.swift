@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
+import UIKit
 import web3
+import WebKit
 @testable import Freedom
 
 /// Builds a `ModelContainer` backed by an ephemeral in-memory store for
@@ -166,4 +168,15 @@ extension Data {
     var hexString: String {
         map { String(format: "%02x", $0) }.joined()
     }
+}
+
+/// Attaches a hidden WKWebView to the test host's key window — detached
+/// WKWebViews get their timers and network throttled, which stalls
+/// anything driven from inside the page (used by the OpenLV engine tests).
+@MainActor
+func attachToKeyWindow(_ webView: WKWebView) {
+    UIApplication.shared.connectedScenes
+        .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+        .first?
+        .addSubview(webView)
 }

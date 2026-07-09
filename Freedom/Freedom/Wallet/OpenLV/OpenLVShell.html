@@ -1,0 +1,41 @@
+<!doctype html>
+<!--
+  Host page for WebViewOpenLVEngine's hidden WKWebView. Never visible;
+  exists only to give OpenLVShim.js (and the openlv SDK) a JS runtime
+  with WebSocket, WebRTC, and crypto.subtle. Loaded from the app bundle
+  via loadFileURL — file:// is a secure context (crypto.subtle works),
+  but it refuses ES-module imports (opaque origin + CORS), so both
+  scripts are classic: the SDK as an IIFE exposing window.OpenLV, then
+  the shim consuming it.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Freedom openlv session</title>
+</head>
+<body>
+  <script>
+    // Surface shim/SDK boot failures to native — a module that fails to
+    // load or throws would otherwise just silently never signal ready.
+    // Capture phase so resource-load errors (script src) are seen too.
+    (function () {
+      var post = function (message) {
+        window.webkit.messageHandlers.openlv.postMessage({
+          type: 'status', status: 'failed', message: message,
+        });
+      };
+      window.addEventListener('error', function (event) {
+        var where = event.filename ? ' [' + event.filename + ':' + event.lineno + ':' + event.colno + ']' : '';
+        var stack = event.error && event.error.stack ? ' stack: ' + event.error.stack : '';
+        post((event.message || ('failed to load ' + (event.target && event.target.src))) + where + stack);
+      }, true);
+      window.addEventListener('unhandledrejection', function (event) {
+        var reason = event.reason || {};
+        post('unhandled rejection: ' + (reason.message || reason) + (reason.stack ? ' stack: ' + reason.stack : ''));
+      });
+    })();
+  </script>
+  <script src="./openlv.iife.js"></script>
+  <script src="./OpenLVShim.js"></script>
+</body>
+</html>
