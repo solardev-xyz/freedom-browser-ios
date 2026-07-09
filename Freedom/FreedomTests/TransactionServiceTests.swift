@@ -81,6 +81,9 @@ final class TransactionServiceTests: XCTestCase {
             "eth_getTransactionCount": [try rpcResult("0xa")],  // 10
             "eth_gasPrice": [try rpcResult("0x77359400")],      // 2 gwei
             "eth_estimateGas": [try rpcResult("0x5208")],       // 21000
+            // Base fee low enough that the quote clears the oracle's
+            // floor — the floor's own math is covered in GasOracleTests.
+            "eth_getBlockByNumber": [try rpcResult(["baseFeePerGas": "0x1"])],
         ]
 
         let service = makeService(vault: vault, stub: stub)
@@ -98,7 +101,10 @@ final class TransactionServiceTests: XCTestCase {
         XCTAssertEqual(quote.maxFeeWei, BigUInt(2_000_000_000) * BigUInt(21_000))
 
         let calls = stub.decodedMethodCalls().sorted()
-        XCTAssertEqual(calls, ["eth_estimateGas", "eth_gasPrice", "eth_getTransactionCount"])
+        XCTAssertEqual(
+            calls,
+            ["eth_estimateGas", "eth_gasPrice", "eth_getBlockByNumber", "eth_getTransactionCount"]
+        )
     }
 
     // MARK: - send
@@ -116,6 +122,7 @@ final class TransactionServiceTests: XCTestCase {
         stub.responses = [
             "eth_getTransactionCount": [try rpcResult("0xa")],
             "eth_gasPrice": [try rpcResult("0x77359400")],
+            "eth_getBlockByNumber": [try rpcResult(["baseFeePerGas": "0x1"])],
             "eth_estimateGas": [
                 try rpcError(code: -32000, message: "err: insufficient funds for gas * price + value"),
             ],

@@ -195,6 +195,36 @@ struct WalletRPC {
         try await call("eth_gasPrice", on: chain)
     }
 
+    struct BlockHeader: Decodable {
+        /// Hex wei, or nil on pre-London chains that have no base fee.
+        let baseFeePerGas: String?
+    }
+
+    /// Latest block header — `false` requests tx hashes only, we never
+    /// read the tx list.
+    func latestBlockHeader(on chain: Chain) async throws -> BlockHeader {
+        try await call(
+            "eth_getBlockByNumber",
+            params: [Param.string("latest"), .bool(false)],
+            on: chain
+        )
+    }
+
+    /// Positional JSON-RPC params mix types (`["latest", false]`), which
+    /// a homogeneous `[String]` can't express.
+    enum Param: Encodable {
+        case string(String)
+        case bool(Bool)
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            switch self {
+            case .string(let s): try container.encode(s)
+            case .bool(let b): try container.encode(b)
+            }
+        }
+    }
+
     /// `"pending"` tag — counts in-mempool txs so we don't collide with our
     /// own outstanding sends.
     func transactionCount(of address: String, on chain: Chain) async throws -> String {
