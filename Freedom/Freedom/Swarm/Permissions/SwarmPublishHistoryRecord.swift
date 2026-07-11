@@ -79,6 +79,12 @@ enum SwarmPublishKind: String, Codable, CaseIterable {
     case feedCreate = "feed-create"
     case feedUpdate = "feed-update"
     case feedEntry = "feed-entry"
+    /// `swarm_publishChunk` — raw content-addressed chunk (≤ 4 KB).
+    case chunk = "chunk"
+    /// `swarm_writeSingleOwnerChunk` — SOC at a caller-chosen
+    /// identifier. Distinct from `feedEntry`, which is also a SOC but
+    /// derives its identifier from `(topic, index)`.
+    case soc = "soc"
 }
 
 enum SwarmPublishHistoryStatus: String, Codable, CaseIterable {

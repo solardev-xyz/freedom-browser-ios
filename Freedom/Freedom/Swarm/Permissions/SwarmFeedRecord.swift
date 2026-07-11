@@ -44,12 +44,14 @@ final class SwarmFeedRecord {
 
     /// SWIP `swarm_listFeeds` row shape — `Int` ms since epoch matching
     /// desktop's `Date.now()` output, `NSNull` for absent optionals so
-    /// `JSONSerialization` round-trips them as JSON `null`.
+    /// `JSONSerialization` round-trips them as JSON `null`. `owner` is
+    /// stored in bee's URL-path form (unprefixed lowercase) and
+    /// checksummed here — the SWIP wire format for owner fields.
     var asListFeedsRow: [String: Any] {
         [
             "name": name,
             "topic": topic,
-            "owner": owner,
+            "owner": Hex.checksummed(owner),
             "manifestReference": manifestReference,
             "bzzUrl": "bzz://\(manifestReference)",
             "createdAt": Int(createdAt.timeIntervalSince1970 * 1000),

@@ -12,6 +12,8 @@ enum SwarmPublishHistoryFormatting {
         case .feedCreate: Image(systemName: "plus.bubble")
         case .feedUpdate: Image(systemName: "arrow.triangle.2.circlepath")
         case .feedEntry: Image(systemName: "list.bullet")
+        case .chunk: Image(systemName: "square.grid.3x3.square")
+        case .soc: Image(systemName: "signature")
         }
     }
 
@@ -24,16 +26,19 @@ enum SwarmPublishHistoryFormatting {
         case .feedCreate: "Feed created"
         case .feedUpdate: "Feed update"
         case .feedEntry: "Feed entry"
+        case .chunk: "Chunk"
+        case .soc: "Signed chunk"
         }
     }
 
-    /// `feedEntry` writes a SOC chunk; the reference points at *that*
-    /// entry's address, not a feed root manifest. Calling it "Reference"
-    /// uniformly would mislead users opening the bzz URL expecting a
-    /// browsable manifest.
+    /// `feedEntry` and `soc` write SOC chunks; the reference points at
+    /// *that* chunk's address, not a feed root manifest. Calling it
+    /// "Reference" uniformly would mislead users opening the bzz URL
+    /// expecting a browsable manifest.
     static func referenceLabel(_ kind: SwarmPublishKind) -> String {
         switch kind {
-        case .feedEntry: "SOC address"
+        case .feedEntry, .soc: "SOC address"
+        case .chunk: "Chunk address"
         default: "Reference"
         }
     }

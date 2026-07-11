@@ -155,6 +155,15 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         case "swarm_writeFeedEntry":
             await handleWriteFeedEntry(id: id, origin: origin, params: params)
             return
+        case "swarm_publishChunk":
+            await handlePublishChunk(id: id, origin: origin, params: params)
+            return
+        case "swarm_writeSingleOwnerChunk":
+            await handleWriteSingleOwnerChunk(id: id, origin: origin, params: params)
+            return
+        case "swarm_getSigningIdentity":
+            await handleGetSigningIdentity(id: id, origin: origin)
+            return
         default:
             break
         }
@@ -794,7 +803,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             decision = await parkAndAwait(
                 origin: origin,
                 kind: .swarmFeedAccess(SwarmFeedAccessDetails(
-                    feedName: name, isFirstGrant: isFirstGrant
+                    scope: .feed(name: name), isFirstGrant: isFirstGrant
                 ))
             )
         }
@@ -866,13 +875,17 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
+    /// `owner` accepts the internal unprefixed-lowercase form and is
+    /// normalized to the SWIP wire format (EIP-55 checksummed `0x`) —
+    /// the spec requires the same owner string across `createFeed`,
+    /// `listFeeds`, `writeSingleOwnerChunk`, and `getSigningIdentity`.
     private static func createFeedResult(
         feedId: String, owner: String, topic: String,
         manifestRef: String, identityMode: String
     ) -> [String: Any] {
         [
             "feedId": feedId,
-            "owner": owner,
+            "owner": Hex.checksummed(owner),
             "topic": topic,
             "manifestReference": manifestRef,
             "bzzUrl": "bzz://\(manifestRef)",
@@ -932,7 +945,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             decision = await parkAndAwait(
                 origin: origin,
                 kind: .swarmFeedAccess(SwarmFeedAccessDetails(
-                    feedName: feedId, isFirstGrant: false
+                    scope: .feed(name: feedId), isFirstGrant: false
                 ))
             )
         }
@@ -1065,7 +1078,7 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             decision = await parkAndAwait(
                 origin: origin,
                 kind: .swarmFeedAccess(SwarmFeedAccessDetails(
-                    feedName: name, isFirstGrant: false
+                    scope: .feed(name: name), isFirstGrant: false
                 ))
             )
         }
@@ -1162,6 +1175,345 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             )
         }
         return bytes
+    }
+
+    // MARK: - Chunk-tier params
+
+    /// Chunk payload (`swarm_publishChunk` / `swarm_writeSingleOwnerChunk`
+    /// `data`) — base64 from the JS preload, capped at the protocol's
+    /// 4096 bytes (advertised as `maxChunkPayloadBytes`).
+    private static func parseChunkData(_ params: [String: Any]) throws -> Data {
+        guard let str = params["data"] as? String, !str.isEmpty,
+              let bytes = Data(base64Encoded: str), !bytes.isEmpty else {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil, message: "data must be a non-empty base64-encoded string."
+            )
+        }
+        if bytes.count > SwarmSOC.maxChunkPayloadSize {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: SwarmRouter.ErrorPayload.Reason.payloadTooLarge,
+                message: "Payload exceeds \(SwarmSOC.maxChunkPayloadSize) bytes."
+            )
+        }
+        return bytes
+    }
+
+    /// SWIP chunk-method `span`: non-negative integer ≤ 2⁶⁴ − 1. JS
+    /// `number`s arrive as NSNumber (must be within the safe-integer
+    /// range — beyond it the page MUST use `bigint`, which the preload
+    /// forwards as a decimal string); strings parse as u64.
+    private static func parseSpanParam(_ value: Any?) throws -> UInt64? {
+        func invalid() -> SwarmRouter.RouterError {
+            .invalidParams(
+                reason: SwarmRouter.ErrorPayload.Reason.invalidSpan,
+                message: "span must be a non-negative integer ≤ 2^64-1 "
+                    + "(bigint above 2^53-1)."
+            )
+        }
+        switch value {
+        case nil, is NSNull:
+            return nil
+        case let int as Int:
+            guard int >= 0, UInt64(int) <= SwarmChunkCodec.maxSafeJSInteger else {
+                throw invalid()
+            }
+            return UInt64(int)
+        case let str as String:
+            guard let parsed = UInt64(str) else { throw invalid() }
+            return parsed
+        default:
+            // Fractional Double, bool, object — all invalid.
+            throw invalid()
+        }
+    }
+
+    // MARK: - swarm_publishChunk
+
+    /// SWIP §"swarm_publishChunk" — CAC upload under the publish
+    /// permission tier: same gates, approval flow, and stamp selection
+    /// as `swarm_publishData`, chunk-sized payload.
+    private func handlePublishChunk(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        let Reason = SwarmRouter.ErrorPayload.Reason.self
+
+        guard assertEligibleAndFree(id: id, origin: origin),
+              requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        let payload: Data
+        let span: UInt64?
+        do {
+            try SwarmRouter.requireEmptyOptions(params)
+            payload = try Self.parseChunkData(params)
+            span = try Self.parseSpanParam(params["span"])
+        } catch let SwarmRouter.RouterError.invalidParams(reason, message) {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: message, reason: reason)
+        } catch {
+            return replyError(id: id, code: Code.internalError,
+                              message: "\(error)")
+        }
+
+        guard requireCanPublish(id: id, origin: origin) else { return }
+
+        guard let batch = StampService.selectBestBatch(
+            forBytes: payload.count,
+            in: services.currentStamps()
+        ) else {
+            return replyError(
+                id: id, code: Code.nodeUnavailable,
+                message: "No usable stamp with sufficient capacity.",
+                reason: Reason.noUsableStamps
+            )
+        }
+
+        let decision: ApprovalRequest.Decision
+        if services.permissionStore.isAutoApprovePublish(origin: origin.key) {
+            decision = .approved
+        } else {
+            decision = await parkAndAwait(
+                origin: origin,
+                kind: .swarmPublish(SwarmPublishDetails(
+                    sizeBytes: payload.count, mode: .chunk
+                ))
+            )
+        }
+        guard case .approved = decision else {
+            return replyError(id: id, code: Code.userRejected,
+                              message: "User rejected the request.")
+        }
+
+        let historyRow = services.publishHistoryStore.record(
+            kind: .chunk, name: nil, origin: origin.key,
+            bytesSize: payload.count
+        )
+        do {
+            let result = try await services.chunkService.publishChunk(
+                payload: payload, span: span, batchID: batch.batchID
+            )
+            recordPublishSuccess(tagUid: result.tagUid, origin: origin)
+            services.publishHistoryStore.complete(
+                historyRow, reference: result.reference,
+                tagUid: result.tagUid, batchId: batch.batchID
+            )
+            reply(id: id, result: ["reference": result.reference])
+        } catch SwarmChunkService.ChunkServiceError.unreachable {
+            services.publishHistoryStore.fail(historyRow, errorMessage: "Bee unreachable.")
+            replyError(id: id, code: Code.nodeUnavailable,
+                       message: "Bee unreachable.",
+                       reason: Reason.nodeStopped)
+        } catch {
+            services.publishHistoryStore.fail(historyRow, errorMessage: "publishChunk failed: \(error)")
+            replyError(id: id, code: Code.internalError,
+                       message: "publishChunk failed: \(error)")
+        }
+    }
+
+    // MARK: - swarm_writeSingleOwnerChunk
+
+    /// SWIP §"swarm_writeSingleOwnerChunk" — SOC write under the feed
+    /// permission tier (signing shares key material with feeds). Same
+    /// grant + approval flow as `swarm_writeFeedEntry`; no feed record
+    /// is required, only the origin's signing identity.
+    private func handleWriteSingleOwnerChunk(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        let Reason = SwarmRouter.ErrorPayload.Reason.self
+
+        guard assertEligibleAndFree(id: id, origin: origin),
+              requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        let identifierBytes: Data
+        let payload: Data
+        let span: UInt64?
+        do {
+            try SwarmRouter.requireEmptyOptions(params)
+            guard let identifier = params["identifier"] as? String,
+                  SwarmRef.isHex(identifier, length: 64),
+                  let bytes = Data(hex: identifier.lowercased()),
+                  bytes.count == 32 else {
+                throw SwarmRouter.RouterError.invalidParams(
+                    reason: Reason.invalidIdentifier,
+                    message: "identifier must be a 64-character hex string."
+                )
+            }
+            identifierBytes = bytes
+            payload = try Self.parseChunkData(params)
+            span = try Self.parseSpanParam(params["span"])
+        } catch let SwarmRouter.RouterError.invalidParams(reason, message) {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: message, reason: reason)
+        } catch {
+            return replyError(id: id, code: Code.internalError,
+                              message: "\(error)")
+        }
+
+        guard requireCanPublish(id: id, origin: origin) else { return }
+
+        // First grant always shows the sheet (identity-mode picker);
+        // same contract as handleCreateFeed.
+        let isFirstGrant = services.feedStore.feedIdentity(origin: origin.key) == nil
+        let decision: ApprovalRequest.Decision
+        if !isFirstGrant && feedAutoApproveActive(origin: origin) {
+            decision = .approved
+        } else {
+            decision = await parkAndAwait(
+                origin: origin,
+                kind: .swarmFeedAccess(SwarmFeedAccessDetails(
+                    scope: .signing, isFirstGrant: isFirstGrant
+                ))
+            )
+        }
+        guard case .approved = decision else {
+            return replyError(id: id, code: Code.userRejected,
+                              message: "User rejected the request.")
+        }
+
+        guard let identity = services.feedStore.feedIdentity(origin: origin.key) else {
+            return replyError(id: id, code: Code.internalError,
+                              message: "Feed identity missing after approval.")
+        }
+        let privateKey: Data
+        do {
+            privateKey = try identity.signingKey(via: services.vault)
+        } catch {
+            return replyError(id: id, code: Code.internalError,
+                              message: "Couldn't derive signing key: \(error)")
+        }
+
+        guard let batch = StampService.selectBestBatch(
+            forBytes: StampService.estimatedBytes(forFeedWrite: payload.count),
+            in: services.currentStamps()
+        ) else {
+            return replyError(id: id, code: Code.nodeUnavailable,
+                              message: "No usable stamp.",
+                              reason: Reason.noUsableStamps)
+        }
+
+        let historyRow = services.publishHistoryStore.record(
+            kind: .soc, name: nil, origin: origin.key,
+            bytesSize: payload.count
+        )
+        do {
+            let result = try await services.chunkService.writeSingleOwnerChunk(
+                identifier: identifierBytes, payload: payload, span: span,
+                privateKey: privateKey, batchID: batch.batchID
+            )
+            services.permissionStore.touchLastUsed(origin: origin.key)
+            if let tagUid = result.tagUid {
+                services.tagOwnership.record(tag: tagUid, origin: origin.key)
+            }
+            services.publishHistoryStore.complete(
+                historyRow, reference: result.reference,
+                tagUid: result.tagUid, batchId: batch.batchID
+            )
+            reply(id: id, result: [
+                "reference": result.reference,
+                "owner": Hex.checksummed(result.ownerHex),
+                "identifier": identifierBytes.web3.hexString.web3.noHexPrefix,
+            ])
+        } catch SwarmChunkService.ChunkServiceError.unreachable {
+            services.publishHistoryStore.fail(historyRow, errorMessage: "Bee unreachable.")
+            replyError(id: id, code: Code.nodeUnavailable,
+                       message: "Bee unreachable.",
+                       reason: Reason.nodeStopped)
+        } catch {
+            services.publishHistoryStore.fail(historyRow, errorMessage: "writeSingleOwnerChunk failed: \(error)")
+            replyError(id: id, code: Code.internalError,
+                       message: "writeSingleOwnerChunk failed: \(error)")
+        }
+    }
+
+    // MARK: - swarm_getSigningIdentity
+
+    /// SWIP §"swarm_getSigningIdentity" — identity disclosure under the
+    /// feed permission tier. Once the grant exists the method MUST
+    /// return without prompting; before it exists, this is the
+    /// bootstrap path for the same grant `swarm_createFeed` acquires.
+    /// No node/stamp pre-flight — disclosure is a pure key operation
+    /// (matches desktop).
+    private func handleGetSigningIdentity(id: Int, origin: OriginIdentity) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+
+        guard origin.isEligibleForWallet else {
+            return replyError(id: id, code: Code.unauthorized,
+                              message: "Origin not permitted.")
+        }
+        guard requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        if let identity = services.feedStore.feedIdentity(origin: origin.key) {
+            // Grant exists — return without prompting when we can
+            // resolve the owner. Deriving needs the unlocked vault;
+            // with it locked, any existing feed record carries the
+            // same owner (it's already public via swarm_listFeeds).
+            if services.vault.state == .unlocked {
+                return replySigningIdentity(id: id, origin: origin, identity: identity)
+            }
+            if let record = services.feedStore.all(forOrigin: origin.key).first {
+                services.permissionStore.touchLastUsed(origin: origin.key)
+                return reply(id: id, result: [
+                    "owner": Hex.checksummed(record.owner),
+                    "identityMode": identity.identityMode.rawValue,
+                ])
+            }
+            // Locked vault, no feeds yet — the sheet's unlock strip is
+            // the only way to resolve the key. Not a re-consent: the
+            // sheet auto-approves post-unlock when auto-approve is on.
+            guard assertEligibleAndFree(id: id, origin: origin) else { return }
+            let decision = await parkAndAwait(
+                origin: origin,
+                kind: .swarmFeedAccess(SwarmFeedAccessDetails(
+                    scope: .signing, isFirstGrant: false
+                ))
+            )
+            guard case .approved = decision else {
+                return replyError(id: id, code: Code.userRejected,
+                                  message: "User rejected the request.")
+            }
+            return replySigningIdentity(id: id, origin: origin, identity: identity)
+        }
+
+        // No grant yet — acquire it (identity-mode picker on the sheet,
+        // same first-grant flow as swarm_createFeed).
+        guard assertEligibleAndFree(id: id, origin: origin) else { return }
+        let decision = await parkAndAwait(
+            origin: origin,
+            kind: .swarmFeedAccess(SwarmFeedAccessDetails(
+                scope: .signing, isFirstGrant: true
+            ))
+        )
+        guard case .approved = decision else {
+            return replyError(id: id, code: Code.userRejected,
+                              message: "User rejected the request.")
+        }
+        guard let identity = services.feedStore.feedIdentity(origin: origin.key) else {
+            return replyError(id: id, code: Code.internalError,
+                              message: "Feed identity missing after approval.")
+        }
+        replySigningIdentity(id: id, origin: origin, identity: identity)
+    }
+
+    private func replySigningIdentity(
+        id: Int, origin: OriginIdentity, identity: SwarmFeedIdentity
+    ) {
+        let ownerHex: String
+        do {
+            let privateKey = try identity.signingKey(via: services.vault)
+            ownerHex = try FeedSigner.ownerAddressBytes(privateKey: privateKey)
+                .web3.hexString.web3.noHexPrefix
+        } catch {
+            return replyError(
+                id: id, code: SwarmRouter.ErrorPayload.Code.internalError,
+                message: "Couldn't derive signing key: \(error)"
+            )
+        }
+        services.permissionStore.touchLastUsed(origin: origin.key)
+        reply(id: id, result: [
+            "owner": Hex.checksummed(ownerHex),
+            "identityMode": identity.identityMode.rawValue,
+        ])
     }
 
     // MARK: - Reply path

@@ -27,7 +27,9 @@ final class SwarmReadFeedEntryTests: XCTestCase {
             listFeedsForOrigin: { _ in [] },
             nodeFailureReason: { nil },
             feedOwner: { origin, name in stubs.owners["\(origin)/\(name)"] },
-            readFeed: { _, _, _ in try stubs.readResult.get() }
+            readFeed: { _, _, _ in try stubs.readResult.get() },
+            readChunkRaw: { _ in throw SwarmRouter.ChunkReadError.notFound },
+            readBudget: SwarmReadBudget()
         )
     }
 

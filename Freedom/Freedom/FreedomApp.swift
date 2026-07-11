@@ -143,6 +143,8 @@ struct FreedomApp: App {
                 bee: swarmBee,
                 publishService: SwarmPublishService.live(bee: swarmBee),
                 feedService: SwarmFeedService.live(bee: swarmBee),
+                chunkService: SwarmChunkService.live(bee: swarmBee),
+                readBudget: SwarmReadBudget(),
                 vault: vault,
                 tagOwnership: TagOwnership(),
                 feedWriteLock: SwarmFeedWriteLock(),

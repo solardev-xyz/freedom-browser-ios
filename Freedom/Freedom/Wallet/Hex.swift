@@ -1,5 +1,6 @@
 import BigInt
 import Foundation
+import web3
 
 /// Helpers for `0x`-prefixed hex (the wire format for every JSON-RPC
 /// numeric field). Consolidates the `hasPrefix("0x") + dropFirst(2) +
@@ -56,6 +57,15 @@ enum Hex {
     /// often guard on emptiness for "not yet known" semantics).
     static func prefixed(_ s: String) -> String {
         s.isEmpty ? s : "0x" + stripped(s)
+    }
+
+    /// EIP-55 checksummed `0x` form of a 40-hex address — the SWIP
+    /// wire format for every dapp-visible `owner` field. Accepts any
+    /// input case, with or without prefix; input must already be
+    /// shape-valid (`isAddressShape` after prefixing).
+    static func checksummed(_ address: String) -> String {
+        EthereumAddress(prefixed(stripped(address).lowercased()))
+            .toChecksumAddress()
     }
 }
 

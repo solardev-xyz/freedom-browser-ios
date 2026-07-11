@@ -1,4 +1,5 @@
 import XCTest
+import web3
 @testable import Freedom
 
 @MainActor
@@ -564,7 +565,9 @@ final class SwarmBridgeTests: XCTestCase {
         let result = try XCTUnwrap(fixture.recorder.results.first?.value as? [String: Any])
         XCTAssertEqual(result["feedId"] as? String, "posts")
         XCTAssertEqual(result["topic"] as? String, testTopic)
-        XCTAssertEqual(result["owner"] as? String, testOwner)
+        // SWIP owner wire format — EIP-55 checksummed 0x, normalized
+        // from the internally-stored unprefixed lowercase form.
+        XCTAssertEqual(result["owner"] as? String, Hex.checksummed(testOwner))
         XCTAssertEqual(result["manifestReference"] as? String, testManifestRef)
         XCTAssertEqual(result["identityMode"] as? String, "app-scoped")
     }
@@ -921,5 +924,271 @@ final class SwarmBridgeTests: XCTestCase {
             origin: connectedOrigin
         )
         try assertSingleError(code: 4001)
+    }
+
+    // MARK: - swarm_publishChunk
+
+    private let testChunkRef = String(repeating: "77", count: 32)
+
+    func testPublishChunkRequiresConnection() async throws {
+        await fixture.dispatch(
+            method: "swarm_publishChunk",
+            params: ["data": b64("hello")],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: 4100, reason: Reason.notConnected)
+    }
+
+    func testPublishChunkRejectsOversizedPayload() async throws {
+        connect()
+        await fixture.dispatch(
+            method: "swarm_publishChunk",
+            params: ["data": Data(count: 4097).base64EncodedString()],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: -32602, reason: Reason.payloadTooLarge)
+    }
+
+    func testPublishChunkRejectsUnknownOption() async throws {
+        connect()
+        await fixture.dispatch(
+            method: "swarm_publishChunk",
+            params: ["data": b64("hello"), "options": ["pin": false]],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: -32602, reason: Reason.unsupportedOption)
+    }
+
+    func testPublishChunkRejectsInvalidSpan() async throws {
+        connect()
+        for badSpan: Any in [-1, "not-a-number", 4096.5] {
+            await fixture.dispatch(
+                method: "swarm_publishChunk",
+                params: ["data": b64("hello"), "span": badSpan],
+                origin: connectedOrigin
+            )
+        }
+        XCTAssertEqual(fixture.recorder.errors.count, 3)
+        for err in fixture.recorder.errors {
+            XCTAssertEqual(err.dict["code"] as? Int, -32602)
+            let data = try XCTUnwrap(err.dict["data"] as? [String: Any])
+            XCTAssertEqual(data["reason"] as? String, Reason.invalidSpan)
+        }
+    }
+
+    func testPublishChunkApprovedUploadsAndReturnsReference() async throws {
+        connect()
+        armUsableStamps()
+        fixture.setNextDecision(.approved)
+        var uploadedBody: Data?
+        fixture.stubs.uploadChunk = { body, _ in
+            uploadedBody = body
+            return (reference: self.testChunkRef, tagUid: 42)
+        }
+        await fixture.dispatch(
+            method: "swarm_publishChunk",
+            params: ["data": b64("hello")],
+            origin: connectedOrigin
+        )
+        XCTAssertEqual(fixture.recorder.errors.count, 0)
+        let result = try XCTUnwrap(fixture.recorder.results.first?.value as? [String: Any])
+        XCTAssertEqual(result["reference"] as? String, testChunkRef)
+        // Body is span_8LE || payload.
+        XCTAssertEqual(uploadedBody, SwarmChunkCodec.spanBytes(5) + Data("hello".utf8))
+        // Tag recorded for cross-origin getUploadStatus defense.
+        XCTAssertEqual(fixture.tagOwnership.owner(of: 42), connectedOrigin.key)
+    }
+
+    func testPublishChunkExplicitSpanCommitsToSpanField() async throws {
+        connect()
+        armUsableStamps()
+        fixture.setNextDecision(.approved)
+        var uploadedBody: Data?
+        fixture.stubs.uploadChunk = { body, _ in
+            uploadedBody = body
+            return (reference: self.testChunkRef, tagUid: nil)
+        }
+        await fixture.dispatch(
+            method: "swarm_publishChunk",
+            params: ["data": b64("hello"), "span": 9000],
+            origin: connectedOrigin
+        )
+        XCTAssertEqual(fixture.recorder.errors.count, 0)
+        XCTAssertEqual(uploadedBody?.prefix(8), SwarmChunkCodec.spanBytes(9000))
+    }
+
+    func testPublishChunkDeniedReturns4001() async throws {
+        connect()
+        armUsableStamps()
+        fixture.setNextDecision(.denied)
+        await fixture.dispatch(
+            method: "swarm_publishChunk",
+            params: ["data": b64("hello")],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: 4001)
+    }
+
+    func testPublishChunkAutoApproveSkipsSheet() async throws {
+        connect()
+        fixture.permissionStore.setAutoApprovePublish(origin: connectedOrigin.key, enabled: true)
+        armUsableStamps()
+        // No setNextDecision — parking would XCTFail in the fixture.
+        fixture.stubs.uploadChunk = { _, _ in (reference: self.testChunkRef, tagUid: nil) }
+        await fixture.dispatch(
+            method: "swarm_publishChunk",
+            params: ["data": b64("hello")],
+            origin: connectedOrigin
+        )
+        XCTAssertEqual(fixture.recorder.errors.count, 0)
+        XCTAssertEqual(fixture.recorder.results.count, 1)
+    }
+
+    // MARK: - swarm_writeSingleOwnerChunk
+
+    private var testIdentifier: String { String(repeating: "42", count: 32) }
+
+    func testWriteSOCRequiresConnection() async throws {
+        await fixture.dispatch(
+            method: "swarm_writeSingleOwnerChunk",
+            params: ["identifier": testIdentifier, "data": b64("hello")],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: 4100, reason: Reason.notConnected)
+    }
+
+    func testWriteSOCRejectsBadIdentifier() async throws {
+        connect()
+        await fixture.dispatch(
+            method: "swarm_writeSingleOwnerChunk",
+            params: ["identifier": "xyz", "data": b64("hello")],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: -32602, reason: Reason.invalidIdentifier)
+    }
+
+    func testWriteSOCFirstGrantApprovedSignsAndUploads() async throws {
+        connect()
+        armUsableStamps()
+        // First grant — sheet writes the identity row before resolving
+        // (same contract as createFeed's first grant).
+        let feedStore = fixture.feedStore
+        let connectedKey = connectedOrigin.key
+        fixture.setNextDecision(.approved) { _ in
+            feedStore.setFeedIdentity(origin: connectedKey, identityMode: .appScoped)
+        }
+        var captured: (owner: String, identifier: String, sig: String, body: Data)?
+        fixture.stubs.chunkUploadSOC = { owner, identifier, sig, body, _ in
+            captured = (owner, identifier, sig, body)
+            return (reference: self.testChunkRef, tagUid: nil)
+        }
+        await fixture.dispatch(
+            method: "swarm_writeSingleOwnerChunk",
+            params: ["identifier": testIdentifier, "data": b64("hello")],
+            origin: connectedOrigin
+        )
+        XCTAssertEqual(fixture.recorder.errors.count, 0)
+        let result = try XCTUnwrap(fixture.recorder.results.first?.value as? [String: Any])
+        XCTAssertEqual(result["reference"] as? String, testChunkRef)
+        XCTAssertEqual(result["identifier"] as? String, testIdentifier)
+        let capturedUpload = try XCTUnwrap(captured)
+        XCTAssertEqual(capturedUpload.identifier, testIdentifier)
+        // Reply owner is the checksummed form of the upload-path owner.
+        XCTAssertEqual(result["owner"] as? String, Hex.checksummed(capturedUpload.owner))
+        XCTAssertEqual(capturedUpload.body, SwarmChunkCodec.spanBytes(5) + Data("hello".utf8))
+        XCTAssertEqual(Data(hex: capturedUpload.sig)?.count, 65)
+    }
+
+    func testWriteSOCDeniedReturns4001AndNoIdentity() async throws {
+        connect()
+        armUsableStamps()
+        fixture.setNextDecision(.denied)
+        await fixture.dispatch(
+            method: "swarm_writeSingleOwnerChunk",
+            params: ["identifier": testIdentifier, "data": b64("hello")],
+            origin: connectedOrigin
+        )
+        try assertSingleError(code: 4001)
+        XCTAssertNil(fixture.feedStore.feedIdentity(origin: connectedOrigin.key))
+    }
+
+    // MARK: - swarm_getSigningIdentity
+
+    func testGetSigningIdentityRequiresConnection() async throws {
+        await fixture.dispatch(method: "swarm_getSigningIdentity", origin: connectedOrigin)
+        try assertSingleError(code: 4100, reason: Reason.notConnected)
+    }
+
+    func testGetSigningIdentityFirstGrantApprovedReturnsOwner() async throws {
+        connect()
+        let feedStore = fixture.feedStore
+        let connectedKey = connectedOrigin.key
+        fixture.setNextDecision(.approved) { _ in
+            feedStore.setFeedIdentity(origin: connectedKey, identityMode: .appScoped)
+        }
+        await fixture.dispatch(method: "swarm_getSigningIdentity", origin: connectedOrigin)
+        XCTAssertEqual(fixture.recorder.errors.count, 0)
+        let result = try XCTUnwrap(fixture.recorder.results.first?.value as? [String: Any])
+        let owner = try XCTUnwrap(result["owner"] as? String)
+        XCTAssertTrue(owner.hasPrefix("0x"))
+        XCTAssertEqual(owner.count, 42)
+        XCTAssertEqual(owner, Hex.checksummed(owner))
+        XCTAssertEqual(result["identityMode"] as? String, "app-scoped")
+    }
+
+    func testGetSigningIdentityGrantedReturnsWithoutPrompting() async throws {
+        // SWIP: once feed-permission exists the method MUST return
+        // immediately — no setNextDecision queued, parking would
+        // XCTFail in the fixture.
+        connect()
+        fixture.feedStore.setFeedIdentity(origin: connectedOrigin.key, identityMode: .appScoped)
+        await fixture.dispatch(method: "swarm_getSigningIdentity", origin: connectedOrigin)
+        XCTAssertEqual(fixture.recorder.errors.count, 0)
+        XCTAssertEqual(fixture.recorder.results.count, 1)
+    }
+
+    func testGetSigningIdentityMatchesCreateFeedOwner() async throws {
+        // SWIP: the returned owner MUST equal the owner createFeed
+        // reports for this origin.
+        connect()
+        armUsableStamps()
+        let feedStore = fixture.feedStore
+        let connectedKey = connectedOrigin.key
+        fixture.setNextDecision(.approved) { _ in
+            feedStore.setFeedIdentity(origin: connectedKey, identityMode: .appScoped)
+        }
+        fixture.stubs.createFeedManifest = { _, _, _ in self.testManifestRef }
+        await fixture.dispatch(
+            method: "swarm_createFeed", params: ["name": "posts"],
+            origin: connectedOrigin
+        )
+        let createResult = try XCTUnwrap(fixture.recorder.results.first?.value as? [String: Any])
+        await fixture.dispatch(
+            method: "swarm_getSigningIdentity", origin: connectedOrigin, id: 2
+        )
+        XCTAssertEqual(fixture.recorder.errors.count, 0)
+        let identityResult = try XCTUnwrap(fixture.recorder.results.last?.value as? [String: Any])
+        XCTAssertEqual(
+            identityResult["owner"] as? String,
+            createResult["owner"] as? String
+        )
+    }
+
+    func testGetSigningIdentityDeniedReturns4001() async throws {
+        connect()
+        fixture.setNextDecision(.denied)
+        await fixture.dispatch(method: "swarm_getSigningIdentity", origin: connectedOrigin)
+        try assertSingleError(code: 4001)
+    }
+
+    func testGetSigningIdentityLockedVaultFallsBackToFeedRecordOwner() async throws {
+        // Grant + an existing feed record: the owner is already public
+        // via listFeeds, so a locked vault must not force a prompt.
+        grantConnectedFeedIdentity(name: "posts")
+        fixture.vault.lock()
+        await fixture.dispatch(method: "swarm_getSigningIdentity", origin: connectedOrigin)
+        XCTAssertEqual(fixture.recorder.errors.count, 0)
+        let result = try XCTUnwrap(fixture.recorder.results.first?.value as? [String: Any])
+        XCTAssertEqual(result["owner"] as? String, Hex.checksummed(testOwner))
     }
 }

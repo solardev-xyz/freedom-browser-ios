@@ -116,12 +116,27 @@ struct SwitchChainDetails {
     let to: Chain
 }
 
-/// Per-call metadata for feed-write approvals. The sheet writes the
-/// picked identity mode + auto-approve flag to the relevant stores
-/// via `@Environment` before resolving the continuation.
+/// Per-call metadata for feed-write / signing approvals. The sheet
+/// writes the picked identity mode + auto-approve flag to the
+/// relevant stores via `@Environment` before resolving the
+/// continuation.
 struct SwarmFeedAccessDetails: Equatable {
-    /// Already-validated against `SwarmRouter.isValidFeedName`.
-    let feedName: String
+    /// What the dapp asked for — drives the sheet's copy. Both scopes
+    /// share one permission tier (the SWIP's "feed permission tier"):
+    /// the same `SwarmFeedIdentity` grant and the same auto-approve
+    /// flag cover named-feed writes, raw SOC writes, and identity
+    /// disclosure.
+    enum Scope: Equatable {
+        /// `swarm_createFeed` / `_updateFeed` / `_writeFeedEntry` —
+        /// name already validated against `SwarmRouter.isValidFeedName`.
+        case feed(name: String)
+        /// `swarm_writeSingleOwnerChunk` / `swarm_getSigningIdentity` —
+        /// signing without a named feed (raw SOC write or publisher-
+        /// identity disclosure).
+        case signing
+    }
+
+    let scope: Scope
     /// `true` iff no `SwarmFeedIdentity` row exists for this origin —
     /// drives the identity-mode picker's visibility.
     let isFirstGrant: Bool
@@ -137,13 +152,15 @@ struct SwarmPublishDetails: Equatable {
     let sizeBytes: Int
     let mode: Mode
 
-    /// Discriminates the two upload modes — `data` carries an
-    /// optional caller-supplied `name`; `files` carries the path
-    /// list and an optional `indexDocument`. Same `ApprovalRequest`
-    /// kind (`.swarmPublish`) covers both, per desktop's
-    /// `showSwarmPublishApproval(params)` shape.
+    /// Discriminates the upload modes — `data` carries an optional
+    /// caller-supplied `name`; `files` carries the path list and an
+    /// optional `indexDocument`; `chunk` is a single raw
+    /// content-addressed chunk (`swarm_publishChunk`, ≤ 4 KB). Same
+    /// `ApprovalRequest` kind (`.swarmPublish`) covers all three, per
+    /// desktop's `showSwarmPublishApproval(params)` shape.
     enum Mode: Equatable {
         case data(contentType: String, name: String?)
         case files(paths: [String], indexDocument: String?)
+        case chunk
     }
 }

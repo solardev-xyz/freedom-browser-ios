@@ -265,7 +265,17 @@ final class BrowserTab {
                 } catch BeeAPIClient.Error.notRunning {
                     throw SwarmRouter.FeedReadError.unreachable
                 }
-            }
+            },
+            readChunkRaw: { reference in
+                do {
+                    return try await swarm.bee.getChunk(reference: reference)
+                } catch BeeAPIClient.Error.notFound {
+                    throw SwarmRouter.ChunkReadError.notFound
+                } catch BeeAPIClient.Error.notRunning {
+                    throw SwarmRouter.ChunkReadError.unreachable
+                }
+            },
+            readBudget: swarm.readBudget
         )
         self.swarmBridge = SwarmBridge(
             tab: self,

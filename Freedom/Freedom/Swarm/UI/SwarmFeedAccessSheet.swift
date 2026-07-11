@@ -24,7 +24,7 @@ struct SwarmFeedAccessSheet: View {
                 VStack(alignment: .leading, spacing: 20) {
                     ApprovalOriginStrip(
                         origin: approval.origin,
-                        caption: "This site wants to create feed “\(details.feedName)”"
+                        caption: captionText
                     )
                     switch vault.state {
                     case .empty:
@@ -39,7 +39,7 @@ struct SwarmFeedAccessSheet: View {
                 }
                 .padding(20)
             }
-            .navigationTitle("Allow feed access")
+            .navigationTitle(navigationTitleText)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -63,6 +63,28 @@ struct SwarmFeedAccessSheet: View {
                 approval.decide(.approved)
                 dismiss()
             }
+        }
+    }
+
+    /// Feed and signing requests share one grant tier but deserve
+    /// distinct copy — a raw SOC write / identity disclosure isn't
+    /// "creating a feed", and the user should understand it reveals
+    /// this site's publisher address (desktop's "Publisher Signing"
+    /// prompt makes the same distinction).
+    private var captionText: String {
+        switch details.scope {
+        case .feed(let name):
+            return "This site wants to create feed “\(name)”"
+        case .signing:
+            return "This site wants to sign Swarm chunks with its "
+                + "publisher key, which reveals its publisher address"
+        }
+    }
+
+    private var navigationTitleText: String {
+        switch details.scope {
+        case .feed: return "Allow feed access"
+        case .signing: return "Allow publisher signing"
         }
     }
 

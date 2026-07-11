@@ -69,11 +69,71 @@
     }
   }
 
+  // UTF-8-encode strings, base64 everything — the SWIP's
+  // `string | Uint8Array | ArrayBuffer` payload contract for
+  // writeFeedEntry and the chunk methods ("Strings are encoded as
+  // UTF-8"). Distinct from publishFiles' `bytes: string` allowance,
+  // where a string is already base64.
+  function __payloadToBase64(data) {
+    if (typeof data === 'string') {
+      return __toBase64(new TextEncoder().encode(data));
+    }
+    return __toBase64(data);
+  }
+
+  // Per-method param normalization shared by request() and the
+  // convenience wrappers, so `request({method, params})` stays
+  // byte-equivalent to the wrapper call (SWIP §"Convenience Methods").
+  // Typed arrays / ArrayBuffers become base64 (WKWebView's typed-array
+  // bridging is version-dependent); `bigint` spans become decimal
+  // strings (postMessage can't serialize BigInt).
+  function normalizeParams(method, params) {
+    params = params || {};
+    if (method === 'swarm_publishFiles' && Array.isArray(params.files)) {
+      return Object.assign({}, params, {
+        files: params.files.map(function (f) {
+          return {
+            path: f.path,
+            contentType: f.contentType,
+            bytes: __toBase64(f.bytes),
+          };
+        }),
+      });
+    }
+    if (method === 'swarm_writeFeedEntry'
+        && params.data !== undefined && params.data !== null) {
+      return Object.assign({}, params, { data: __payloadToBase64(params.data) });
+    }
+    if (method === 'swarm_publishChunk' || method === 'swarm_writeSingleOwnerChunk') {
+      var next = Object.assign({}, params);
+      if (params.data !== undefined && params.data !== null) {
+        next.data = __payloadToBase64(params.data);
+      }
+      if (typeof params.span === 'bigint') {
+        next.span = params.span.toString();
+      }
+      return next;
+    }
+    return params;
+  }
+
+  // Chunk-read spans above Number.MAX_SAFE_INTEGER cross the bridge as
+  // decimal strings; surface them as `bigint` per the SWIP's
+  // `span: number | bigint` result contract.
+  function postProcessResult(method, result) {
+    if ((method === 'swarm_readChunk' || method === 'swarm_readSingleOwnerChunk')
+        && result && typeof result.span === 'string') {
+      result.span = BigInt(result.span);
+    }
+    return result;
+  }
+
   function makeRequest(method, params) {
     const id = ++requestId;
+    var normalized = normalizeParams(method, params);
     return new Promise(function (resolve, reject) {
-      pendingRequests.set(id, { resolve: resolve, reject: reject });
-      postToNative({ type: 'request', id: id, method: method, params: params || {} });
+      pendingRequests.set(id, { resolve: resolve, reject: reject, method: method });
+      postToNative({ type: 'request', id: id, method: method, params: normalized });
       // 5 min ceiling — covers chain-tx-blocked publish/feed-write paths.
       // Reads + capability checks resolve in tens of ms, so the cap only
       // bites on misbehaving native handlers.
@@ -123,26 +183,16 @@
     getUploadStatus: function (params) { return makeRequest('swarm_getUploadStatus', params); },
     createFeed: function (params) { return makeRequest('swarm_createFeed', params); },
     updateFeed: function (params) { return makeRequest('swarm_updateFeed', params); },
-    writeFeedEntry: function (params) {
-      // Normalize `data` to base64 so the native side has one shape
-      // to decode regardless of whether the dapp passed a string,
-      // Uint8Array, or ArrayBuffer. Strings are UTF-8-encoded first
-      // so SOC payload bytes match what the dapp wrote (the SOC
-      // stores opaque bytes; bee doesn't care about encoding).
-      var normalized = params;
-      if (params && params.data !== undefined && params.data !== null) {
-        var encoded;
-        if (typeof params.data === 'string') {
-          encoded = __toBase64(new TextEncoder().encode(params.data));
-        } else {
-          encoded = __toBase64(params.data);
-        }
-        normalized = Object.assign({}, params, { data: encoded });
-      }
-      return makeRequest('swarm_writeFeedEntry', normalized);
-    },
+    // Payload/span normalization happens in normalizeParams so the
+    // request() path behaves identically.
+    writeFeedEntry: function (params) { return makeRequest('swarm_writeFeedEntry', params); },
     readFeedEntry: function (params) { return makeRequest('swarm_readFeedEntry', params); },
     listFeeds: function () { return makeRequest('swarm_listFeeds'); },
+    publishChunk: function (params) { return makeRequest('swarm_publishChunk', params); },
+    readChunk: function (params) { return makeRequest('swarm_readChunk', params); },
+    writeSingleOwnerChunk: function (params) { return makeRequest('swarm_writeSingleOwnerChunk', params); },
+    readSingleOwnerChunk: function (params) { return makeRequest('swarm_readSingleOwnerChunk', params); },
+    getSigningIdentity: function () { return makeRequest('swarm_getSigningIdentity'); },
 
     on: function (event, handler) {
       if (eventListeners[event]) eventListeners[event].push(handler);
@@ -175,7 +225,7 @@
         if (error.data) err.data = error.data;
         pending.reject(err);
       } else {
-        pending.resolve(result);
+        pending.resolve(postProcessResult(pending.method, result));
       }
     },
     __handleEvent: function (event, data) {

@@ -23,15 +23,19 @@ struct SwarmCapabilities: Equatable {
         /// implementations (this app, desktop Freedom, bee-js) use
         /// USTAR's 100-byte `name` field with no PAX extensions —
         /// advertising it lets dapps adapt rather than discover via
-        /// silent rejection. Surfaces the limit pre-emptively; SWIP
-        /// edit lands in parallel.
+        /// silent rejection.
         let maxPathBytes: Int
+        /// Per-`swarm_publishChunk` / `swarm_writeSingleOwnerChunk`
+        /// payload cap. Fixed by the Swarm chunk protocol — the SWIP
+        /// requires advertising exactly 4096.
+        let maxChunkPayloadBytes: Int
 
         static let defaults = Limits(
             maxDataBytes: 10 * 1024 * 1024,
             maxFilesBytes: 50 * 1024 * 1024,
             maxFileCount: 100,
-            maxPathBytes: 100
+            maxPathBytes: 100,
+            maxChunkPayloadBytes: SwarmSOC.maxChunkPayloadSize
         )
     }
 
@@ -40,11 +44,23 @@ struct SwarmCapabilities: Equatable {
             "specVersion": Self.specVersion,
             "canPublish": canPublish,
             "reason": reason ?? NSNull() as Any,
+            // Non-standard desktop-parity fields: which signing
+            // identity modes this provider offers, and which optional
+            // surfaces exist. Lets dapps feature-detect the signing /
+            // chunk tier without a version sniff.
+            "publisherIdentityModes": [
+                SwarmFeedIdentityMode.appScoped.rawValue,
+                SwarmFeedIdentityMode.beeWallet.rawValue,
+            ],
+            "extensions": [
+                "publisherSigning": true,
+            ],
             "limits": [
                 "maxDataBytes": limits.maxDataBytes,
                 "maxFilesBytes": limits.maxFilesBytes,
                 "maxFileCount": limits.maxFileCount,
                 "maxPathBytes": limits.maxPathBytes,
+                "maxChunkPayloadBytes": limits.maxChunkPayloadBytes,
             ],
         ]
     }

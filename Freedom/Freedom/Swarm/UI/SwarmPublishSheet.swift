@@ -68,6 +68,9 @@ struct SwarmPublishSheet: View {
                 ApprovalLabeledRow(label: "Paths", value: Self.previewPaths(paths))
                     .lineLimit(1)
                     .truncationMode(.middle)
+            case .chunk:
+                ApprovalLabeledRow(label: "Type", value: "Swarm chunk")
+                ApprovalLabeledRow(label: "Size", value: Self.formatBytes(details.sizeBytes))
             }
         }
         .padding()

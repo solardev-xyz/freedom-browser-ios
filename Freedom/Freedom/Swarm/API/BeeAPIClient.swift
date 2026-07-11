@@ -228,6 +228,32 @@ struct BeeAPIClient {
         return (reference, tagUid)
     }
 
+    /// `POST /chunks` — uploads a single content-addressed chunk. Body
+    /// is `span_8LE || payload`; bee recomputes the BMT address and
+    /// returns it as `reference`. Same pin/deferred headers as the
+    /// other publish paths (SWIP: chunk uploads MUST be pinned).
+    func postChunk(
+        body: Data, batchID: String
+    ) async throws -> (reference: String, tagUid: Int?) {
+        let (data, responseHeaders) = try await postBytes(
+            "/chunks",
+            body: body,
+            contentType: "application/octet-stream",
+            headers: [
+                "Swarm-Postage-Batch-Id": batchID,
+                "Swarm-Pin": "true",
+                "Swarm-Deferred-Upload": "true",
+            ]
+        )
+        guard let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let reference = dict["reference"] as? String,
+              !reference.isEmpty else {
+            throw Error.malformedResponse
+        }
+        let tagUid = responseHeaders["swarm-tag"].flatMap { Int($0) }
+        return (reference, tagUid)
+    }
+
     /// `PATCH /stamps/topup/{batchID}/{additionalAmount}` — adds amount
     /// to an existing batch's prepayment, extending its TTL. Bee blocks
     /// the response until the chain tx confirms (~30 s on Gnosis, but

@@ -8,6 +8,8 @@ final class SwarmCapabilitiesTests: XCTestCase {
         XCTAssertEqual(limits.maxFilesBytes, 50 * 1024 * 1024)
         XCTAssertEqual(limits.maxFileCount, 100)
         XCTAssertEqual(limits.maxPathBytes, 100)
+        // Protocol constant — SWIP requires advertising exactly 4096.
+        XCTAssertEqual(limits.maxChunkPayloadBytes, 4096)
     }
 
     func testJSONShapeWhenCanPublishTrue() {
@@ -21,6 +23,14 @@ final class SwarmCapabilitiesTests: XCTestCase {
         XCTAssertEqual(limits?["maxFilesBytes"] as? Int, 50 * 1024 * 1024)
         XCTAssertEqual(limits?["maxFileCount"] as? Int, 100)
         XCTAssertEqual(limits?["maxPathBytes"] as? Int, 100)
+        XCTAssertEqual(limits?["maxChunkPayloadBytes"] as? Int, 4096)
+        // Desktop-parity feature-detect fields for the signing surface.
+        XCTAssertEqual(
+            dict["publisherIdentityModes"] as? [String],
+            ["app-scoped", "bee-wallet"]
+        )
+        let extensions = dict["extensions"] as? [String: Any]
+        XCTAssertEqual(extensions?["publisherSigning"] as? Bool, true)
     }
 
     func testJSONShapeWhenReasonPresent() {

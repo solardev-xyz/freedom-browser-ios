@@ -44,6 +44,9 @@ final class SwarmBridgeStubs {
     var publishUpload: SwarmPublishService.Upload?
     var getTag: ((Int) async throws -> BeeAPIClient.TagResponse)?
     var routerReadFeed: ((String, String, UInt64?) async throws -> SwarmRouter.FeedRead)?
+    var uploadChunk: SwarmChunkService.UploadChunk?
+    var chunkUploadSOC: SwarmFeedService.UploadSOC?
+    var routerReadChunkRaw: ((String) async throws -> Data)?
 
     /// Tuple stand-in for `(decision, optional side-effect)` so the
     /// fixture can model the production "sheet writes a row before
@@ -164,6 +167,23 @@ final class SwarmBridgeTestFixture {
                     return try await stub(ref)
                 }
             ),
+            chunkService: SwarmChunkService(
+                uploadChunk: { [stubs] body, batch in
+                    guard let stub = stubs.uploadChunk else {
+                        XCTFail("uploadChunk unexpectedly called")
+                        return (reference: "", tagUid: nil)
+                    }
+                    return try await stub(body, batch)
+                },
+                uploadSOC: { [stubs] o, id, s, body, b in
+                    guard let stub = stubs.chunkUploadSOC else {
+                        XCTFail("chunk uploadSOC unexpectedly called")
+                        return (reference: "", tagUid: nil)
+                    }
+                    return try await stub(o, id, s, body, b)
+                }
+            ),
+            readBudget: SwarmReadBudget(),
             vault: vault,
             tagOwnership: tagOwnership,
             feedWriteLock: feedWriteLock,
@@ -194,7 +214,14 @@ final class SwarmBridgeTestFixture {
                     throw SwarmRouter.FeedReadError.notFound
                 }
                 return try await stub(o, t, i)
-            }
+            },
+            readChunkRaw: { [stubs] address in
+                guard let stub = stubs.routerReadChunkRaw else {
+                    throw SwarmRouter.ChunkReadError.notFound
+                }
+                return try await stub(address)
+            },
+            readBudget: SwarmReadBudget()
         )
 
         self.bridge = SwarmBridge(

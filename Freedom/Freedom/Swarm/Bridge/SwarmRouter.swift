@@ -1,4 +1,5 @@
 import Foundation
+import web3
 
 /// Non-interactive method dispatch for `window.swarm`. Mirrors
 /// `RPCRouter`'s shape: pure compute over injected dependencies,
@@ -66,6 +67,14 @@ final class SwarmRouter {
             static let invalidTopic = "invalid_topic"
             static let invalidOwner = "invalid_owner"
             static let invalidFeedName = "invalid_feed_name"
+            // chunk-tier reasons (SWIP low-level chunk methods)
+            static let invalidReference = "invalid_reference"
+            static let invalidIdentifier = "invalid_identifier"
+            static let invalidSpan = "invalid_span"
+            static let chunkNotFound = "chunk_not_found"
+            static let chunkTypeMismatch = "chunk_type_mismatch"
+            static let unsupportedOption = "unsupported_option"
+            static let rateLimited = "rate_limited"
         }
     }
 
@@ -89,6 +98,16 @@ final class SwarmRouter {
         /// a separate `/node` reachability probe (the actual `/feeds`
         /// call surfaces this directly) and dodges the probe-then-call
         /// race where state changes between the two.
+        case unreachable
+    }
+
+    /// Sentinel errors the `readChunkRaw` closure surfaces — same
+    /// contract as `FeedReadError`, chunk-tier vocabulary: 404 becomes
+    /// `chunk_not_found`, connection failure becomes `4900
+    /// node-stopped`, anything else propagates as `internalError`
+    /// (SWIP: transient errors MUST NOT be misclassified as not-found).
+    enum ChunkReadError: Swift.Error, Equatable {
+        case notFound
         case unreachable
     }
 
@@ -116,19 +135,29 @@ final class SwarmRouter {
     /// `FeedReadError.unreachable` when bee's HTTP API can't be reached,
     /// anything else for transport / parse failures.
     private let readFeed: @MainActor (String, String, UInt64?) async throws -> FeedRead
+    /// `(64-hex chunk address)` → bee `GET /chunks/{address}` raw
+    /// bytes. Throws `ChunkReadError` sentinels analogous to `readFeed`.
+    private let readChunkRaw: @MainActor (String) async throws -> Data
+    /// Shared per-origin budget for the permission-free read methods.
+    /// SWIP §"Permission-Free Reads" — rate limiting is a MUST.
+    private let readBudget: SwarmReadBudget
 
     init(
         isConnected: @escaping @MainActor (String) -> Bool,
         listFeedsForOrigin: @escaping @MainActor (String) -> [[String: Any]],
         nodeFailureReason: @escaping @MainActor () -> String?,
         feedOwner: @escaping @MainActor (String, String) -> String?,
-        readFeed: @escaping @MainActor (String, String, UInt64?) async throws -> FeedRead
+        readFeed: @escaping @MainActor (String, String, UInt64?) async throws -> FeedRead,
+        readChunkRaw: @escaping @MainActor (String) async throws -> Data,
+        readBudget: SwarmReadBudget
     ) {
         self.isConnected = isConnected
         self.listFeedsForOrigin = listFeedsForOrigin
         self.nodeFailureReason = nodeFailureReason
         self.feedOwner = feedOwner
         self.readFeed = readFeed
+        self.readChunkRaw = readChunkRaw
+        self.readBudget = readBudget
     }
 
     func handle(method: String, params: [String: Any], origin: OriginIdentity) async throws -> Any {
@@ -136,11 +165,34 @@ final class SwarmRouter {
         case "swarm_getCapabilities":
             return capabilities(origin: origin).asJSONDict
         case "swarm_listFeeds":
+            try admitRead(origin: origin)
             return listFeeds(origin: origin)
         case "swarm_readFeedEntry":
+            try admitRead(origin: origin)
             return try await readFeedEntry(params: params, origin: origin)
+        case "swarm_readChunk":
+            try admitRead(origin: origin)
+            return try await readChunk(params: params, origin: origin)
+        case "swarm_readSingleOwnerChunk":
+            try admitRead(origin: origin)
+            return try await readSingleOwnerChunk(params: params, origin: origin)
         default:
             throw RouterError.unsupportedMethod(method: method)
+        }
+    }
+
+    /// Budget gate for the four permission-free read methods. Throws
+    /// the SWIP's `rate_limited` invalid-params error when the origin
+    /// exceeded its window — an analytics-friendly reason code, not a
+    /// condition the dapp should retry without backoff.
+    private func admitRead(origin: OriginIdentity) throws {
+        guard readBudget.admit(
+            origin: origin.key, isConnected: isConnected(origin.key)
+        ) else {
+            throw RouterError.invalidParams(
+                reason: ErrorPayload.Reason.rateLimited,
+                message: "Per-origin read budget exceeded — retry later."
+            )
         }
     }
 
@@ -271,6 +323,8 @@ final class SwarmRouter {
             throw RouterError.internalError(message: "\(error)")
         }
 
+        readBudget.recordBytes(origin: origin.key, bytes: result.payload.count)
+
         // SWIP §"swarm_readFeedEntry" Result — `nextIndex` is only
         // populated when reading the latest entry. `NSNull` (rather
         // than dropping the key) so JSCore surfaces a real `null` to
@@ -285,6 +339,164 @@ final class SwarmRouter {
             dict["nextIndex"] = Int(next)
         }
         return dict
+    }
+
+    // MARK: - Chunk tier reads
+
+    /// SWIP §"swarm_readChunk". Permission-free (same rationale as
+    /// `swarm_readFeedEntry`), budget-gated, and type-validated: the
+    /// returned bytes must BMT-hash back to the requested address or
+    /// the read rejects with `chunk_type_mismatch`.
+    func readChunk(params: [String: Any], origin: OriginIdentity) async throws -> [String: Any] {
+        guard let reference = params["reference"] as? String,
+              SwarmRef.isHex(reference, length: 64) else {
+            throw RouterError.invalidParams(
+                reason: ErrorPayload.Reason.invalidReference,
+                message: "reference must be a 64-character hex string."
+            )
+        }
+        try Self.requireEmptyOptions(params)
+
+        let referenceHex = reference.lowercased()
+        let raw = try await fetchChunk(
+            addressHex: referenceHex,
+            notFoundMessage: "No chunk at \(referenceHex)."
+        )
+        let parsed: (span: UInt64, payload: Data)
+        do {
+            parsed = try SwarmChunkCodec.parseCAC(referenceHex: referenceHex, raw: raw)
+        } catch {
+            throw RouterError.invalidParams(
+                reason: ErrorPayload.Reason.chunkTypeMismatch,
+                message: "Bytes at address don't validate as a content-addressed chunk."
+            )
+        }
+        readBudget.recordBytes(origin: origin.key, bytes: parsed.payload.count)
+        return [
+            "data": parsed.payload.base64EncodedString(),
+            "encoding": "base64",
+            "span": SwarmChunkCodec.spanJSON(parsed.span),
+        ]
+    }
+
+    /// SWIP §"swarm_readSingleOwnerChunk". Exactly one of `address` or
+    /// the (`owner`, `identifier`) pair; when the pair is given the
+    /// address is derived as `keccak256(identifier || owner)`. The
+    /// returned bytes must parse as a SOC whose recovered owner
+    /// re-derives the requested address (`chunk_type_mismatch`
+    /// otherwise) — a CAC living at the same address is rejected here.
+    func readSingleOwnerChunk(
+        params: [String: Any], origin: OriginIdentity
+    ) async throws -> [String: Any] {
+        let addressParam = params["address"] as? String
+        let ownerParam = params["owner"] as? String
+        let identifierParam = params["identifier"] as? String
+
+        let addressHex: String
+        if let address = addressParam {
+            guard ownerParam == nil, identifierParam == nil else {
+                throw RouterError.invalidParams(
+                    reason: nil,
+                    message: "Provide either address or owner+identifier, not both."
+                )
+            }
+            guard SwarmRef.isHex(address, length: 64) else {
+                throw RouterError.invalidParams(
+                    reason: ErrorPayload.Reason.invalidReference,
+                    message: "address must be a 64-character hex string."
+                )
+            }
+            addressHex = address.lowercased()
+        } else {
+            guard let owner = ownerParam.flatMap(Self.normalizeOwnerHex),
+                  let ownerBytes = Data(hex: owner), ownerBytes.count == 20 else {
+                throw RouterError.invalidParams(
+                    reason: ErrorPayload.Reason.invalidOwner,
+                    message: "owner is required (with identifier) when address is omitted."
+                )
+            }
+            guard let identifier = identifierParam,
+                  SwarmRef.isHex(identifier, length: 64),
+                  let identifierBytes = Data(hex: identifier.lowercased()),
+                  identifierBytes.count == 32 else {
+                throw RouterError.invalidParams(
+                    reason: ErrorPayload.Reason.invalidIdentifier,
+                    message: "identifier must be a 64-character hex string."
+                )
+            }
+            addressHex = SwarmSOC.socAddress(
+                identifier: identifierBytes, ownerAddress: ownerBytes
+            ).web3.hexString.web3.noHexPrefix
+        }
+        try Self.requireEmptyOptions(params)
+
+        let raw = try await fetchChunk(
+            addressHex: addressHex,
+            notFoundMessage: "No single-owner chunk at \(addressHex)."
+        )
+        let parsed: SwarmChunkCodec.SOCRead
+        do {
+            parsed = try SwarmChunkCodec.parseSOC(addressHex: addressHex, raw: raw)
+        } catch {
+            throw RouterError.invalidParams(
+                reason: ErrorPayload.Reason.chunkTypeMismatch,
+                message: "Bytes at address don't validate as a single-owner chunk."
+            )
+        }
+        readBudget.recordBytes(origin: origin.key, bytes: parsed.payload.count)
+        return [
+            "data": parsed.payload.base64EncodedString(),
+            "encoding": "base64",
+            "span": SwarmChunkCodec.spanJSON(parsed.span),
+            "reference": addressHex,
+            "owner": parsed.owner,
+            "identifier": parsed.identifierHex,
+            "signature": parsed.signatureHex,
+        ]
+    }
+
+    /// Shared `GET /chunks/{address}` with SWIP error translation.
+    /// Pre-flight is the fetch itself — reads work regardless of node
+    /// mode and consume no stamps, so mode/readiness/stamp checks MUST
+    /// NOT apply here (same rule as `readFeedEntry`).
+    private func fetchChunk(
+        addressHex: String, notFoundMessage: String
+    ) async throws -> Data {
+        do {
+            return try await readChunkRaw(addressHex)
+        } catch ChunkReadError.unreachable {
+            throw RouterError.nodeUnavailable(reason: ErrorPayload.Reason.nodeStopped)
+        } catch ChunkReadError.notFound {
+            throw RouterError.invalidParams(
+                reason: ErrorPayload.Reason.chunkNotFound,
+                message: notFoundMessage
+            )
+        } catch {
+            throw RouterError.internalError(message: "\(error)")
+        }
+    }
+
+    /// SWIP §"Options object" — the v1 chunk-method `options` surface
+    /// is deliberately empty; any provided key MUST reject with
+    /// `unsupported_option` so future additions degrade safely.
+    /// Shared by the router reads and the bridge's chunk writes.
+    static func requireEmptyOptions(_ params: [String: Any]) throws {
+        switch params["options"] {
+        case nil, is NSNull:
+            return
+        case let dict as [String: Any]:
+            if let key = dict.keys.sorted().first {
+                throw RouterError.invalidParams(
+                    reason: ErrorPayload.Reason.unsupportedOption,
+                    message: "Unsupported option: \(key)"
+                )
+            }
+        default:
+            throw RouterError.invalidParams(
+                reason: nil,
+                message: "options must be an object."
+            )
+        }
     }
 
     /// Returns lowercased 40-char hex, no `0x` prefix. `nil` for any

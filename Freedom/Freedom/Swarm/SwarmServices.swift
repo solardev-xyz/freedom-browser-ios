@@ -16,6 +16,14 @@ struct SwarmServices {
     let bee: BeeAPIClient
     let publishService: SwarmPublishService
     let feedService: SwarmFeedService
+    /// SWIP chunk-tier writes (`swarm_publishChunk`,
+    /// `swarm_writeSingleOwnerChunk`). Reads bypass this — the router
+    /// fetches raw bytes and validates via `SwarmChunkCodec`.
+    let chunkService: SwarmChunkService
+    /// Per-origin rate/bandwidth budget for permission-free reads.
+    /// One instance per app session, shared across tabs so same-origin
+    /// multi-tab reads draw from a single budget.
+    let readBudget: SwarmReadBudget
     /// Needed for HD-key derivation on feed-write paths — bridge
     /// resolves the publisher key via `SwarmFeedIdentity.signingKey(via:)`.
     let vault: Vault
