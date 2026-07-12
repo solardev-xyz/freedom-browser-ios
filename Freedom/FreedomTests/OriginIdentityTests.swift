@@ -178,6 +178,21 @@ final class OriginIdentityTests: XCTestCase {
         XCTAssertFalse(id.isEligibleForWallet)
     }
 
+    /// DEBUG builds allow loopback http for dev harnesses (swarm-kit
+    /// test centers); Release keeps the plaintext-http refusal. Tests
+    /// compile with DEBUG, so this pins the dev-side behavior.
+    func testHttpLoopbackEligibleInDebugOnly() {
+        for origin in ["http://127.0.0.1:4175", "http://localhost:4175/page"] {
+            let id = OriginIdentity.from(string: origin)!
+            XCTAssertEqual(id.scheme, .http)
+            #if DEBUG
+            XCTAssertTrue(id.isEligibleForWallet, origin)
+            #else
+            XCTAssertFalse(id.isEligibleForWallet, origin)
+            #endif
+        }
+    }
+
     func testHttpStripsDefaultPort80() {
         XCTAssertEqual(
             OriginIdentity.from(string: "http://evil.example.com:80/foo")?.key,

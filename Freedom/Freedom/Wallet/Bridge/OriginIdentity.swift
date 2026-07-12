@@ -24,10 +24,30 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
     var isEligibleForWallet: Bool {
         switch scheme {
         case .https, .ens, .bzz: return true
+        case .http:
+            #if DEBUG
+            // Dev harnesses (swarm-kit test centers, wallet test pages)
+            // serve over plain http on loopback. Release builds keep the
+            // plaintext-http refusal; a loopback origin can't be spoofed
+            // by a remote site, so this widens nothing in production.
+            return isLoopbackHost
+            #else
+            return false
+            #endif
         // .openlv never arrives via a tab — its requests bypass the
         // dapp bridge entirely, so tab-side eligibility stays false.
-        case .http, .ipfs, .ipns, .rad, .other, .openlv: return false
+        case .ipfs, .ipns, .rad, .other, .openlv: return false
         }
+    }
+
+    /// `http://127.0.0.1[:port]` / `http://localhost[:port]` / `[::1]`.
+    /// Only meaningful for `.http`/`.https` keys, which are stored as
+    /// `scheme://host[:port]`.
+    private var isLoopbackHost: Bool {
+        guard let url = URL(string: key), let host = url.host?.lowercased() else {
+            return false
+        }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1"
     }
 
     /// ENS keys are stored bare but users expect to see `ens://foo.eth` in
