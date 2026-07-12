@@ -23,7 +23,7 @@ let package = Package(
     ],
     targets: [
         // Combined Swarm + IPFS Rust staticlib from
-        // solardev-xyz/freedom-mobile-ffi (built from ant v0.5.33 +
+        // solardev-xyz/freedom-mobile-ffi (built from ant v0.5.41 +
         // freedom-ipfs v0.4.3). SHA256 verified by SwiftPM before
         // unpacking; bumps require a new release tag + checksum.
         // Local-path development override: comment out the URL/checksum
@@ -33,8 +33,8 @@ let package = Package(
         // `../freedom-mobile-ffi`.
         .binaryTarget(
             name: "FreedomMobile",
-            url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.6.1/FreedomMobile.xcframework.zip",
-            checksum: "715a45fb4d8d4ee9782921c8a5c02da58c34b92336941342a5811e219976cc9f"
+            url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.6.2/FreedomMobile.xcframework.zip",
+            checksum: "69c0ac7d3fb00e7667a25158cab2c6ca61382f19074b5dbfb829b68225f1752b"
         ),
         .target(
             name: "SwarmKit",
