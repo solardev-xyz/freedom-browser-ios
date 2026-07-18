@@ -44,6 +44,67 @@ final class VaultTests: XCTestCase {
         XCTAssertEqual(v2.securityLevel, .deviceBound)
     }
 
+    // MARK: - Background auto-lock grace
+
+    func testQuickBackgroundRoundTripStaysUnlocked() async throws {
+        let mnemonic = try Mnemonic(phrase: "test test test test test test test test test test test junk")
+        let v = Vault(crypto: makeCrypto())
+        try await v.create(mnemonic: mnemonic)
+
+        let backgrounded = Date()
+        v.noteBackgrounded(now: backgrounded)
+        v.lockIfBackgroundGraceExpired(
+            now: backgrounded.addingTimeInterval(Vault.backgroundAutoLockGrace - 1)
+        )
+        XCTAssertEqual(v.state, .unlocked, "inside the grace window — no relock")
+        // And signing still works — the seed wasn't zeroed.
+        XCTAssertNoThrow(try v.signingKey(at: .mainUser))
+    }
+
+    func testExpiredBackgroundGraceLocks() async throws {
+        let mnemonic = try Mnemonic(phrase: "test test test test test test test test test test test junk")
+        let v = Vault(crypto: makeCrypto())
+        try await v.create(mnemonic: mnemonic)
+
+        let backgrounded = Date()
+        v.noteBackgrounded(now: backgrounded)
+        v.lockIfBackgroundGraceExpired(
+            now: backgrounded.addingTimeInterval(Vault.backgroundAutoLockGrace)
+        )
+        XCTAssertEqual(v.state, .locked)
+        XCTAssertThrowsError(try v.signingKey(at: .mainUser))
+    }
+
+    func testGraceClockResetsAfterForeground() async throws {
+        let mnemonic = try Mnemonic(phrase: "test test test test test test test test test test test junk")
+        let v = Vault(crypto: makeCrypto())
+        try await v.create(mnemonic: mnemonic)
+
+        // First round trip consumes its timestamp…
+        let first = Date()
+        v.noteBackgrounded(now: first)
+        v.lockIfBackgroundGraceExpired(now: first.addingTimeInterval(10))
+        // …so a later foreground check without a fresh background note
+        // must not lock against the stale timestamp.
+        v.lockIfBackgroundGraceExpired(
+            now: first.addingTimeInterval(Vault.backgroundAutoLockGrace * 2)
+        )
+        XCTAssertEqual(v.state, .unlocked)
+    }
+
+    func testNoteBackgroundedOnLockedVaultIsInert() async throws {
+        let mnemonic = try Mnemonic(phrase: "test test test test test test test test test test test junk")
+        try await Vault(crypto: makeCrypto()).create(mnemonic: mnemonic)
+
+        let reopened = Vault(crypto: makeCrypto())
+        XCTAssertEqual(reopened.state, .locked)
+        reopened.noteBackgrounded()
+        reopened.lockIfBackgroundGraceExpired(
+            now: Date().addingTimeInterval(Vault.backgroundAutoLockGrace * 2)
+        )
+        XCTAssertEqual(reopened.state, .locked, "no crash, no state churn")
+    }
+
     func testUnlockRestoresSigningCapability() async throws {
         let mnemonic = try Mnemonic(phrase: "test test test test test test test test test test test junk")
         try await Vault(crypto: makeCrypto()).create(mnemonic: mnemonic)

@@ -25,11 +25,22 @@ final class Vault {
         case notUnlocked
     }
 
+    /// How long the vault may sit in the background before it relocks.
+    /// Locking the instant the app backgrounds made every app switch —
+    /// paste an address, check a code, answer a message — cost a full
+    /// re-auth, and mid-flow relocks broke approval sheets. A short
+    /// grace keeps quick switches seamless; the thief-grabs-unlocked-
+    /// phone scenario is still covered once the grace lapses (and a
+    /// killed process always relaunches locked — the seed is memory-
+    /// only).
+    static let backgroundAutoLockGrace: TimeInterval = 5 * 60
+
     private(set) var state: State
     private(set) var securityLevel: VaultSecurityLevel?
 
     @ObservationIgnored private var seed: Data?
     @ObservationIgnored private let crypto: VaultCrypto
+    @ObservationIgnored private var backgroundedAt: Date?
 
     init(crypto: VaultCrypto = VaultCrypto()) {
         self.crypto = crypto
@@ -64,7 +75,26 @@ final class Vault {
 
     func lock() {
         zero(&seed)
+        backgroundedAt = nil
         if state != .empty { state = .locked }
+    }
+
+    /// Scene went `.background` — start the auto-lock grace clock.
+    /// Injectable `now` for tests.
+    func noteBackgrounded(now: Date = .now) {
+        guard state == .unlocked else { return }
+        backgroundedAt = now
+    }
+
+    /// Scene returned `.active` — relock only when the grace window
+    /// lapsed. Cheap no-op for quick app switches, which is the whole
+    /// point (see `backgroundAutoLockGrace`).
+    func lockIfBackgroundGraceExpired(now: Date = .now) {
+        defer { backgroundedAt = nil }
+        guard state == .unlocked, let backgroundedAt else { return }
+        if now.timeIntervalSince(backgroundedAt) >= Self.backgroundAutoLockGrace {
+            lock()
+        }
     }
 
     /// Derive the key at `path` from the current unlocked seed. The returned

@@ -246,15 +246,19 @@ struct ContentView: View {
             switch new {
             case .background:
                 Task { await tabStore.captureActive() }
-                // Auto-lock on background — if a thief grabs an unlocked
-                // phone and switches away from Freedom, the wallet relocks
-                // immediately. `lock()` is a no-op when already locked/empty.
-                vault.lock()
+                // Auto-lock with a grace window: quick switch-outs
+                // (paste an address, read a 2FA code) come back
+                // unlocked; anything longer than
+                // `Vault.backgroundAutoLockGrace` relocks on return.
+                // A killed process relaunches locked regardless — the
+                // seed never leaves memory.
+                vault.noteBackgrounded()
                 // Hint the Rust reader to drop background work — bitswap
                 // chatter, idle DHT requests — so we don't eat suspended
                 // CPU budget.
                 ipfs.enterBackground()
             case .active:
+                vault.lockIfBackgroundGraceExpired()
                 ipfs.enterForeground()
                 // Un-wedge the Swarm node after a background suspension:
                 // the OS reaps its libp2p sockets without a FIN, so the
