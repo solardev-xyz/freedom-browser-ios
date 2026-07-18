@@ -39,8 +39,15 @@ enum BalanceFormatter {
     /// Inverse of `format` — user-typed "0.1" → 10¹⁷ wei (for an 18-decimal
     /// asset). Returns `nil` for malformed input or values with more
     /// fractional digits than the asset has decimals.
+    ///
+    /// Accepts both "." and "," as the decimal separator — the iOS
+    /// decimal pad follows the OS region format, so e.g. a German
+    /// keyboard only offers ",". Input containing *both* (a pasted
+    /// grouped "1,000.5") normalizes to two separators and stays
+    /// rejected as ambiguous.
     static func parseAmount(_ input: String, decimals: Int = nativeDecimals) -> BigUInt? {
         let trimmed = input.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: ",", with: ".")
         guard !trimmed.isEmpty else { return nil }
         let parts = trimmed.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count <= 2 else { return nil }

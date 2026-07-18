@@ -96,6 +96,25 @@ final class BalanceFormatterTests: XCTestCase {
         XCTAssertEqual(BalanceFormatter.parseAmount(".5"), BigUInt(5) * BigUInt(10).power(17))
     }
 
+    func testParseCommaSeparator() {
+        // The iOS decimal pad follows the OS region format — a German
+        // keyboard only offers "," — so both separators must parse to
+        // the same wei.
+        XCTAssertEqual(
+            BalanceFormatter.parseAmount("0,01"),
+            BalanceFormatter.parseAmount("0.01")
+        )
+        XCTAssertEqual(BalanceFormatter.parseAmount(",5"), BigUInt(5) * BigUInt(10).power(17))
+    }
+
+    func testParseMixedSeparatorsRejected() {
+        // A pasted grouped value ("1,000.5") is ambiguous — reject
+        // rather than guess which mark is the decimal point.
+        XCTAssertNil(BalanceFormatter.parseAmount("1,000.5"))
+        XCTAssertNil(BalanceFormatter.parseAmount("1.000,5"))
+        XCTAssertNil(BalanceFormatter.parseAmount("1,0,5"))
+    }
+
     func testParseFullPrecision() {
         // Exactly 18 fractional digits — the limit for wei precision.
         XCTAssertEqual(BalanceFormatter.parseAmount("0.123456789012345678"), BigUInt("123456789012345678", radix: 10))
