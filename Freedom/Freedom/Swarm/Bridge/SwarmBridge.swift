@@ -164,6 +164,21 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
         case "swarm_getSigningIdentity":
             await handleGetSigningIdentity(id: id, origin: origin)
             return
+        case "swarm_getMessagingIdentity":
+            await handleGetMessagingIdentity(id: id, origin: origin)
+            return
+        case "swarm_subscribe":
+            await handleSubscribe(id: id, origin: origin, params: params)
+            return
+        case "swarm_unsubscribe":
+            await handleUnsubscribe(id: id, origin: origin, params: params)
+            return
+        case "swarm_sendPss":
+            await handleSendPss(id: id, origin: origin, params: params)
+            return
+        case "swarm_sendGsoc":
+            await handleSendGsoc(id: id, origin: origin, params: params)
+            return
         default:
             break
         }
@@ -1514,6 +1529,490 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             "owner": Hex.checksummed(ownerHex),
             "identityMode": identity.identityMode.rawValue,
         ])
+    }
+
+    // MARK: - Messaging extension (SWIP messaging)
+
+    /// Identity for subscription teardown — one bridge per tab, so
+    /// this doubles as the tab key in the registry.
+    private var subscriptionOwnerID: ObjectIdentifier { ObjectIdentifier(self) }
+
+    /// SWIP messaging: subscriptions are session-scoped — the hosting
+    /// tab calls this on navigation, page stop, and close.
+    func cancelSubscriptions() {
+        services.subscriptionRegistry.cancelByOwner(subscriptionOwnerID)
+    }
+
+    /// Messaging-tier gate. `true` when the grant exists; otherwise
+    /// prompts (grant sheet) and persists on approval. The sheet's
+    /// approve() writes the grant before resolving — same contract as
+    /// the feed sheet. Replies 4001 and returns `false` on denial.
+    private func requireMessagingGrant(
+        id: Int, origin: OriginIdentity, operation: SwarmMessagingDetails.Operation
+    ) async -> Bool {
+        if services.permissionStore.hasMessagingGrant(origin.key) { return true }
+        guard assertEligibleAndFree(id: id, origin: origin) else { return false }
+        let decision = await parkAndAwait(
+            origin: origin,
+            kind: .swarmMessaging(SwarmMessagingDetails(
+                operation: operation, isFirstGrant: true
+            ))
+        )
+        guard case .approved = decision else {
+            replyError(id: id, code: SwarmRouter.ErrorPayload.Code.userRejected,
+                       message: "User rejected the request.")
+            return false
+        }
+        guard services.permissionStore.hasMessagingGrant(origin.key) else {
+            replyError(id: id, code: SwarmRouter.ErrorPayload.Code.internalError,
+                       message: "Messaging grant missing after approval.")
+            return false
+        }
+        return true
+    }
+
+    /// Desktop's `validateMessagingTopic`: non-empty string, ≤ 256
+    /// UTF-8 bytes, no control characters.
+    private static func validMessagingTopic(_ value: Any?) -> String? {
+        guard let topic = value as? String, !topic.isEmpty,
+              topic.utf8.count <= 256,
+              topic.unicodeScalars.allSatisfy({ $0.value >= 32 }) else {
+            return nil
+        }
+        return topic
+    }
+
+    /// Messaging payload: base64 from the preload (strings UTF-8'd
+    /// there). PSS allows empty (trojan framing carries a length);
+    /// GSOC rejects empty with `invalid_payload` (bee refuses an
+    /// empty SOC payload).
+    private static func parseMessagingPayload(
+        _ params: [String: Any], emptyReason: String?
+    ) throws -> Data {
+        guard let str = params["data"] as? String,
+              let bytes = Data(base64Encoded: str) else {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: nil, message: "data must be a base64-encoded string."
+            )
+        }
+        if bytes.isEmpty, let emptyReason {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: emptyReason,
+                message: "Payload must not be empty."
+            )
+        }
+        let maxBytes = SwarmCapabilities.Limits.defaults.maxMessageBytes
+        if bytes.count > maxBytes {
+            throw SwarmRouter.RouterError.invalidParams(
+                reason: SwarmRouter.ErrorPayload.Reason.payloadTooLarge,
+                message: "Payload exceeds \(maxBytes) bytes."
+            )
+        }
+        return bytes
+    }
+
+    // MARK: - swarm_getMessagingIdentity
+
+    /// SWIP messaging §"swarm_getMessagingIdentity". Under the
+    /// messaging tier; once granted it MUST return without prompting.
+    private func handleGetMessagingIdentity(id: Int, origin: OriginIdentity) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+
+        guard origin.isEligibleForWallet else {
+            return replyError(id: id, code: Code.unauthorized,
+                              message: "Origin not permitted.")
+        }
+        guard requireConnectedOrigin(id: id, origin: origin),
+              await requireMessagingGrant(id: id, origin: origin, operation: .identity)
+        else { return }
+
+        do {
+            let identity = try await services.messagingService.messagingIdentity()
+            services.permissionStore.touchLastUsed(origin: origin.key)
+            reply(id: id, result: [
+                "pssPublicKey": identity.pssPublicKey,
+                "pssTarget": identity.pssTarget,
+                "identityMode": identity.identityMode,
+            ])
+        } catch SwarmMessagingService.MessagingError.unreachable {
+            replyError(id: id, code: Code.nodeUnavailable,
+                       message: "Bee unreachable.",
+                       reason: SwarmRouter.ErrorPayload.Reason.nodeStopped)
+        } catch {
+            replyError(id: id, code: Code.internalError,
+                       message: "getMessagingIdentity failed: \(error)")
+        }
+    }
+
+    // MARK: - swarm_subscribe
+
+    /// SWIP messaging §"swarm_subscribe". Params validate before the
+    /// grant prompt (desktop order); the registry enforces the
+    /// per-origin cap and surfaces node-pool exhaustion as a
+    /// retryable 4900 distinct from `too_many_subscriptions`.
+    private func handleSubscribe(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        let Reason = SwarmRouter.ErrorPayload.Reason.self
+
+        guard origin.isEligibleForWallet else {
+            return replyError(id: id, code: Code.unauthorized,
+                              message: "Origin not permitted.")
+        }
+        guard requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        do {
+            try SwarmRouter.requireEmptyOptions(params)
+        } catch let SwarmRouter.RouterError.invalidParams(reason, message) {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: message, reason: reason)
+        } catch {
+            return replyError(id: id, code: Code.internalError, message: "\(error)")
+        }
+
+        guard let kind = params["kind"] as? String, kind == "gsoc" || kind == "pss" else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "kind must be \"gsoc\" or \"pss\".",
+                              reason: Reason.invalidKind)
+        }
+
+        let hasTopic = !(params["topic"] == nil || params["topic"] is NSNull)
+        let hasAddress = !(params["address"] == nil || params["address"] is NSNull)
+        var topic: String?
+
+        if kind == "gsoc" {
+            guard hasTopic != hasAddress else {
+                return replyError(
+                    id: id, code: Code.invalidParams,
+                    message: "Provide either topic or address, not both."
+                )
+            }
+            if hasAddress {
+                guard let address = params["address"] as? String,
+                      SwarmRef.isHex(address, length: 64) else {
+                    return replyError(id: id, code: Code.invalidParams,
+                                      message: "address must be a 64-character hex string.",
+                                      reason: Reason.invalidAddress)
+                }
+            }
+        } else {
+            guard !hasAddress else {
+                return replyError(
+                    id: id, code: Code.invalidParams,
+                    message: "address is only valid for gsoc subscriptions."
+                )
+            }
+            guard hasTopic else {
+                return replyError(id: id, code: Code.invalidParams,
+                                  message: "topic is required.",
+                                  reason: Reason.invalidTopic)
+            }
+        }
+        if hasTopic {
+            guard let validTopic = Self.validMessagingTopic(params["topic"]) else {
+                return replyError(id: id, code: Code.invalidParams,
+                                  message: "topic must be a non-empty string ≤ 256 bytes, no control chars.",
+                                  reason: Reason.invalidTopic)
+            }
+            topic = validTopic
+        }
+
+        guard await requireMessagingGrant(
+            id: id, origin: origin,
+            operation: .subscribe(topic: topic ?? (params["address"] as? String ?? ""))
+        ) else { return }
+
+        // Resolve the pipeline key: raw GSOC address, mined GSOC
+        // derivation, or hashed PSS topic.
+        let key: String
+        if kind == "gsoc" {
+            if let address = params["address"] as? String {
+                key = address.lowercased()
+            } else {
+                do {
+                    key = try await services.messagingService
+                        .gsocDerivation(topic: topic!).addressHex
+                } catch {
+                    return replyError(id: id, code: Code.internalError,
+                                      message: "GSOC derivation failed: \(error)")
+                }
+            }
+        } else {
+            key = SwarmMessagingService.pssTopicHex(topic!)
+        }
+
+        do {
+            let subscriptionId = try await services.subscriptionRegistry.subscribe(
+                origin: origin.key,
+                owner: subscriptionOwnerID,
+                kind: kind,
+                key: key,
+                deliver: { [weak self] payload in
+                    self?.emit(event: "message", data: payload)
+                }
+            )
+            services.permissionStore.touchLastUsed(origin: origin.key)
+            reply(id: id, result: [
+                "subscriptionId": subscriptionId,
+                "kind": kind,
+                "key": key,
+            ])
+        } catch SwarmSubscriptionRegistry.RegistryError.tooManySubscriptions {
+            replyError(
+                id: id, code: Code.invalidParams,
+                message: "Subscription limit reached "
+                    + "(\(SwarmCapabilities.Limits.defaults.maxSubscriptions) per site).",
+                reason: Reason.tooManySubscriptions
+            )
+        } catch SwarmSubscriptionRegistry.RegistryError.nodeSubscriptionLimit {
+            // Node-wide lurker pool exhausted — NOT a parameter error:
+            // other origins' subscriptions caused it and it's
+            // retryable once they close.
+            replyError(id: id, code: Code.nodeUnavailable,
+                       message: "Node subscription capacity exhausted — retry later.",
+                       reason: Reason.nodeSubscriptionLimit)
+        } catch {
+            replyError(id: id, code: Code.nodeUnavailable,
+                       message: "Bee unreachable.",
+                       reason: Reason.nodeStopped)
+        }
+    }
+
+    // MARK: - swarm_unsubscribe
+
+    /// SWIP messaging §"swarm_unsubscribe" — never prompts.
+    private func handleUnsubscribe(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+
+        guard origin.isEligibleForWallet else {
+            return replyError(id: id, code: Code.unauthorized,
+                              message: "Origin not permitted.")
+        }
+        guard requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        guard let subscriptionId = params["subscriptionId"] as? String,
+              !subscriptionId.isEmpty else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "subscriptionId must be a non-empty string.")
+        }
+        guard services.subscriptionRegistry.unsubscribe(
+            origin: origin.key, id: subscriptionId
+        ) else {
+            return replyError(
+                id: id, code: Code.invalidParams,
+                message: "No active subscription with that id.",
+                reason: SwarmRouter.ErrorPayload.Reason.subscriptionNotFound
+            )
+        }
+        reply(id: id, result: ["unsubscribed": true])
+    }
+
+    // MARK: - swarm_sendPss
+
+    /// SWIP messaging §"swarm_sendPss" — messaging send tier: grant +
+    /// per-send consent (or auto-approve), consumes a stamp. The node
+    /// does trojan construction; empty payloads are valid.
+    private func handleSendPss(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        let Reason = SwarmRouter.ErrorPayload.Reason.self
+
+        guard origin.isEligibleForWallet else {
+            return replyError(id: id, code: Code.unauthorized,
+                              message: "Origin not permitted.")
+        }
+        guard requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        do {
+            try SwarmRouter.requireEmptyOptions(params)
+        } catch let SwarmRouter.RouterError.invalidParams(reason, message) {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: message, reason: reason)
+        } catch {
+            return replyError(id: id, code: Code.internalError, message: "\(error)")
+        }
+
+        guard let topic = Self.validMessagingTopic(params["topic"]) else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "topic must be a non-empty string ≤ 256 bytes, no control chars.",
+                              reason: Reason.invalidTopic)
+        }
+        // 66-hex compressed secp256k1 key (0x-prefix tolerated).
+        let recipientRaw = (params["recipient"] as? String ?? "")
+        let recipient = recipientRaw.lowercased().hasPrefix("0x")
+            ? String(recipientRaw.dropFirst(2)) : recipientRaw
+        guard recipient.count == 66,
+              recipient.hasPrefix("02") || recipient.hasPrefix("03"),
+              SwarmRef.isHex(recipient, length: 66) else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "recipient must be a 66-char hex compressed public key.",
+                              reason: Reason.invalidRecipient)
+        }
+        let maxDepth = SwarmCapabilities.Limits.defaults.maxTargetDepth
+        guard let targets = params["targets"] as? String,
+              !targets.isEmpty, targets.count % 2 == 0,
+              targets.count / 2 <= maxDepth,
+              SwarmRef.isHex(targets, length: targets.count) else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "targets must be 1–\(maxDepth) bytes of hex.",
+                              reason: Reason.invalidTarget)
+        }
+        let payload: Data
+        do {
+            payload = try Self.parseMessagingPayload(params, emptyReason: nil)
+        } catch let SwarmRouter.RouterError.invalidParams(reason, message) {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: message, reason: reason)
+        } catch {
+            return replyError(id: id, code: Code.internalError, message: "\(error)")
+        }
+
+        guard await requireMessagingSendApproved(
+            id: id, origin: origin,
+            kind: .pss, topic: topic, sizeBytes: payload.count
+        ) else { return }
+        guard requireCanPublish(id: id, origin: origin) else { return }
+        guard let batch = StampService.selectBestBatch(
+            forBytes: SwarmSOC.maxChunkPayloadSize,
+            in: services.currentStamps()
+        ) else {
+            return replyError(id: id, code: Code.nodeUnavailable,
+                              message: "No usable stamp.",
+                              reason: Reason.noUsableStamps)
+        }
+
+        do {
+            try await services.messagingService.sendPss(
+                topic: topic, targets: targets, recipient: recipient,
+                payload: payload, batchID: batch.batchID
+            )
+            services.permissionStore.touchLastUsed(origin: origin.key)
+            reply(id: id, result: ["sent": true])
+        } catch SwarmMessagingService.MessagingError.unreachable {
+            replyError(id: id, code: Code.nodeUnavailable,
+                       message: "Bee unreachable.",
+                       reason: Reason.nodeStopped)
+        } catch {
+            replyError(id: id, code: Code.internalError,
+                       message: "sendPss failed: \(error)")
+        }
+    }
+
+    // MARK: - swarm_sendGsoc
+
+    /// SWIP messaging §"swarm_sendGsoc". No raw-address variant — the
+    /// signing key only falls out of the topic derivation.
+    private func handleSendGsoc(
+        id: Int, origin: OriginIdentity, params: [String: Any]
+    ) async {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        let Reason = SwarmRouter.ErrorPayload.Reason.self
+
+        guard origin.isEligibleForWallet else {
+            return replyError(id: id, code: Code.unauthorized,
+                              message: "Origin not permitted.")
+        }
+        guard requireConnectedOrigin(id: id, origin: origin) else { return }
+
+        do {
+            try SwarmRouter.requireEmptyOptions(params)
+        } catch let SwarmRouter.RouterError.invalidParams(reason, message) {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: message, reason: reason)
+        } catch {
+            return replyError(id: id, code: Code.internalError, message: "\(error)")
+        }
+
+        // An address alone carries nothing to sign with — reject
+        // explicitly so dapps learn the contract (desktop parity).
+        guard params["address"] == nil || params["address"] is NSNull else {
+            return replyError(
+                id: id, code: Code.invalidParams,
+                message: "sendGsoc takes a topic, not an address — "
+                    + "the signing key derives from the topic.",
+                reason: Reason.invalidAddress
+            )
+        }
+        guard let topic = Self.validMessagingTopic(params["topic"]) else {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: "topic must be a non-empty string ≤ 256 bytes, no control chars.",
+                              reason: Reason.invalidTopic)
+        }
+        let payload: Data
+        do {
+            payload = try Self.parseMessagingPayload(
+                params, emptyReason: SwarmRouter.ErrorPayload.Reason.invalidPayload
+            )
+        } catch let SwarmRouter.RouterError.invalidParams(reason, message) {
+            return replyError(id: id, code: Code.invalidParams,
+                              message: message, reason: reason)
+        } catch {
+            return replyError(id: id, code: Code.internalError, message: "\(error)")
+        }
+
+        guard await requireMessagingSendApproved(
+            id: id, origin: origin,
+            kind: .gsoc, topic: topic, sizeBytes: payload.count
+        ) else { return }
+        guard requireCanPublish(id: id, origin: origin) else { return }
+        guard let batch = StampService.selectBestBatch(
+            forBytes: SwarmSOC.maxChunkPayloadSize,
+            in: services.currentStamps()
+        ) else {
+            return replyError(id: id, code: Code.nodeUnavailable,
+                              message: "No usable stamp.",
+                              reason: Reason.noUsableStamps)
+        }
+
+        do {
+            let address = try await services.messagingService.sendGsoc(
+                topic: topic, payload: payload, batchID: batch.batchID
+            )
+            services.permissionStore.touchLastUsed(origin: origin.key)
+            reply(id: id, result: ["sent": true, "address": address])
+        } catch SwarmMessagingService.MessagingError.unreachable {
+            replyError(id: id, code: Code.nodeUnavailable,
+                       message: "Bee unreachable.",
+                       reason: Reason.nodeStopped)
+        } catch {
+            replyError(id: id, code: Code.internalError,
+                       message: "sendGsoc failed: \(error)")
+        }
+    }
+
+    /// Send-tier consent: tier grant (first use — the grant sheet also
+    /// covers this send), then per-send prompt unless auto-approve.
+    private func requireMessagingSendApproved(
+        id: Int, origin: OriginIdentity,
+        kind: SwarmMessagingDetails.SendKind, topic: String, sizeBytes: Int
+    ) async -> Bool {
+        let operation = SwarmMessagingDetails.Operation.send(
+            kind: kind, topic: topic, sizeBytes: sizeBytes
+        )
+        if !services.permissionStore.hasMessagingGrant(origin.key) {
+            // Grant sheet doubles as consent for this first send.
+            return await requireMessagingGrant(id: id, origin: origin, operation: operation)
+        }
+        if services.permissionStore.isAutoApproveMessaging(origin: origin.key) {
+            return true
+        }
+        guard assertEligibleAndFree(id: id, origin: origin) else { return false }
+        let decision = await parkAndAwait(
+            origin: origin,
+            kind: .swarmMessaging(SwarmMessagingDetails(
+                operation: operation, isFirstGrant: false
+            ))
+        )
+        guard case .approved = decision else {
+            replyError(id: id, code: SwarmRouter.ErrorPayload.Code.userRejected,
+                       message: "User rejected the request.")
+            return false
+        }
+        return true
     }
 
     // MARK: - Reply path

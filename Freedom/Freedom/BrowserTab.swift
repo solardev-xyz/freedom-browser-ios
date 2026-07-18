@@ -297,6 +297,11 @@ final class BrowserTab {
         contentController.removeAllUserScripts()
         walletBridge?.installUserScript()
         swarmBridge?.installUserScript()
+        // SWIP messaging: subscriptions are session-scoped — the page
+        // that opened them is going away (this runs from
+        // didStartProvisionalNavigation), so tear them down like
+        // desktop's `did-navigate` hook does.
+        swarmBridge?.cancelSubscriptions()
     }
 
     private func installPullToRefresh() {
@@ -493,6 +498,14 @@ final class BrowserTab {
         activeResolveTask?.cancel()
         cancelActivePreload()
         webView.stopLoading()
+    }
+
+    /// Tab is closing (TabStore.close) — release its subscription
+    /// pipelines; the registry outlives the tab. Not part of `stop()`
+    /// because the toolbar stop-loading button also calls that, and a
+    /// stopped-but-alive page keeps its subscriptions per the SWIP.
+    func teardownSwarmSubscriptions() {
+        swarmBridge?.cancelSubscriptions()
     }
 
     /// Render the current webview contents at a reduced width as JPEG bytes.

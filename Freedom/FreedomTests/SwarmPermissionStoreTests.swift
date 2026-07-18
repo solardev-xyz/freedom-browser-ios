@@ -84,4 +84,38 @@ final class SwarmPermissionStoreTests: XCTestCase {
         XCTAssertTrue(store.isAutoApprovePublish(origin: "foo.eth"))
         XCTAssertFalse(store.isAutoApproveFeeds(origin: "foo.eth"))
     }
+
+    // MARK: - messaging tier (SWIP messaging extension)
+
+    func testMessagingGrantLifecycle() {
+        XCTAssertFalse(store.hasMessagingGrant("foo.eth"))
+        // No connection row → grant is a no-op (messaging requires
+        // the base connection first).
+        store.grantMessaging(origin: "foo.eth")
+        XCTAssertFalse(store.hasMessagingGrant("foo.eth"))
+
+        store.grant(origin: "foo.eth")
+        store.grantMessaging(origin: "foo.eth")
+        XCTAssertTrue(store.hasMessagingGrant("foo.eth"))
+    }
+
+    func testRevokeDropsMessagingGrantAndAutoApprove() {
+        store.grant(origin: "foo.eth")
+        store.grantMessaging(origin: "foo.eth")
+        store.setAutoApproveMessaging(origin: "foo.eth", enabled: true)
+        store.revoke(origin: "foo.eth")
+        // Re-grant starts fresh — SWIP: revocation kills the tier.
+        store.grant(origin: "foo.eth")
+        XCTAssertFalse(store.hasMessagingGrant("foo.eth"))
+        XCTAssertFalse(store.isAutoApproveMessaging(origin: "foo.eth"))
+    }
+
+    func testAutoApproveMessagingRoundtrip() {
+        store.grant(origin: "foo.eth")
+        XCTAssertFalse(store.isAutoApproveMessaging(origin: "foo.eth"))
+        store.setAutoApproveMessaging(origin: "foo.eth", enabled: true)
+        XCTAssertTrue(store.isAutoApproveMessaging(origin: "foo.eth"))
+        XCTAssertFalse(store.isAutoApproveFeeds(origin: "foo.eth"),
+                       "messaging flag independent of feeds")
+    }
 }

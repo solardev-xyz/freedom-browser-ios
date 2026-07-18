@@ -29,13 +29,26 @@ struct SwarmCapabilities: Equatable {
         /// payload cap. Fixed by the Swarm chunk protocol — the SWIP
         /// requires advertising exactly 4096.
         let maxChunkPayloadBytes: Int
+        /// Messaging extension (SWIP messaging §"Limits"). Max PSS/GSOC
+        /// payload — ant enforces `4096 − 3×32 = 4000` usable bytes
+        /// after trojan/SOC framing; same value desktop advertises.
+        let maxMessageBytes: Int
+        /// Max PSS `targets` neighborhood-prefix length in bytes —
+        /// ant's `MAX_TARGET_LEN` (bee API cap).
+        let maxTargetDepth: Int
+        /// Max concurrent subscriptions per origin. The node-wide
+        /// lurker pool is separate (exhaustion → retryable 4900).
+        let maxSubscriptions: Int
 
         static let defaults = Limits(
             maxDataBytes: 10 * 1024 * 1024,
             maxFilesBytes: 50 * 1024 * 1024,
             maxFileCount: 100,
             maxPathBytes: 100,
-            maxChunkPayloadBytes: SwarmSOC.maxChunkPayloadSize
+            maxChunkPayloadBytes: SwarmSOC.maxChunkPayloadSize,
+            maxMessageBytes: 4000,
+            maxTargetDepth: 3,
+            maxSubscriptions: 32
         )
     }
 
@@ -44,6 +57,10 @@ struct SwarmCapabilities: Equatable {
             "specVersion": Self.specVersion,
             "canPublish": canPublish,
             "reason": reason ?? NSNull() as Any,
+            // SWIP messaging extension §"Feature Detection" — MUST be
+            // present before `swarm_requestAccess` (static capability
+            // fact, not user data), so it isn't gated on node state.
+            "features": ["messaging"],
             // Non-standard desktop-parity fields: which signing
             // identity modes this provider offers, and which optional
             // surfaces exist. Lets dapps feature-detect the signing /
@@ -61,6 +78,9 @@ struct SwarmCapabilities: Equatable {
                 "maxFileCount": limits.maxFileCount,
                 "maxPathBytes": limits.maxPathBytes,
                 "maxChunkPayloadBytes": limits.maxChunkPayloadBytes,
+                "maxMessageBytes": limits.maxMessageBytes,
+                "maxTargetDepth": limits.maxTargetDepth,
+                "maxSubscriptions": limits.maxSubscriptions,
             ],
         ]
     }

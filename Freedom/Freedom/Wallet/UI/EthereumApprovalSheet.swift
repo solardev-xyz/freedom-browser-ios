@@ -19,7 +19,7 @@ struct EthereumApprovalSheet: View {
             ApproveTxSheet(approval: approval, details: details)
         case .switchChain(let details):
             ApproveChainSwitchSheet(approval: approval, details: details)
-        case .swarmConnect, .swarmPublish, .swarmFeedAccess:
+        case .swarmConnect, .swarmPublish, .swarmFeedAccess, .swarmMessaging:
             EmptyView()  // routed via the swarm approval binding's sheet
         }
     }

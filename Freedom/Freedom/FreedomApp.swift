@@ -136,6 +136,7 @@ struct FreedomApp: App {
                 return nil
             }
             let swarmBee = BeeAPIClient()
+            let swarmChunkService = SwarmChunkService.live(bee: swarmBee)
             let swarmServices = SwarmServices(
                 permissionStore: swarmPermissions,
                 feedStore: feedStore,
@@ -143,8 +144,12 @@ struct FreedomApp: App {
                 bee: swarmBee,
                 publishService: SwarmPublishService.live(bee: swarmBee),
                 feedService: SwarmFeedService.live(bee: swarmBee),
-                chunkService: SwarmChunkService.live(bee: swarmBee),
+                chunkService: swarmChunkService,
                 readBudget: SwarmReadBudget(),
+                messagingService: SwarmMessagingService.live(
+                    bee: swarmBee, chunkService: swarmChunkService
+                ),
+                subscriptionRegistry: SwarmSubscriptionRegistry(),
                 vault: vault,
                 tagOwnership: TagOwnership(),
                 feedWriteLock: SwarmFeedWriteLock(),

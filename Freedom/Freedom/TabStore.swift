@@ -91,6 +91,7 @@ final class TabStore {
         // the bridge is waiting on, so closing a tab mid-approval doesn't
         // leak the awaiting task.
         liveTabs[id]?.stop()
+        liveTabs[id]?.teardownSwarmSubscriptions()
         liveTabs[id]?.resolvePendingApproval(.denied)
         liveTabs[id]?.resolvePendingSwarmApproval(.denied)
         liveTabs.removeValue(forKey: id)

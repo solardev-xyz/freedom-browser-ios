@@ -24,6 +24,12 @@ struct SwarmServices {
     /// One instance per app session, shared across tabs so same-origin
     /// multi-tab reads draw from a single budget.
     let readBudget: SwarmReadBudget
+    /// SWIP messaging extension: PSS/GSOC sends + messaging identity.
+    let messagingService: SwarmMessagingService
+    /// Subscription pipelines (`swarm_subscribe`). One per app session
+    /// so the per-origin cap and the socket-per-key multiplexing hold
+    /// across tabs.
+    let subscriptionRegistry: SwarmSubscriptionRegistry
     /// Needed for HD-key derivation on feed-write paths — bridge
     /// resolves the publisher key via `SwarmFeedIdentity.signingKey(via:)`.
     let vault: Vault

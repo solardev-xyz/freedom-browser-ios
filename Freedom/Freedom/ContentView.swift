@@ -193,6 +193,8 @@ struct ContentView: View {
                 SwarmPublishSheet(approval: approval, details: details)
             case .swarmFeedAccess(let details):
                 SwarmFeedAccessSheet(approval: approval, details: details)
+            case .swarmMessaging(let details):
+                SwarmMessagingSheet(approval: approval, details: details)
             case .connect, .personalSign, .typedData,
                  .sendTransaction, .switchChain:
                 EmptyView()  // routed via approvalBinding's sheet

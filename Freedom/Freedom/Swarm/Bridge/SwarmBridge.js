@@ -16,6 +16,7 @@
   const eventListeners = {
     connect: [],
     disconnect: [],
+    message: [],  // SWIP messaging extension — SubscriptionMessage push
   };
 
   function emitEvent(event, data) {
@@ -114,6 +115,16 @@
       }
       return next;
     }
+    // Messaging sends take the same `string | Uint8Array | ArrayBuffer`
+    // payload contract as writeFeedEntry ("Strings encoded UTF-8").
+    // `''` must survive as an empty payload — PSS zero-byte pings are
+    // valid — so only skip undefined/null, not falsy.
+    if (method === 'swarm_sendPss' || method === 'swarm_sendGsoc') {
+      if (params.data !== undefined && params.data !== null) {
+        return Object.assign({}, params, { data: __payloadToBase64(params.data) });
+      }
+      return params;
+    }
     return params;
   }
 
@@ -193,6 +204,12 @@
     writeSingleOwnerChunk: function (params) { return makeRequest('swarm_writeSingleOwnerChunk', params); },
     readSingleOwnerChunk: function (params) { return makeRequest('swarm_readSingleOwnerChunk', params); },
     getSigningIdentity: function () { return makeRequest('swarm_getSigningIdentity'); },
+    // Messaging extension (SWIP messaging §"Convenience Methods").
+    getMessagingIdentity: function () { return makeRequest('swarm_getMessagingIdentity'); },
+    subscribe: function (params) { return makeRequest('swarm_subscribe', params); },
+    unsubscribe: function (params) { return makeRequest('swarm_unsubscribe', params); },
+    sendPss: function (params) { return makeRequest('swarm_sendPss', params); },
+    sendGsoc: function (params) { return makeRequest('swarm_sendGsoc', params); },
 
     on: function (event, handler) {
       if (eventListeners[event]) eventListeners[event].push(handler);

@@ -254,6 +254,43 @@ struct BeeAPIClient {
         return (reference, tagUid)
     }
 
+    /// `GET /addresses` — node identity for the messaging extension.
+    /// `pssPublicKey` is the 66-hex compressed secp256k1 key the node's
+    /// lurker decrypts PSS with; `overlay` is the bare-hex 64-char
+    /// overlay address (only a truncated prefix may reach a page — see
+    /// `swarm_getMessagingIdentity`).
+    func getAddresses() async throws -> (pssPublicKey: String, overlay: String) {
+        let dict = try await getJSON("/addresses")
+        guard let pssPublicKey = dict["pssPublicKey"] as? String, !pssPublicKey.isEmpty,
+              let overlay = dict["overlay"] as? String, !overlay.isEmpty else {
+            throw Error.malformedResponse
+        }
+        return (pssPublicKey, overlay)
+    }
+
+    /// `POST /pss/send/{topic}/{targets}?recipient=...` — the gateway
+    /// wraps the body in a trojan chunk (encryption to `recipient`,
+    /// nonce mining toward `targets`), stamps it against `batchID`,
+    /// and pushes it. Fire-and-forget per the SWIP: 2xx means accepted
+    /// for upload, not delivered. `topic` is the 64-hex hashed form
+    /// (`keccak256(utf8(topic))` — bee-js wire behavior); `targets` a
+    /// 2–6-hex neighborhood prefix.
+    func postPss(
+        topicHex: String, targets: String, recipient: String,
+        body: Data, batchID: String
+    ) async throws {
+        _ = try await postBytes(
+            "/pss/send/\(topicHex)/\(targets)",
+            body: body,
+            contentType: "application/octet-stream",
+            headers: ["Swarm-Postage-Batch-Id": batchID],
+            query: ["recipient": recipient],
+            // Mining a 3-byte target is CPU-bound on the node; give it
+            // the same generous budget as the chain-blocked paths.
+            timeout: 120
+        )
+    }
+
     /// `PATCH /stamps/topup/{batchID}/{additionalAmount}` — adds amount
     /// to an existing batch's prepayment, extending its TTL. Bee blocks
     /// the response until the chain tx confirms (~30 s on Gnosis, but

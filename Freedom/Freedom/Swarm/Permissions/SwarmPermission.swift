@@ -15,6 +15,15 @@ final class SwarmPermission {
     var lastUsedAt: Date
     var autoApprovePublish: Bool
     var autoApproveFeeds: Bool
+    /// Messaging tier (SWIP messaging extension). Declaration-level
+    /// defaults (not just init defaults) so SwiftData's lightweight
+    /// migration can fill existing rows.
+    var autoApproveMessaging: Bool = false
+    /// Set when the user approves the messaging-tier grant. `nil` =
+    /// no grant. Lives on this row (not `SwarmFeedIdentity`) because
+    /// the SWIP ties messaging to the connection lifecycle: revoke
+    /// deletes the row and MUST drop the messaging grant with it.
+    var messagingGrantedAt: Date?
 
     init(origin: String, connectedAt: Date = .now) {
         self.origin = origin
@@ -22,5 +31,7 @@ final class SwarmPermission {
         self.lastUsedAt = connectedAt
         self.autoApprovePublish = false
         self.autoApproveFeeds = false
+        self.autoApproveMessaging = false
+        self.messagingGrantedAt = nil
     }
 }

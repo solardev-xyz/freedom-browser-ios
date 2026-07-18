@@ -10,6 +10,12 @@ final class SwarmCapabilitiesTests: XCTestCase {
         XCTAssertEqual(limits.maxPathBytes, 100)
         // Protocol constant — SWIP requires advertising exactly 4096.
         XCTAssertEqual(limits.maxChunkPayloadBytes, 4096)
+        // Messaging extension (desktop-parity values): 4096 − 3×32
+        // usable bytes after PSS/GSOC framing; ant's MAX_TARGET_LEN;
+        // desktop's per-origin subscription cap.
+        XCTAssertEqual(limits.maxMessageBytes, 4000)
+        XCTAssertEqual(limits.maxTargetDepth, 3)
+        XCTAssertEqual(limits.maxSubscriptions, 32)
     }
 
     func testJSONShapeWhenCanPublishTrue() {
@@ -31,6 +37,12 @@ final class SwarmCapabilitiesTests: XCTestCase {
         )
         let extensions = dict["extensions"] as? [String: Any]
         XCTAssertEqual(extensions?["publisherSigning"] as? Bool, true)
+        // SWIP messaging §"Feature Detection" — advertised before
+        // requestAccess, not gated on node state.
+        XCTAssertEqual(dict["features"] as? [String], ["messaging"])
+        XCTAssertEqual(limits?["maxMessageBytes"] as? Int, 4000)
+        XCTAssertEqual(limits?["maxTargetDepth"] as? Int, 3)
+        XCTAssertEqual(limits?["maxSubscriptions"] as? Int, 32)
     }
 
     func testJSONShapeWhenReasonPresent() {

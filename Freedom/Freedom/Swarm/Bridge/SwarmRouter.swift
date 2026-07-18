@@ -75,6 +75,19 @@ final class SwarmRouter {
             static let chunkTypeMismatch = "chunk_type_mismatch"
             static let unsupportedOption = "unsupported_option"
             static let rateLimited = "rate_limited"
+            // messaging-extension reasons (SWIP messaging §"Error Format")
+            static let invalidKind = "invalid_kind"
+            static let invalidAddress = "invalid_address"
+            static let invalidRecipient = "invalid_recipient"
+            static let invalidTarget = "invalid_target"
+            static let invalidPayload = "invalid_payload"
+            static let subscriptionNotFound = "subscription_not_found"
+            static let tooManySubscriptions = "too_many_subscriptions"
+            /// 4900 `data.reason` when the node-wide lurker pool is
+            /// exhausted by other origins' subscriptions — retryable,
+            /// deliberately distinct from `too_many_subscriptions`
+            /// (same vocabulary as desktop).
+            static let nodeSubscriptionLimit = "node_subscription_limit"
         }
     }
 

@@ -96,6 +96,40 @@ final class SwarmPermissionStore {
         save()
     }
 
+    // MARK: - Messaging tier (SWIP messaging extension)
+
+    /// `true` once the user has approved the messaging-tier grant.
+    /// Checked before every messaging method; the bridge prompts and
+    /// calls `grantMessaging` on first approval. Revoke deletes the
+    /// row, so the grant dies with the connection — per the SWIP's
+    /// revocation rule.
+    func hasMessagingGrant(_ origin: String) -> Bool {
+        fetch(origin: origin)?.messagingGrantedAt != nil
+    }
+
+    /// No-op without a connection row — messaging requires the base
+    /// connection grant first (`swarm_requestAccess`).
+    func grantMessaging(origin: String) {
+        guard let permission = fetch(origin: origin) else { return }
+        guard permission.messagingGrantedAt == nil else { return }
+        permission.messagingGrantedAt = .now
+        save()
+    }
+
+    /// Mirrors `isAutoApprovePublish` for the per-send messaging
+    /// consent (`swarm_sendPss` / `swarm_sendGsoc`). Subscribe /
+    /// identity never re-prompt once the tier grant exists.
+    func isAutoApproveMessaging(origin: String) -> Bool {
+        fetch(origin: origin)?.autoApproveMessaging ?? false
+    }
+
+    func setAutoApproveMessaging(origin: String, enabled: Bool) {
+        guard let permission = fetch(origin: origin) else { return }
+        guard permission.autoApproveMessaging != enabled else { return }
+        permission.autoApproveMessaging = enabled
+        save()
+    }
+
     private func fetch(origin: String) -> SwarmPermission? {
         let descriptor = FetchDescriptor<SwarmPermission>(
             predicate: #Predicate { $0.origin == origin }

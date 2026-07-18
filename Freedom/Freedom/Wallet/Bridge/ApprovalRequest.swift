@@ -43,6 +43,10 @@ struct ApprovalRequest: Identifiable {
         /// persists the choice on approve; subsequent grants only
         /// surface the auto-approve toggle (mode is locked).
         case swarmFeedAccess(SwarmFeedAccessDetails)
+        /// Messaging tier (SWIP messaging extension) — first-use grant
+        /// prompt, and per-send consent for `swarm_sendPss` /
+        /// `swarm_sendGsoc` when auto-approve is off.
+        case swarmMessaging(SwarmMessagingDetails)
     }
 
     enum Decision {
@@ -139,6 +143,34 @@ struct SwarmFeedAccessDetails: Equatable {
     let scope: Scope
     /// `true` iff no `SwarmFeedIdentity` row exists for this origin —
     /// drives the identity-mode picker's visibility.
+    let isFirstGrant: Bool
+}
+
+/// Per-call metadata for the messaging tier. One sheet covers both the
+/// first-use grant (identity disclosure + receive-pipeline warning) and
+/// per-send consent; `isFirstGrant` approval writes the tier grant, so
+/// a first send needs only one sheet (grant + this send together).
+struct SwarmMessagingDetails: Equatable {
+    /// Which method asked — drives the sheet copy.
+    enum Operation: Equatable {
+        /// `swarm_getMessagingIdentity` — disclosure of the stable
+        /// messaging key.
+        case identity
+        /// `swarm_subscribe` — opens a bandwidth-consuming pipeline.
+        case subscribe(topic: String)
+        /// `swarm_sendPss` / `swarm_sendGsoc` — consumes a stamp.
+        case send(kind: SendKind, topic: String, sizeBytes: Int)
+    }
+
+    enum SendKind: String, Equatable {
+        case pss
+        case gsoc
+    }
+
+    let operation: Operation
+    /// `true` iff the messaging-tier grant doesn't exist yet — the
+    /// sheet shows the identity/bandwidth grant copy and approval
+    /// persists the grant.
     let isFirstGrant: Bool
 }
 

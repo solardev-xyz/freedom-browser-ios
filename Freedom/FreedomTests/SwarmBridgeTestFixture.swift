@@ -57,6 +57,33 @@ final class SwarmBridgeStubs {
     }
 
     var pendingDecisions: [QueuedDecision] = []
+
+    // Messaging extension stubs.
+    var sendPss: SwarmMessagingService.SendPss?
+    var getAddresses: SwarmMessagingService.GetAddresses?
+    /// In-memory pipelines the registry "dialed", keyed `kind:key` —
+    /// tests push payloads through these to emulate lurker delivery.
+    var subscriptionHandles: [String: StubSubscriptionHandle] = [:]
+    /// Emulates the node-wide lurker pool: when set, dialing more than
+    /// this many concurrent pipelines fails like a WS close 1013.
+    var nodePipelineCapacity: Int?
+}
+
+/// Controllable in-memory `SwarmSubscriptionHandle` — the fixture's
+/// stand-in for a gateway WebSocket.
+@MainActor
+final class StubSubscriptionHandle: SwarmSubscriptionHandle {
+    var onMessage: (@MainActor (Data) -> Void)?
+    var establishError: SwarmSubscriptionError?
+    private(set) var cancelled = false
+
+    func establish() async throws {
+        if let establishError { throw establishError }
+    }
+
+    func cancel() { cancelled = true }
+
+    func push(_ data: Data) { onMessage?(data) }
 }
 
 /// Drives `SwarmBridge.dispatch(...)` end-to-end without WebKit. Real
@@ -82,6 +109,7 @@ final class SwarmBridgeTestFixture {
     let host: StubBridgeHost
     let recorder: RecordingBridgeReplies
     let stubs: SwarmBridgeStubs
+    let subscriptionRegistry: SwarmSubscriptionRegistry
     let bridge: SwarmBridge
 
     init() async throws {
@@ -115,6 +143,39 @@ final class SwarmBridgeTestFixture {
         self.host = host
         self.recorder = recorder
         self.stubs = stubs
+
+        // In-memory subscription pipelines: each dial hands the test a
+        // pushable handle; `nodePipelineCapacity` emulates the node's
+        // lurker pool refusing with close 1013.
+        let subscriptionRegistry = SwarmSubscriptionRegistry(
+            connect: { [stubs] kind, key in
+                let handle = StubSubscriptionHandle()
+                if let cap = stubs.nodePipelineCapacity,
+                   stubs.subscriptionHandles.values.filter({ !$0.cancelled }).count >= cap {
+                    handle.establishError = .nodeSubscriptionLimit
+                }
+                stubs.subscriptionHandles["\(kind):\(key)"] = handle
+                return handle
+            }
+        )
+        self.subscriptionRegistry = subscriptionRegistry
+
+        let chunkService = SwarmChunkService(
+            uploadChunk: { [stubs] body, batch in
+                guard let stub = stubs.uploadChunk else {
+                    XCTFail("uploadChunk unexpectedly called")
+                    return (reference: "", tagUid: nil)
+                }
+                return try await stub(body, batch)
+            },
+            uploadSOC: { [stubs] o, id, s, body, b in
+                guard let stub = stubs.chunkUploadSOC else {
+                    XCTFail("chunk uploadSOC unexpectedly called")
+                    return (reference: "", tagUid: nil)
+                }
+                return try await stub(o, id, s, body, b)
+            }
+        )
 
         let services = SwarmServices(
             permissionStore: permissionStore,
@@ -167,23 +228,26 @@ final class SwarmBridgeTestFixture {
                     return try await stub(ref)
                 }
             ),
-            chunkService: SwarmChunkService(
-                uploadChunk: { [stubs] body, batch in
-                    guard let stub = stubs.uploadChunk else {
-                        XCTFail("uploadChunk unexpectedly called")
-                        return (reference: "", tagUid: nil)
-                    }
-                    return try await stub(body, batch)
-                },
-                uploadSOC: { [stubs] o, id, s, body, b in
-                    guard let stub = stubs.chunkUploadSOC else {
-                        XCTFail("chunk uploadSOC unexpectedly called")
-                        return (reference: "", tagUid: nil)
-                    }
-                    return try await stub(o, id, s, body, b)
-                }
-            ),
+            chunkService: chunkService,
             readBudget: SwarmReadBudget(),
+            messagingService: SwarmMessagingService(
+                sendPss: { [stubs] topicHex, targets, recipient, body, batch in
+                    guard let stub = stubs.sendPss else {
+                        XCTFail("sendPss unexpectedly called")
+                        return
+                    }
+                    try await stub(topicHex, targets, recipient, body, batch)
+                },
+                getAddresses: { [stubs] in
+                    guard let stub = stubs.getAddresses else {
+                        XCTFail("getAddresses unexpectedly called")
+                        return (pssPublicKey: "", overlay: "")
+                    }
+                    return try await stub()
+                },
+                chunkService: chunkService
+            ),
+            subscriptionRegistry: subscriptionRegistry,
             vault: vault,
             tagOwnership: tagOwnership,
             feedWriteLock: feedWriteLock,
