@@ -3,6 +3,7 @@ import IPFSKit
 import Observation
 import OSLog
 import SwiftData
+import WebKit
 
 private let log = Logger(subsystem: "com.browser.Freedom", category: "TabStore")
 
@@ -145,6 +146,44 @@ final class TabStore {
             adblock: adblock,
             ipfs: ipfs
         )
+        wire(tab)
+        liveTabs[id] = tab
+        if let record = record(for: id),
+           let url = record.url,
+           let browserURL = BrowserURL.classify(url) {
+            tab.navigate(to: browserURL)
+        }
+        return tab
+    }
+
+    /// Adopt a WebKit-initiated popup (`window.open` / `target="_blank"`
+    /// from a page): create a record + live tab whose web view is built
+    /// from the configuration WebKit hands us, activate it, and return
+    /// the web view for `createWebViewWith`. WebKit performs the popup's
+    /// initial load itself — no navigate here.
+    private func adoptPopup(configuration: WKWebViewConfiguration) -> WKWebView {
+        let record = TabRecord()
+        context.insert(record)
+        save()
+        records.insert(record, at: 0)
+        let tab = BrowserTab(
+            recordID: record.id,
+            popupConfiguration: configuration,
+            ensResolver: ensResolver,
+            settings: settings,
+            wallet: wallet,
+            swarm: swarm,
+            adblock: adblock,
+            ipfs: ipfs
+        )
+        wire(tab)
+        liveTabs[record.id] = tab
+        activate(record.id)
+        return tab.webView
+    }
+
+    /// Wiring common to restored, fresh, and popup tabs.
+    private func wire(_ tab: BrowserTab) {
         tab.onNavigationFinish = { [weak self, weak tab] url, title in
             guard let self, let tab else { return }
             // ENS-resolved pages now load as `<codec>://name/` directly,
@@ -155,13 +194,13 @@ final class TabStore {
             self.historyStore.record(url: url, title: title)
             self.faviconStore.fetchIfNeeded(for: url, webView: tab.webView)
         }
-        liveTabs[id] = tab
-        if let record = record(for: id),
-           let url = record.url,
-           let browserURL = BrowserURL.classify(url) {
-            tab.navigate(to: browserURL)
+        tab.onCreatePopup = { [weak self] configuration in
+            self?.adoptPopup(configuration: configuration)
         }
-        return tab
+        tab.onRequestClose = { [weak self, weak tab] in
+            guard let self, let tab else { return }
+            self.close(tab.recordID)
+        }
     }
 
     private func record(for id: UUID) -> TabRecord? {

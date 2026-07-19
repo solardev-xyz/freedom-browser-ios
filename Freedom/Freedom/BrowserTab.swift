@@ -153,6 +153,14 @@ final class BrowserTab {
     @ObservationIgnored private var lastScrollY: CGFloat = 0
     @ObservationIgnored private var bottomChromeProbeTask: Task<Void, Never>?
     @ObservationIgnored private let navDelegate = NavDelegate()
+    @ObservationIgnored private let uiDelegate = UIDelegate()
+    /// TabStore's seam for adopting `window.open` / `target="_blank"`
+    /// popups: given the configuration WebKit provides, create + activate
+    /// a new tab and return its web view. Unset → WebKit gets nil and
+    /// `window.open` returns null in the page (the pre-M-tabs behavior).
+    @ObservationIgnored var onCreatePopup: ((WKWebViewConfiguration) -> WKWebView?)?
+    /// `window.close()` from a script-opened page — close this tab.
+    @ObservationIgnored var onRequestClose: (() -> Void)?
     @ObservationIgnored private var activeResolveTask: Task<Void, Never>?
     @ObservationIgnored private let contentController: WKUserContentController
     @ObservationIgnored fileprivate var walletBridge: EthereumBridge?
@@ -164,6 +172,7 @@ final class BrowserTab {
 
     init(
         recordID: UUID = UUID(),
+        popupConfiguration: WKWebViewConfiguration? = nil,
         ensResolver: ENSResolver,
         settings: SettingsStore,
         wallet: WalletServices,
@@ -176,29 +185,49 @@ final class BrowserTab {
         self.settings = settings
         self.adblock = adblock
         self.ipfs = ipfs
-        let config = WKWebViewConfiguration()
-        config.setURLSchemeHandler(BzzSchemeHandler(ensResolver: ensResolver), forURLScheme: "bzz")
-        // One handler instance per scheme — WKWebKit requires distinct
-        // objects per scheme registration even when the implementation
-        // is the same. Both schemes resolve through the same Rust
-        // gateway, but each gets its own handler instance.
-        config.setURLSchemeHandler(
-            IpfsSchemeHandler(
-                node: ipfs,
-                ensResolver: ensResolver,
-                navContext: ipfsNavContext
-            ),
-            forURLScheme: "ipfs"
-        )
-        config.setURLSchemeHandler(
-            IpfsSchemeHandler(
-                node: ipfs,
-                ensResolver: ensResolver,
-                navContext: ipfsNavContext
-            ),
-            forURLScheme: "ipns"
-        )
+        let config: WKWebViewConfiguration
+        if let popupConfiguration {
+            // WebKit-initiated popup (window.open / target=_blank): the
+            // returned web view MUST be created with the configuration
+            // WebKit hands to createWebViewWith — it carries the opener's
+            // process pool and scheme handlers (bzz/ipfs/ipns), so the
+            // popup keeps resolving decentralized schemes; re-registering
+            // a handler for an already-registered scheme would throw.
+            // Caveat: the inherited ipfs/ipns handlers stamp the OPENER's
+            // nav context — correlation-only, and bzz popups (the actual
+            // window.open users today) are unaffected.
+            config = popupConfiguration
+        } else {
+            config = WKWebViewConfiguration()
+            config.setURLSchemeHandler(BzzSchemeHandler(ensResolver: ensResolver), forURLScheme: "bzz")
+            // One handler instance per scheme — WKWebKit requires distinct
+            // objects per scheme registration even when the implementation
+            // is the same. Both schemes resolve through the same Rust
+            // gateway, but each gets its own handler instance.
+            config.setURLSchemeHandler(
+                IpfsSchemeHandler(
+                    node: ipfs,
+                    ensResolver: ensResolver,
+                    navContext: ipfsNavContext
+                ),
+                forURLScheme: "ipfs"
+            )
+            config.setURLSchemeHandler(
+                IpfsSchemeHandler(
+                    node: ipfs,
+                    ensResolver: ensResolver,
+                    navContext: ipfsNavContext
+                ),
+                forURLScheme: "ipns"
+            )
+        }
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+        // Always a FRESH content controller — for a popup the inherited one
+        // belongs to the opener tab's bridges (its script-message handlers
+        // route approvals/subscriptions to that tab, and re-adding handlers
+        // under the same names would crash). Swapping it before the web
+        // view is created gives this tab its own bridge identity; the
+        // provider user scripts are re-injected by the bridges below.
         let contentController = WKUserContentController()
         config.userContentController = contentController
         self.contentController = contentController
@@ -211,6 +240,8 @@ final class BrowserTab {
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = navDelegate
         navDelegate.owner = self
+        self.webView.uiDelegate = uiDelegate
+        uiDelegate.owner = self
 
         // Active chain read live so a wallet-UI chain switch is picked up
         // by dapp reads without rebuilding the router.
@@ -856,6 +887,32 @@ final class BrowserTab {
         }
         // Within the dead zone — keep state, leave the anchor alone so
         // small jitters don't slowly drift the threshold past us.
+    }
+}
+
+/// Bridges WebKit's window-management callbacks to the tab layer. Without
+/// a `WKUIDelegate` implementing `createWebViewWith`, `window.open` (and
+/// `target="_blank"`) returns null in every page and no navigation happens
+/// — dapps that open editors/viewers in new tabs silently degrade to
+/// same-tab fallbacks. The actual tab creation lives in TabStore (it owns
+/// the service dependencies); this just forwards.
+private final class UIDelegate: NSObject, WKUIDelegate {
+    weak var owner: BrowserTab?
+
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        MainActor.assumeIsolated { owner?.onCreatePopup?(configuration) }
+    }
+
+    /// Only fires for pages WebKit itself opened via `createWebViewWith`
+    /// (`window.close()` is a no-op for user-opened tabs) — so closing
+    /// the tab here can't be triggered by arbitrary pages.
+    func webViewDidClose(_ webView: WKWebView) {
+        MainActor.assumeIsolated { owner?.onRequestClose?() }
     }
 }
 
