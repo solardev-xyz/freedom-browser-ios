@@ -222,6 +222,13 @@ final class BrowserTab {
             )
         }
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+        // iOS defaults this to false, which silently voids window.open
+        // OUTSIDE a direct tap — dapps that resolve/decrypt something
+        // async before opening (ddrive's open-document flow) got null and
+        // fell back to same-tab navigation. Desktop Freedom (Electron)
+        // permits gesture-less opens; match it. Popup spam from arbitrary
+        // pages is the accepted trade-off, same as desktop.
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
         // Always a FRESH content controller — for a popup the inherited one
         // belongs to the opener tab's bridges (its script-message handlers
         // route approvals/subscriptions to that tab, and re-adding handlers
@@ -242,6 +249,16 @@ final class BrowserTab {
         navDelegate.owner = self
         self.webView.uiDelegate = uiDelegate
         uiDelegate.owner = self
+        // A popup's first navigation is driven by WEBKIT, not by
+        // navigate(to:) — which is the only place hasNavigated normally
+        // flips. ContentView mounts the web view only when hasNavigated is
+        // true, and WebKit won't render (or progress) a popup whose web
+        // view never joins the view hierarchy: the tab showed HomePage
+        // with the right URL in the pill until a manual reload routed
+        // through navigate(). Popups have navigated by definition.
+        if popupConfiguration != nil {
+            hasNavigated = true
+        }
 
         // Active chain read live so a wallet-UI chain switch is picked up
         // by dapp reads without rebuilding the router.
