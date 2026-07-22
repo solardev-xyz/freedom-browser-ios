@@ -127,6 +127,11 @@ final class SwarmBridgeMessagingTests: XCTestCase {
         params["targets"] = "aabbccdd"  // 4 bytes > maxTargetDepth 3
         await fixture.dispatch(method: "swarm_sendPss", params: params, origin: origin)
         XCTAssertEqual(lastErrorReason(), "invalid_target")
+
+        params = base
+        params["targets"] = "aa"  // 1 byte < floor 2 (too shallow to store)
+        await fixture.dispatch(method: "swarm_sendPss", params: params, origin: origin)
+        XCTAssertEqual(lastErrorReason(), "invalid_target")
     }
 
     func testSendGsocRejectsRawAddressAndEmptyPayload() async {
@@ -187,7 +192,7 @@ final class SwarmBridgeMessagingTests: XCTestCase {
         await fixture.dispatch(method: "swarm_getMessagingIdentity", origin: origin)
         let dict = try XCTUnwrap(fixture.recorder.results.last?.value as? [String: Any])
         XCTAssertEqual(dict["pssPublicKey"] as? String, "02" + String(repeating: "ab", count: 32))
-        XCTAssertEqual(dict["pssTarget"] as? String, "cdcdcd", "3-byte overlay prefix, never the full overlay")
+        XCTAssertEqual(dict["pssTarget"] as? String, "cdcd", "2-byte overlay prefix (L=16), never the full overlay")
         XCTAssertEqual(dict["identityMode"] as? String, "bee-wallet")
 
         // Grant persisted — second call must not prompt (no decision

@@ -121,9 +121,10 @@ final class SwarmMessagingService {
         /// 66-hex compressed secp256k1 — node-global (the lurker
         /// decrypts with the node key), hence `bee-wallet` mode.
         let pssPublicKey: String
-        /// Truncated overlay prefix, `maxTargetDepth` bytes. The full
-        /// overlay MUST NOT reach a page (cross-origin correlation
-        /// handle + discloses exact network position).
+        /// Truncated overlay prefix, `defaultTargetDepth` (2) bytes —
+        /// the L=16 routing convention. The full overlay MUST NOT reach
+        /// a page (cross-origin correlation handle + discloses exact
+        /// network position).
         let pssTarget: String
         let identityMode: String
     }
@@ -137,7 +138,7 @@ final class SwarmMessagingService {
         } catch {
             throw MessagingError.other("addresses: \(error)")
         }
-        let depth = SwarmCapabilities.Limits.defaults.maxTargetDepth
+        let depth = SwarmCapabilities.Limits.defaults.defaultTargetDepth
         let key = addresses.pssPublicKey.lowercased()
             .replacingOccurrences(of: "0x", with: "")
         let overlay = addresses.overlay.lowercased()

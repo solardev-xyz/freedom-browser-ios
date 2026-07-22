@@ -1852,13 +1852,17 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
                               message: "recipient must be a 66-char hex compressed public key.",
                               reason: Reason.invalidRecipient)
         }
+        // 2 bytes is the storability floor (below the network storage
+        // depth a trojan is not retained); maxDepth caps mining cost.
         let maxDepth = SwarmCapabilities.Limits.defaults.maxTargetDepth
+        let minDepth = SwarmCapabilities.Limits.defaults.defaultTargetDepth
         guard let targets = params["targets"] as? String,
               !targets.isEmpty, targets.count % 2 == 0,
+              targets.count / 2 >= minDepth,
               targets.count / 2 <= maxDepth,
               SwarmRef.isHex(targets, length: targets.count) else {
             return replyError(id: id, code: Code.invalidParams,
-                              message: "targets must be 1–\(maxDepth) bytes of hex.",
+                              message: "targets must be \(minDepth)–\(maxDepth) bytes of hex.",
                               reason: Reason.invalidTarget)
         }
         let payload: Data

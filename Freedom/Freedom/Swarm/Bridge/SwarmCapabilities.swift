@@ -34,8 +34,18 @@ struct SwarmCapabilities: Equatable {
         /// after trojan/SOC framing; same value desktop advertises.
         let maxMessageBytes: Int
         /// Max PSS `targets` neighborhood-prefix length in bytes —
-        /// ant's `MAX_TARGET_LEN` (bee API cap).
+        /// ant's `MAX_TARGET_LEN` (bee API cap). Caps sender mining cost.
         let maxTargetDepth: Int
+        /// Default (and minimum) PSS `targets` depth in bytes — the L=16
+        /// network mining convention. `pssTarget` is emitted at this
+        /// depth, and sends shallower than this are rejected. Two
+        /// reasons: below the network storage depth (~12 bits) a trojan
+        /// is not retained by any storer (a 1-byte target is
+        /// undeliverable); and a deeper prefix costs the sender ~256×
+        /// per byte to mine with no reception benefit at light-node
+        /// residency (ant's lurker assumes 16 bits). Not advertised —
+        /// internal to target handling.
+        let defaultTargetDepth: Int
         /// Max concurrent subscriptions per origin. The node-wide
         /// lurker pool is separate (exhaustion → retryable 4900).
         let maxSubscriptions: Int
@@ -48,6 +58,7 @@ struct SwarmCapabilities: Equatable {
             maxChunkPayloadBytes: SwarmSOC.maxChunkPayloadSize,
             maxMessageBytes: 4000,
             maxTargetDepth: 3,
+            defaultTargetDepth: 2,
             maxSubscriptions: 32
         )
     }
