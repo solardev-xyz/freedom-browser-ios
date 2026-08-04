@@ -47,7 +47,7 @@ final class ColibriDiskStorageMigrationTests: XCTestCase {
 
     func testMatchingMarkerPreservesState() throws {
         try seedStaleState()
-        let version = "1.1.30"
+        let version = "2.0.2"
         try version.write(to: markerURL, atomically: true, encoding: .utf8)
         ColibriDiskStorage.register(directory: dir)
         XCTAssertTrue(
@@ -63,7 +63,7 @@ final class ColibriDiskStorageMigrationTests: XCTestCase {
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: dir.appendingPathComponent("sync_1_1784").path)
         )
-        XCTAssertEqual(try String(contentsOf: markerURL, encoding: .utf8), "1.1.30")
+        XCTAssertEqual(try String(contentsOf: markerURL, encoding: .utf8), "2.0.2")
     }
 
     func testFreshDirectoryJustGetsMarker() throws {

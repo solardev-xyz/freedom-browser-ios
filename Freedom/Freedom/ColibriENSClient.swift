@@ -201,7 +201,7 @@ enum ColibriDiskStorage {
     /// Colibri resolution to the quorum fallback. Wiping on mismatch
     /// costs one fresh checkpointz bootstrap (~seconds); keeping stale
     /// state costs verified resolution entirely.
-    private static let storageFormatVersion = "1.1.30"
+    private static let storageFormatVersion = "2.0.2"
     private static let storageFormatMarker = "freedom-colibri-storage-version"
 
     /// One-shot registration. Safe to call multiple times; the underlying
