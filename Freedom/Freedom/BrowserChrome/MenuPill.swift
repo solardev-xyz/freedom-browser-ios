@@ -10,11 +10,14 @@ import IPFSKit
 /// item closest to the user's finger is first in code. We follow that
 /// convention so the visual top-down order matches the user's spec.
 struct MenuPill: View {
-    let swarmStatus: SwarmStatus
-    let swarmPeerCount: Int
-    let ipfsStatus: IPFSStatus
+    let swarmSegment: NodeSegmentState
+    let ipfsSegment: NodeSegmentState
+    let ethereumSegment: NodeSegmentState
+    let gnosisSegment: NodeSegmentState
     let swarmStatsLine: String
     let ipfsStatsLine: String
+    let ethereumStatsLine: String
+    let gnosisStatsLine: String
 
     let isURLBookmarked: Bool
     let canBookmark: Bool
@@ -26,6 +29,7 @@ struct MenuPill: View {
     let onWallet: () -> Void
     let onSwarmNode: () -> Void
     let onIpfsNode: () -> Void
+    let onLightClient: () -> Void
     let onSettings: () -> Void
 
     var body: some View {
@@ -68,22 +72,31 @@ struct MenuPill: View {
 
             // Top-most section: tappable node entries grouped under one
             // "Nodes" header. Each row's label already carries the node
-            // name + live peer count, so the section header just frames
-            // them. Per the bottom-up convention, Swarm last in code →
-            // top of the visual menu (primary), IPFS one row below it.
+            // name + live state, so the section header just frames
+            // them. Per the bottom-up convention the code order is the
+            // REVERSE of the visual: Ethereum tops the visual menu,
+            // then Gnosis, Swarm, IPFS. Both chain rows open the same
+            // light-client sheet (one engine, per-chain detail inside).
             Section("Nodes") {
                 Button(action: onIpfsNode) {
-                    Label(ipfsStatsLine, systemImage: "globe.asia.australia.fill")
+                    Label { Text(ipfsStatsLine) } icon: { Image("NodeIPFS") }
                 }
                 Button(action: onSwarmNode) {
-                    Label(swarmStatsLine, systemImage: "circle.hexagongrid.fill")
+                    Label { Text(swarmStatsLine) } icon: { Image("NodeSwarm") }
+                }
+                Button(action: onLightClient) {
+                    Label { Text(gnosisStatsLine) } icon: { Image("NodeGnosis") }
+                }
+                Button(action: onLightClient) {
+                    Label { Text(ethereumStatsLine) } icon: { Image("NodeEthereum") }
                 }
             }
         } label: {
             NodeStatusIcon(
-                swarmStatus: swarmStatus,
-                swarmPeerCount: swarmPeerCount,
-                ipfsStatus: ipfsStatus
+                swarm: swarmSegment,
+                ipfs: ipfsSegment,
+                ethereum: ethereumSegment,
+                gnosis: gnosisSegment
             )
         }
         .modifier(NativeGlassMenuStyle())

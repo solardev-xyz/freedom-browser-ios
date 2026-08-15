@@ -41,6 +41,7 @@ struct ContentView: View {
     @State private var isShowingWallet = false
     @State private var isShowingNode = false
     @State private var isShowingIpfsNode = false
+    @State private var isShowingMyotisNode = false
     @FocusState private var addressFocused: Bool
     /// Gates suggestions so they don't appear before the user actually
     /// types in the prefilled URL (Safari behavior). Reset on every
@@ -168,6 +169,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingIpfsNode) {
             IpfsNodeSheet(isPresented: $isShowingIpfsNode)
+        }
+        .sheet(isPresented: $isShowingMyotisNode) {
+            MyotisNodeSheet(isPresented: $isShowingMyotisNode)
         }
         .sheet(item: approvalBinding) { approval in
             EthereumApprovalSheet(approval: approval)
@@ -385,11 +389,20 @@ struct ContentView: View {
                         .transition(.opacity)
                 } else if mode == .normal {
                     MenuPill(
-                        swarmStatus: swarm.status,
-                        swarmPeerCount: swarm.peerCount,
-                        ipfsStatus: ipfs.status,
+                        swarmSegment: .fromSwarm(swarm.status, peerCount: swarm.peerCount),
+                        ipfsSegment: .fromIpfs(ipfs.status),
+                        ethereumSegment: .fromMyotisChain(
+                            myotis.status,
+                            chain: myotis.chainStatus[MyotisNetwork.mainnet.chainId]
+                        ),
+                        gnosisSegment: .fromMyotisChain(
+                            myotis.status,
+                            chain: myotis.chainStatus[MyotisNetwork.gnosis.chainId]
+                        ),
                         swarmStatsLine: swarmStatsLine,
                         ipfsStatsLine: ipfsStatsLine,
+                        ethereumStatsLine: ethereumStatsLine,
+                        gnosisStatsLine: gnosisStatsLine,
                         isURLBookmarked: isActiveURLBookmarked,
                         canBookmark: activeURL != nil,
                         shareURL: activeURL,
@@ -399,6 +412,7 @@ struct ContentView: View {
                         onWallet: { isShowingWallet = true },
                         onSwarmNode: { isShowingNode = true },
                         onIpfsNode: { isShowingIpfsNode = true },
+                        onLightClient: { isShowingMyotisNode = true },
                         onSettings: { isShowingSettings = true }
                     )
                     // iOS 26's `.buttonStyle(.glass)` reserves a slightly
@@ -568,15 +582,31 @@ struct ContentView: View {
         nodeLine(prefix: "Swarm", running: swarm.status == .running, peerCount: swarm.peerCount, status: swarm.status.rawValue)
     }
 
-    /// "IPFS · 12 blocks cached" / "IPFS · Off". The Rust reader has no
-    /// libp2p peer set — show cache health instead so the menu line
-    /// reflects something useful.
+    /// "IPFS · Online" / "IPFS · Off". The Rust reader has no libp2p
+    /// peer set, and cache-size numbers are implementation detail — a
+    /// single state word keeps the row to one line (block counts live
+    /// in the IPFS sheet).
     private var ipfsStatsLine: String {
         guard ipfs.status == .running else {
             return "IPFS · \(ipfs.status.rawValue.capitalized)"
         }
-        let blocks = ipfs.diagnostics?.stats.blockCount ?? 0
-        return "IPFS · \(blocks) block\(blocks == 1 ? "" : "s") cached"
+        return "IPFS · Online"
+    }
+
+    /// "Ethereum · Verified" / "· Syncing" / "· Off" — light-client
+    /// chain rows. Wording decided by `MyotisMenuLine` (pure, tested).
+    private var ethereumStatsLine: String {
+        MyotisMenuLine.row(
+            "Ethereum", nodeStatus: myotis.status,
+            chain: myotis.chainStatus[MyotisNetwork.mainnet.chainId]
+        )
+    }
+
+    private var gnosisStatsLine: String {
+        MyotisMenuLine.row(
+            "Gnosis", nodeStatus: myotis.status,
+            chain: myotis.chainStatus[MyotisNetwork.gnosis.chainId]
+        )
     }
 
     private func nodeLine(prefix: String, running: Bool, peerCount: Int, status: String) -> String {

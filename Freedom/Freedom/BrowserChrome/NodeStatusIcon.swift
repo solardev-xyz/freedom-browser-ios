@@ -1,105 +1,138 @@
 import SwiftUI
 import SwarmKit
 import IPFSKit
+import MyotisKit
+
+/// Display state of one segment in the node indicator. The mapping from
+/// each node's richer status is a pure function so the decision tables
+/// are unit-testable without views.
+enum NodeSegmentState: Equatable {
+    /// Deliberately disabled / not running — neutral absence, not alarm.
+    case off
+    /// Start failure, ABI mismatch — the only state that renders red.
+    case failed
+    /// Coming up: starting, syncing, connecting, finding state peers.
+    case warming
+    /// Fully serving (running with peers / verified reads available).
+    case healthy
+
+    var color: Color {
+        switch self {
+        case .off: .gray.opacity(0.45)
+        case .failed: .red
+        case .warming: .orange
+        case .healthy: .green
+        }
+    }
+
+    static func fromSwarm(_ status: SwarmStatus, peerCount: Int) -> NodeSegmentState {
+        switch status {
+        case .idle, .stopping, .stopped: .off
+        case .failed: .failed
+        case .starting: .warming
+        case .running: peerCount == 0 ? .warming : .healthy
+        }
+    }
+
+    static func fromIpfs(_ status: IPFSStatus) -> NodeSegmentState {
+        switch status {
+        case .idle, .stopping, .stopped: .off
+        case .failed: .failed
+        case .starting: .warming
+        case .running: .healthy
+        }
+    }
+
+    /// One light-client chain. `healthy` means verified reads are
+    /// actually servable (SYNCED + snap peer), not merely beacon-synced.
+    static func fromMyotisChain(
+        _ status: MyotisStatus,
+        chain: MyotisChainStatus?
+    ) -> NodeSegmentState {
+        switch status {
+        case .idle, .stopping, .stopped: return .off
+        case .failed: return .failed
+        case .starting: return .warming
+        case .running: return (chain?.ready ?? false) ? .healthy : .warming
+        }
+    }
+}
 
 /// Ambient node-health label for the menu pill. Replaces the ellipsis so
-/// the user always knows their node states without opening either node
-/// sheet.
+/// the user always knows their node states without opening a node sheet.
 ///
-/// Visual encoding:
-///   - Center dot color: Swarm status — red = off · orange = warming up · green = running with ≥1 peer
-///   - Arcs above the dot (Swarm peer-count tiers, colored to match the dot):
-///       0 arcs · <10 peers
-///       1 arc  · 10–99 peers
-///       2 arcs · 100+ peers
-///   - Arcs below the dot (IPFS reader state — no peers; one arc means
-///     gateway is up, dot color tracks status). The Rust reader has no
-///     libp2p peer set so we don't tier IPFS by peer count.
+/// Visual encoding: one ring of four quarter-arc segments with gaps at
+/// 12/3/6/9 o'clock, each colored by that node's `NodeSegmentState`
+/// (gray = off · red = failed · orange = warming · green = healthy):
+///
+///   top-left  Swarm        top-right    IPFS
+///   bottom-left Ethereum   bottom-right Gnosis
+///
+/// Content nodes across the top, chain verification across the bottom.
 struct NodeStatusIcon: View {
-    let swarmStatus: SwarmStatus
-    let swarmPeerCount: Int
-    let ipfsStatus: IPFSStatus
+    let swarm: NodeSegmentState
+    let ipfs: NodeSegmentState
+    let ethereum: NodeSegmentState
+    let gnosis: NodeSegmentState
 
     var body: some View {
         ZStack {
-            Circle()
-                .fill(swarmColor)
-                .frame(width: 5, height: 5)
-            // Swarm: arcs above
-            if swarmArcCount >= 1 { arc(diameter: 12, color: swarmColor, above: true) }
-            if swarmArcCount >= 2 { arc(diameter: 18, color: swarmColor, above: true) }
-            // IPFS: a single arc below when the gateway is up.
-            if ipfsStatus == .running { arc(diameter: 12, color: ipfsColor, above: false) }
+            segment(topLeft, color: swarm.color)
+            segment(topRight, color: ipfs.color)
+            segment(bottomLeft, color: ethereum.color)
+            segment(bottomRight, color: gnosis.color)
         }
         .frame(width: 22, height: 22)
         .accessibilityLabel(accessibilityLabel)
     }
 
-    /// Trim windows are 0.30 wide so the visible arc spans the same
-    /// angular range above and below. `above: true` traces the upper
-    /// hemisphere; `above: false` traces the lower (mirror across the
-    /// horizontal axis).
-    private func arc(diameter: CGFloat, color: Color, above: Bool) -> some View {
+    // Circle().trim starts at 3 o'clock and runs clockwise: 0.25 = 6,
+    // 0.5 = 9, 0.75 = 12 o'clock. Each quadrant keeps a 0.03 gap on
+    // both sides so the four segments read as four things at 22pt.
+    private var bottomRight: (CGFloat, CGFloat) { (0.03, 0.22) }
+    private var bottomLeft: (CGFloat, CGFloat) { (0.28, 0.47) }
+    private var topLeft: (CGFloat, CGFloat) { (0.53, 0.72) }
+    private var topRight: (CGFloat, CGFloat) { (0.78, 0.97) }
+
+    private func segment(_ range: (CGFloat, CGFloat), color: Color) -> some View {
         Circle()
-            .trim(from: above ? 0.6 : 0.1, to: above ? 0.9 : 0.4)
-            .stroke(color, style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
-            .frame(width: diameter, height: diameter)
-    }
-
-    private var swarmColor: Color {
-        switch swarmStatus {
-        case .idle, .stopping, .stopped, .failed: return .red
-        case .starting:                            return .orange
-        case .running:                             return swarmPeerCount == 0 ? .orange : .green
-        }
-    }
-
-    private var ipfsColor: Color {
-        switch ipfsStatus {
-        case .idle, .stopping, .stopped, .failed: return .red
-        case .starting:                            return .orange
-        case .running:                             return .green
-        }
-    }
-
-    private var swarmArcCount: Int { arcCount(running: swarmStatus == .running, peers: swarmPeerCount) }
-
-    private func arcCount(running: Bool, peers: Int) -> Int {
-        guard running else { return 0 }
-        if peers >= 100 { return 2 }
-        if peers >= 10  { return 1 }
-        return 0
+            .trim(from: range.0, to: range.1)
+            .stroke(color, style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+            .frame(width: 16, height: 16)
     }
 
     private var accessibilityLabel: String {
-        "Swarm: \(describeSwarm()). IPFS: \(ipfsStatus.rawValue)."
+        "Swarm \(describe(swarm)). IPFS \(describe(ipfs)). "
+            + "Ethereum light client \(describe(ethereum)). Gnosis light client \(describe(gnosis))."
     }
 
-    private func describeSwarm() -> String {
-        guard swarmStatus == .running else { return swarmStatus.rawValue }
-        return swarmPeerCount == 0
-            ? "running, connecting"
-            : "running, \(swarmPeerCount) peer\(swarmPeerCount == 1 ? "" : "s")"
+    private func describe(_ state: NodeSegmentState) -> String {
+        switch state {
+        case .off: "off"
+        case .failed: "failed"
+        case .warming: "starting"
+        case .healthy: "healthy"
+        }
     }
 }
 
 #Preview {
     HStack(spacing: 24) {
         VStack(spacing: 4) {
-            NodeStatusIcon(swarmStatus: .stopped, swarmPeerCount: 0, ipfsStatus: .stopped)
-            Text("both off").font(.caption2)
+            NodeStatusIcon(swarm: .off, ipfs: .off, ethereum: .off, gnosis: .off)
+            Text("all off").font(.caption2)
         }
         VStack(spacing: 4) {
-            NodeStatusIcon(swarmStatus: .running, swarmPeerCount: 5, ipfsStatus: .stopped)
-            Text("S 5 / I off").font(.caption2)
+            NodeStatusIcon(swarm: .healthy, ipfs: .healthy, ethereum: .warming, gnosis: .warming)
+            Text("chains syncing").font(.caption2)
         }
         VStack(spacing: 4) {
-            NodeStatusIcon(swarmStatus: .running, swarmPeerCount: 50, ipfsStatus: .running)
-            Text("S 50 / I on").font(.caption2)
+            NodeStatusIcon(swarm: .healthy, ipfs: .healthy, ethereum: .healthy, gnosis: .healthy)
+            Text("all green").font(.caption2)
         }
         VStack(spacing: 4) {
-            NodeStatusIcon(swarmStatus: .running, swarmPeerCount: 200, ipfsStatus: .running)
-            Text("S 200 / I on").font(.caption2)
+            NodeStatusIcon(swarm: .warming, ipfs: .failed, ethereum: .healthy, gnosis: .off)
+            Text("mixed").font(.caption2)
         }
     }
     .padding()
