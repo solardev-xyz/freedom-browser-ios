@@ -23,28 +23,21 @@ let package = Package(
         .library(name: "MyotisKit", targets: ["MyotisKit"]),
     ],
     targets: [
-        // Combined Swarm + IPFS Rust staticlib from
-        // solardev-xyz/freedom-mobile-ffi (built from ant v0.5.42 +
-        // freedom-ipfs v0.4.3). SHA256 verified by SwiftPM before
-        // unpacking; bumps require a new release tag + checksum.
+        // Combined Swarm + IPFS + Myotis Rust staticlib from
+        // solardev-xyz/freedom-mobile-ffi (built from ant v0.5.43 +
+        // freedom-ipfs v0.4.3 + myotis v0.1.7). SHA256 verified by
+        // SwiftPM before unpacking; bumps require a new release tag +
+        // checksum.
         // Local-path development override: comment out the URL/checksum
         // pair and replace with
         // `path: "../../../freedom-mobile-ffi/target/ios-xcframework/FreedomMobile.xcframework"`,
         // building locally with `./scripts/build-xcframework.sh` from
         // `../freedom-mobile-ffi`.
-        // DEV (feature/myotis-node): local 3-node framework (ant v0.5.43 +
-        // freedom-ipfs v0.4.3 + myotis v0.1.7) from freedom-mobile-ffi
-        // branch dev/myotis-spike. Flip back to a url/checksum release
-        // before merge.
         .binaryTarget(
             name: "FreedomMobile",
-            path: "../../../freedom-mobile-ffi/target/ios-xcframework/FreedomMobile.xcframework"
+            url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.8.0/FreedomMobile.xcframework.zip",
+            checksum: "f0e042d6f46f45ceb74cebecd039a2e3deab7d69548ae54fc7933b7a18ab3306"
         ),
-        // .binaryTarget(
-        //     name: "FreedomMobile",
-        //     url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.7.5/FreedomMobile.xcframework.zip",
-        //     checksum: "eef13817c8b544bcffeec68cfa495fab9ac8eeb673d9d63d403626a448a76b12"
-        // ),
         .target(
             name: "SwarmKit",
             dependencies: ["FreedomMobile"],

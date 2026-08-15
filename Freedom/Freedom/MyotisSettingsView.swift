@@ -54,7 +54,8 @@ struct MyotisSettingsView: View {
             return status.beaconState.isEmpty ? "starting" : status.beaconState.lowercased()
         }
         let readiness = status.ready ? "verified reads" : "finding state peers"
-        return "synced · \(status.peerCount) peers · \(readiness)"
+        let peers = status.peerCount == 1 ? "1 peer" : "\(status.peerCount) peers"
+        return "synced · \(peers) · \(readiness)"
     }
 
     private var enableBinding: Binding<Bool> {
