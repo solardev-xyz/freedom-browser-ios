@@ -26,7 +26,16 @@ private struct TrustDetailsSheet: View {
             List {
                 Section { levelHeader }
 
-                if isColibri {
+                if isMyotis {
+                    Section("Light Client") {
+                        LabeledContent("Runs on", value: "this device")
+                        if trust.block.number > 0 {
+                            LabeledContent("Verified head") {
+                                Text("\(trust.block.number)").monospacedDigit()
+                            }
+                        }
+                    }
+                } else if isColibri {
                     Section("Prover") {
                         ForEach(trust.queried, id: \.self) { hostRow($0) }
                     }
@@ -81,6 +90,7 @@ private struct TrustDetailsSheet: View {
     }
 
     private var isColibri: Bool { trust.method == .colibri }
+    private var isMyotis: Bool { trust.method == .myotis }
 
     private var levelHeader: some View {
         HStack(spacing: 12) {
@@ -100,11 +110,16 @@ private struct TrustDetailsSheet: View {
     }
 
     private var title: String {
+        if isMyotis, trust.level == .verified { return "Verified peer-to-peer" }
         if isColibri, trust.level == .verified { return "Cryptographically verified" }
         return trust.level.displayName
     }
 
     private var summary: String {
+        if isMyotis, trust.level == .verified {
+            // Like Colibri, the Myotis tier only ever mints `.verified`.
+            return "Resolved by this device's embedded Ethereum light client — Merkle-proven state anchored to beacon-chain finality, with no RPC provider or prover in the loop."
+        }
         if isColibri {
             switch trust.level {
             case .verified:
@@ -145,10 +160,11 @@ private struct TrustDetailsSheet: View {
 }
 
 private extension ENSTrust {
-    /// Colibri verification gets a distinct `seal` glyph — a proof-backed
-    /// guarantee, visually separate from the `shield` of M-of-K quorum
+    /// Proof-backed verification (Myotis, Colibri) gets a distinct `seal`
+    /// glyph, visually separate from the `shield` of M-of-K quorum
     /// agreement.
     var shieldSymbol: String {
+        if method == .myotis, level == .verified { return "checkmark.seal.fill" }
         if method == .colibri, level == .verified { return "checkmark.seal.fill" }
         switch level {
         case .verified: return "checkmark.shield.fill"

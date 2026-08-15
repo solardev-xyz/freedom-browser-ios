@@ -44,6 +44,12 @@ final class ENSResolver {
     /// Colibri branch — `consensusResolve` then skips Colibri regardless
     /// of `settings.ensResolutionMethod`.
     private let colibri: ColibriENSClient?
+    /// Fully-P2P verified path (embedded Myotis light client). Nil in
+    /// unit tests that don't exercise it. Unlike Colibri this tier is not
+    /// method-picker-gated: it runs first whenever the client reports
+    /// available, falling through unconditionally otherwise — the picker
+    /// chooses what it falls back TO.
+    private let myotis: MyotisENSClient?
 
     typealias ReverseTransport = @Sendable (URL, Data, TimeInterval) async throws -> Data
     nonisolated static let defaultReverseTransport: ReverseTransport = { url, body, timeout in
@@ -64,7 +70,8 @@ final class ENSResolver {
         reverseTransport: @escaping ReverseTransport = ENSResolver.defaultReverseTransport,
         reverseCCIPHTTP: @escaping CCIPResolver.HTTPClient = CCIPResolver.defaultHTTP,
         clock: @escaping () -> Date = Date.init,
-        colibri: ColibriENSClient? = nil
+        colibri: ColibriENSClient? = nil,
+        myotis: MyotisENSClient? = nil
     ) {
         self.pool = pool
         self.settings = settings
@@ -74,6 +81,7 @@ final class ENSResolver {
         self.reverseCCIPHTTP = reverseCCIPHTTP
         self.clock = clock
         self.colibri = colibri
+        self.myotis = myotis
     }
 
     // MARK: - Public entry
@@ -88,6 +96,22 @@ final class ENSResolver {
         anchor.invalidate()
         pool.invalidate()
         colibri?.invalidate()
+    }
+
+    /// Clears the result caches only (content, address, reverse), leaving
+    /// pool quarantine / anchor / client state intact. Called when the
+    /// Myotis node's availability flips in either direction, so takeover
+    /// (upgrade lower-tier answers to P2P-verified) and failover (stop
+    /// serving results the now-gone tier minted) happen immediately
+    /// instead of waiting out cached TTLs. Desktop parity.
+    func sweepResultCaches() {
+        cache.removeAll()
+        for task in inFlight.values { task.cancel() }
+        inFlight.removeAll()
+        addressCache.removeAll()
+        for task in addressInFlight.values { task.cancel() }
+        addressInFlight.removeAll()
+        reverseCache.removeAll()
     }
 
     /// Resolve an ENS name to a navigable content URL. Normalizes via
@@ -295,6 +319,30 @@ final class ENSResolver {
     ) async throws -> ConsensusResult {
         let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
 
+        // Myotis first: fully-P2P verification with no prover in the
+        // loop, on whenever the embedded node reports itself able to
+        // serve (SYNCED + snap peer). Fall-through is UNCONDITIONAL —
+        // unlike Colibri, a failed P2P read is an expected warm-up /
+        // churn condition, not a security signal worth failing closed
+        // over, and the tiers below independently re-verify. An
+        // OffchainLookup revert also falls through here: the quorum path
+        // owns the CCIP gateway drive (the Colibri tier repeats the
+        // call in that rare case — accepted redundancy for a linear
+        // pipeline).
+        if let myotis, myotis.isAvailable {
+            do {
+                return try await tryMyotis(
+                    dnsEncodedName: dnsEncodedName, callData: callData,
+                    client: myotis, system: system
+                )
+            } catch let err as ColibriENSError {
+                log.info(
+                    "[ens] myotis-fallthrough error=\(String(describing: err), privacy: .public)"
+                )
+                // fall through to Colibri / quorum
+            }
+        }
+
         // Colibri primary: cryptographic verification via the sync committee
         // (or ZK sync proof). On verification failure or network/prover
         // error we log loudly and fall through to the legacy quorum path
@@ -483,6 +531,46 @@ final class ENSResolver {
         }
     }
 
+    /// Mirror of `tryColibri` for the embedded P2P tier. Same revert
+    /// classification (`classifyColibriRevert` — the shapes are chain
+    /// facts, not prover artifacts), different trust label: `.myotis`
+    /// results were verified end-to-end on this device against beacon
+    /// finality, with no remote prover trusted for liveness or data.
+    private func tryMyotis(
+        dnsEncodedName: Data,
+        callData: Data,
+        client: MyotisENSClient,
+        system: NameSystem = .ens
+    ) async throws -> ConsensusResult {
+        let trust = buildMyotisTrust(client: client, system: system)
+        if let contract = system.contractAddress {
+            let (data, resolver) = try await client.nameNftCall(
+                contract: contract, callData: callData
+            )
+            return .data(resolvedData: data, resolverAddress: resolver, trust: trust)
+        }
+        do {
+            let (data, resolver) = try await client.universalResolverCall(
+                dnsEncodedName: dnsEncodedName, callData: callData
+            )
+            return .data(resolvedData: data, resolverAddress: resolver, trust: trust)
+        } catch ColibriENSError.revert(let revertHex) {
+            switch Self.classifyColibriRevert(revertHex) {
+            case .offchainLookup:
+                // CCIP-gated content — the quorum path drives the
+                // gateway hop. Rethrow to fall through.
+                throw ColibriENSError.revert(data: revertHex)
+            case .dataless:
+                // Ambiguous shape; don't mint a verified negative.
+                throw ColibriENSError.proofFailed(
+                    message: "verified revert without return data — falling through"
+                )
+            case .verifiedNotFound:
+                return .notFound(reason: .noContenthash, trust: trust)
+            }
+        }
+    }
+
     /// How a verified Colibri revert should be handled. Pure so the
     /// decision table is unit-testable without a live prover.
     enum ColibriRevertClass: Equatable {
@@ -513,6 +601,29 @@ final class ENSResolver {
             agreed: [client.activeProverHost],
             dissented: [],
             queried: [client.activeProverHost],
+            k: 1, m: 1
+        )
+    }
+
+    /// The "provider" of a Myotis result is the device's own light
+    /// client — surfaced under this label in the trust popover. The
+    /// block is the engine's verified EL head (display context; 0 when
+    /// not yet reported), with no hash: the anchoring is beacon
+    /// finality, not a pinned quorum block.
+    static let myotisProviderLabel = "embedded P2P light client"
+
+    private func buildMyotisTrust(
+        client: MyotisENSClient,
+        system: NameSystem = .ens
+    ) -> ENSTrust {
+        ENSTrust(
+            level: .verified,
+            system: system,
+            method: .myotis,
+            block: ENSBlock(number: client.verifiedBlockNumber, hash: ""),
+            agreed: [Self.myotisProviderLabel],
+            dissented: [],
+            queried: [Self.myotisProviderLabel],
             k: 1, m: 1
         )
     }
@@ -824,6 +935,18 @@ final class ENSResolver {
     }
 
     private func fetchReverseName(address: EthereumAddress) async throws -> ENSReverseResolution {
+        // Myotis first, same unconditional fall-through as forward
+        // resolution.
+        if let myotis, myotis.isAvailable {
+            do {
+                return try await myotisReverse(address: address, client: myotis)
+            } catch let err as ColibriENSError {
+                log.info(
+                    "[ens] myotis-fallthrough reverse address=\(address.asString(), privacy: .public) error=\(String(describing: err), privacy: .public)"
+                )
+            }
+        }
+
         // Colibri primary path. On `ColibriENSError` we log loudly and
         // fall through to quorum unless `ensFallbackToQuorum` is disabled.
         if settings.ensResolutionMethod == .colibri, let colibri {
@@ -988,6 +1111,25 @@ final class ENSResolver {
     private func colibriReverse(
         address: EthereumAddress,
         client: ColibriENSClient
+    ) async throws -> ENSReverseResolution {
+        do {
+            let name = try await client.universalResolverReverse(address: address)
+            return name.isEmpty ? .none : .verified(name: name)
+        } catch ColibriENSError.revert(let revertHex) {
+            guard UniversalResolverABI.isReverseAddressMismatch(revertHex: revertHex) else {
+                return .none
+            }
+            return .unverified(
+                claimedName: UniversalResolverABI.decodeReverseMismatchClaimedName(revertHex: revertHex)
+            )
+        }
+    }
+
+    /// Mirror of `colibriReverse` for the P2P tier — same UR revert
+    /// vocabulary, same spoof decode.
+    private func myotisReverse(
+        address: EthereumAddress,
+        client: MyotisENSClient
     ) async throws -> ENSReverseResolution {
         do {
             let name = try await client.universalResolverReverse(address: address)

@@ -159,6 +159,15 @@ final class SettingsStore {
     var ipfsNodeEnabled: Bool {
         didSet { defaults.set(ipfsNodeEnabled, forKey: Keys.ipfsNodeEnabled) }
     }
+    /// Whether the embedded Myotis Ethereum light client should be
+    /// running (mainnet + Gnosis). Default **true** — it is the app's
+    /// strongest verification tier and every resolution path falls
+    /// through to Colibri/quorum whenever it can't answer, so keeping it
+    /// on has no availability cost. The toggle is the kill switch for
+    /// networks where P2P is hostile.
+    var myotisNodeEnabled: Bool {
+        didSet { defaults.set(myotisNodeEnabled, forKey: Keys.myotisNodeEnabled) }
+    }
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -191,6 +200,7 @@ final class SettingsStore {
             Keys.adblockAutoUpdateEnabled: true,
             Keys.swarmNodeEnabled: true,
             Keys.ipfsNodeEnabled: true,
+            Keys.myotisNodeEnabled: true,
         ])
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
         self.ensResolutionMethod = Self.migratedResolutionMethod(defaults: defaults)
@@ -223,6 +233,7 @@ final class SettingsStore {
         self.adblockAutoUpdateEnabled = defaults.bool(forKey: Keys.adblockAutoUpdateEnabled)
         self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
         self.ipfsNodeEnabled = defaults.bool(forKey: Keys.ipfsNodeEnabled)
+        self.myotisNodeEnabled = defaults.bool(forKey: Keys.myotisNodeEnabled)
     }
 
     /// One-time migration for installs predating the `ensResolutionMethod`
@@ -294,5 +305,6 @@ final class SettingsStore {
         static let adblockAutoUpdateEnabled = "adblockAutoUpdateEnabled"
         static let swarmNodeEnabled = "swarmNodeEnabled"
         static let ipfsNodeEnabled = "ipfsNodeEnabled"
+        static let myotisNodeEnabled = "myotisNodeEnabled"
     }
 }

@@ -31,6 +31,9 @@ struct SettingsView: View {
                 NavigationLink(value: SettingsPath.ipfs) {
                     Label("IPFS", systemImage: "globe.asia.australia")
                 }
+                NavigationLink(value: SettingsPath.myotis) {
+                    Label("Light Client", systemImage: "bolt.shield.fill")
+                }
                 NavigationLink(value: SettingsPath.rpc) {
                     Label("RPC", systemImage: "antenna.radiowaves.left.and.right")
                 }
@@ -63,6 +66,8 @@ struct SettingsView: View {
             SwarmSettingsView()
         case .ipfs:
             IPFSSettingsView()
+        case .myotis:
+            MyotisSettingsView()
         case .rpc:
             RPCSettingsView()
         case .adblock:

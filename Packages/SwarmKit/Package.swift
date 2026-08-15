@@ -20,6 +20,7 @@ let package = Package(
     products: [
         .library(name: "SwarmKit", targets: ["SwarmKit"]),
         .library(name: "IPFSKit", targets: ["IPFSKit"]),
+        .library(name: "MyotisKit", targets: ["MyotisKit"]),
     ],
     targets: [
         // Combined Swarm + IPFS Rust staticlib from
@@ -31,11 +32,19 @@ let package = Package(
         // `path: "../../../freedom-mobile-ffi/target/ios-xcframework/FreedomMobile.xcframework"`,
         // building locally with `./scripts/build-xcframework.sh` from
         // `../freedom-mobile-ffi`.
+        // DEV (feature/myotis-node): local 3-node framework (ant v0.5.43 +
+        // freedom-ipfs v0.4.3 + myotis v0.1.7) from freedom-mobile-ffi
+        // branch dev/myotis-spike. Flip back to a url/checksum release
+        // before merge.
         .binaryTarget(
             name: "FreedomMobile",
-            url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.7.5/FreedomMobile.xcframework.zip",
-            checksum: "eef13817c8b544bcffeec68cfa495fab9ac8eeb673d9d63d403626a448a76b12"
+            path: "../../../freedom-mobile-ffi/target/ios-xcframework/FreedomMobile.xcframework"
         ),
+        // .binaryTarget(
+        //     name: "FreedomMobile",
+        //     url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.7.5/FreedomMobile.xcframework.zip",
+        //     checksum: "eef13817c8b544bcffeec68cfa495fab9ac8eeb673d9d63d403626a448a76b12"
+        // ),
         .target(
             name: "SwarmKit",
             dependencies: ["FreedomMobile"],
@@ -55,6 +64,18 @@ let package = Package(
                 // Rust hyper / reqwest pulls in SystemConfiguration for
                 // proxy/network config detection on Apple platforms.
                 .linkedFramework("SystemConfiguration"),
+            ]
+        ),
+        .target(
+            name: "MyotisKit",
+            dependencies: ["FreedomMobile"],
+            linkerSettings: [
+                // Myotis's devp2p/libp2p stack uses the same Apple
+                // frameworks as ant (rustls via Security keychain roots,
+                // if-watch via SystemConfiguration).
+                .linkedFramework("Security"),
+                .linkedFramework("SystemConfiguration"),
+                .linkedFramework("CoreFoundation"),
             ]
         ),
     ]

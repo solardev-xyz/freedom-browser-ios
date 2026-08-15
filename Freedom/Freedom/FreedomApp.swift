@@ -2,12 +2,14 @@ import SwiftUI
 import SwiftData
 import SwarmKit
 import IPFSKit
+import MyotisKit
 import ENSNormalize
 
 @main
 struct FreedomApp: App {
     @State private var swarm: SwarmNode
     @State private var ipfs: IPFSNode
+    @State private var myotis: MyotisNode
     @State private var settings: SettingsStore
     @State private var historyStore: HistoryStore
     @State private var bookmarkStore: BookmarkStore
@@ -63,7 +65,21 @@ struct FreedomApp: App {
                 urlSource: { chainStore.rpcURLs(forChainID: Chain.mainnetID) }
             )
             let colibri = ColibriENSClient(settings: settings, chainStore: chainStore)
-            let resolver = ENSResolver(pool: pool, settings: settings, colibri: colibri)
+            // The embedded P2P light client is the resolver's first tier;
+            // availability is polled off the node, and the resolver skips
+            // it whenever it can't serve.
+            let myotisInstance = MyotisNode()
+            self._myotis = State(wrappedValue: myotisInstance)
+            let myotisClient = MyotisENSClient(node: myotisInstance)
+            let resolver = ENSResolver(
+                pool: pool, settings: settings, colibri: colibri, myotis: myotisClient
+            )
+            // Sweep result caches on every availability flip so takeover
+            // (quorum answers upgrade to P2P-verified) and failover don't
+            // wait out cached TTLs — desktop parity.
+            myotisInstance.onAvailabilityChange = { [weak resolver] _, _ in
+                resolver?.sweepResultCaches()
+            }
             let favicons = FaviconStore(context: container.mainContext, ensResolver: resolver)
             self._historyStore = State(wrappedValue: history)
             self._bookmarkStore = State(wrappedValue: bookmarks)
@@ -189,6 +205,7 @@ struct FreedomApp: App {
             ContentView()
                 .environment(swarm)
                 .environment(ipfs)
+                .environment(myotis)
                 .environment(settings)
                 .environment(tabStore)
                 .environment(historyStore)
@@ -222,6 +239,7 @@ struct FreedomApp: App {
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
                 .task { startIpfsIfNeeded() }
+                .task { startMyotisIfNeeded() }
                 .task { beeReadiness.start() }
                 .task { stampService.start() }
                 .task { beeWalletInfo.start() }
@@ -263,6 +281,24 @@ struct FreedomApp: App {
         guard ipfs.status == .idle else { return }
         let config = settings.ipfsConfig(dataDir: IPFSNode.defaultDataDir())
         ipfs.start(config)
+    }
+
+    /// Brings the Myotis light client up alongside the other embedded
+    /// nodes (mainnet + Gnosis). Fire-and-forget: engine creation and
+    /// sync happen on a detached task inside the wrapper, and resolution
+    /// falls back to Colibri/quorum until a chain reports ready.
+    private func startMyotisIfNeeded() {
+        // Never boot live P2P engines inside the unit-test host: tests
+        // inject closure-seamed fakes, and two devp2p/libp2p engines
+        // doing real sync in the background make the runner
+        // nondeterministic (observed: heap-corruption aborts taking
+        // unrelated tests down). Swarm/IPFS effectively skip in tests
+        // via their config/keychain paths; Myotis needs the explicit
+        // guard because it has no such accidental gate.
+        guard NSClassFromString("XCTestCase") == nil else { return }
+        guard settings.myotisNodeEnabled else { return }
+        guard myotis.status == .idle else { return }
+        myotis.start()
     }
 
     private func startNodeIfNeeded() async {

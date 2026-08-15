@@ -3,11 +3,13 @@ import SwiftData
 import SwiftUI
 import SwarmKit
 import IPFSKit
+import MyotisKit
 import UIKit
 
 struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
     @Environment(IPFSNode.self) private var ipfs
+    @Environment(MyotisNode.self) private var myotis
     @Environment(TabStore.self) private var tabStore
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(Vault.self) private var vault
@@ -257,6 +259,10 @@ struct ContentView: View {
                 // chatter, idle DHT requests — so we don't eat suspended
                 // CPU budget.
                 ipfs.enterBackground()
+                // Idle-sleep the light client: close its devp2p/libp2p
+                // sockets cleanly (keeping warm snapshot + peer caches)
+                // instead of letting the OS reap them mid-conversation.
+                myotis.pause()
             case .active:
                 vault.lockIfBackgroundGraceExpired()
                 ipfs.enterForeground()
@@ -268,6 +274,10 @@ struct ContentView: View {
                 // gateway if its listener was reaped too); ~no-op when
                 // the node is already healthy or not running.
                 Task { await swarm.resume() }
+                // Warm-restart the light client (paused on background):
+                // snapshot resume + one finality poll, ~10 s back to
+                // verified reads. No-op when it wasn't paused.
+                myotis.resume()
             case .inactive:
                 break
             @unknown default:

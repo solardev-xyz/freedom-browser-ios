@@ -10,8 +10,12 @@ struct ENSSettingsView: View {
         @Bindable var settings = settings
         Form {
             Section {
+                // `.myotis` is deliberately absent: the embedded P2P
+                // light client is an always-first tier (toggled on its
+                // own settings page), and this picker chooses what it
+                // falls back to.
                 Picker("Method", selection: $settings.ensResolutionMethod) {
-                    ForEach(ENSResolutionMethod.allCases, id: \.self) { method in
+                    ForEach(ENSResolutionMethod.selectableCases, id: \.self) { method in
                         Text(method.displayName).tag(method)
                     }
                 }
@@ -108,8 +112,11 @@ struct ENSSettingsView: View {
 
     private var methodFooter: String {
         switch settings.ensResolutionMethod {
+        case .myotis:
+            // Not selectable; kept for switch exhaustiveness.
+            return ""
         case .colibri:
-            return "Cryptographic verification — every lookup is proven against Ethereum consensus, not just cross-checked between RPCs."
+            return "Cryptographic verification — every lookup is proven against Ethereum consensus, not just cross-checked between RPCs. When the embedded P2P light client is enabled and synced, it answers first and this method is the fallback."
         case .quorum:
             return "M-of-K public RPCs must agree byte-for-byte at a corroborated block."
         case .userConfigured:

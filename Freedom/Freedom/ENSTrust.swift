@@ -16,18 +16,30 @@ enum ENSTrustLevel {
     }
 }
 
-/// Which resolution method produced the trust result. `.colibri` and
-/// `.quorum` can both yield `level == .verified` but with materially
-/// different threat models — the renderer surfaces the distinction in
-/// the trust popover so users understand whether trust comes from a
-/// sync-committee proof or from M-of-K RPC agreement.
+/// Which resolution method produced the trust result. `.myotis`,
+/// `.colibri` and `.quorum` can all yield `level == .verified` but with
+/// materially different threat models — the renderer surfaces the
+/// distinction in the trust popover so users understand whether trust
+/// comes from this device's own P2P light client, a sync-committee
+/// proof via a remote prover, or M-of-K RPC agreement.
 enum ENSResolutionMethod: String, CaseIterable, Equatable {
+    /// Embedded fully-P2P light client. Not user-selectable in the
+    /// method picker: it is an always-first tier gated only on node
+    /// availability; the picker chooses the fallback beneath it (see
+    /// `selectableCases`).
+    case myotis
     case colibri
     case quorum
     case userConfigured = "user-configured"
 
+    /// The cases the ENS settings method picker offers.
+    static var selectableCases: [ENSResolutionMethod] {
+        allCases.filter { $0 != .myotis }
+    }
+
     var displayName: String {
         switch self {
+        case .myotis: "P2P Light Client"
         case .colibri: "Colibri"
         case .quorum: "Quorum"
         case .userConfigured: "Custom RPC"

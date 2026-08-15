@@ -152,6 +152,10 @@ final class ColibriENSClient {
 /// decide between a verified-negative outcome (legitimate `.noContenthash`
 /// / `.noResolver`) and a transient failure (network / proof) that should
 /// trigger the quorum fallback.
+///
+/// Shared taxonomy: `MyotisENSClient` throws these too — the resolver's
+/// revert classification and fall-through handling are identical for
+/// both proven tiers.
 enum ColibriENSError: Error {
     /// The `eth_call` ran to completion but the EVM reverted — a fully
     /// verified outcome, not a proof/transport failure. `data` is the

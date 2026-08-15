@@ -16,6 +16,7 @@ enum SettingsPath: Hashable {
     case ens
     case swarm
     case ipfs
+    case myotis
     case rpc
     case adblock
 
@@ -31,7 +32,7 @@ enum SettingsPath: Hashable {
     var isAddChainStep: Bool {
         switch self {
         case .chainlistSearch, .addChainForm: return true
-        case .wallet, .ens, .swarm, .ipfs, .rpc, .adblock, .chainEditor: return false
+        case .wallet, .ens, .swarm, .ipfs, .myotis, .rpc, .adblock, .chainEditor: return false
         }
     }
 }
