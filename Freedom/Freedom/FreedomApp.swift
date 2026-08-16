@@ -88,6 +88,16 @@ struct FreedomApp: App {
             self._ensResolver = State(wrappedValue: resolver)
             let vault = Vault()
             let registry = ChainRegistry(chainStore: chainStore, mainnetPool: pool)
+            // Verified chain-data sources for wallet + dApp reads
+            // (desktop chain-data-router parity): Myotis answers first
+            // where it can, Colibri second, the RPC pool last (walked
+            // inside WalletRPC). Unsupported shapes fall through
+            // per-source, so custom chains and pending-tag reads behave
+            // exactly as before.
+            registry.verifiedSources = [
+                MyotisChainSource(node: myotisInstance),
+                ColibriChainSource(settings: settings, chainStore: chainStore),
+            ]
             let permissions = PermissionStore(context: container.mainContext)
             let autoApprove = AutoApproveStore(context: container.mainContext)
             let txService = TransactionService(vault: vault, registry: registry)

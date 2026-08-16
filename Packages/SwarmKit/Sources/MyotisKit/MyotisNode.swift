@@ -393,11 +393,18 @@ public final class MyotisNode {
     }
 
     /// Copy + free an engine-owned C string (`myotis_string_free`, never
-    /// `free(3)`).
-    private nonisolated static func takeString(_ ptr: UnsafeMutablePointer<CChar>?) -> String? {
+    /// `free(3)`). Internal so the wallet-reads extension shares it.
+    nonisolated static func takeString(_ ptr: UnsafeMutablePointer<CChar>?) -> String? {
         guard let ptr else { return nil }
         defer { myotis_string_free(ptr) }
         return String(cString: ptr)
+    }
+
+    /// The engine handle for a chain iff the node is running — the
+    /// wallet-reads extension's gate.
+    func runningHandle(chainId: UInt64) -> Int64? {
+        guard status == .running else { return nil }
+        return handles[chainId]
     }
 
     private func append(_ line: String) {

@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let chainDataLog = Logger(subsystem: "com.browser.Freedom", category: "ChainData")
 
 /// Single-shot JSON-RPC with fall-through across a chain's provider list.
 /// Not consensus (that's ENS's job) — a lying RPC here gives the user a
@@ -121,15 +124,20 @@ struct WalletRPC {
         case malformed(Swift.Error)
     }
 
-    /// Iterates URLs; tries next on transport / malformed failure. Short-
-    /// circuits on protocol-deterministic RPC errors (execution revert,
-    /// `-32602`, `insufficient funds`). Other RPC errors iterate but
-    /// don't quarantine — a JSON-RPC envelope means transport-healthy.
+    /// Walks the chain's verified sources (Myotis → Colibri, desktop
+    /// chain-data-router parity), then iterates the RPC pool's URLs;
+    /// tries next on transport / malformed failure. Short-circuits on
+    /// protocol-deterministic RPC errors (execution revert, `-32602`,
+    /// `insufficient funds`). Other RPC errors iterate but don't
+    /// quarantine — a JSON-RPC envelope means transport-healthy.
     private func fanOutBody<T>(
         _ body: Data,
         on chain: Chain,
         parse: (Data) -> ParseResult<T>
     ) async throws -> T {
+        if let value: T = try await verifiedSourcesResult(body, on: chain, parse: parse) {
+            return value
+        }
         let urls = registry.rpcURLs(for: chain)
         guard !urls.isEmpty else { throw Error.noProviders }
         var errors: [Swift.Error] = []
@@ -175,6 +183,61 @@ struct WalletRPC {
     /// "insufficient funds" in the message).
     private static func isInsufficientFunds(message: String) -> Bool {
         message.lowercased().contains("insufficient funds")
+    }
+
+    // MARK: - Verified source ladder
+
+    /// Try the registry's verified sources in order before touching the
+    /// pool. Returns nil when no source served (fall through to URLs).
+    /// A `ChainSourceUnavailable` (or any non-deterministic source
+    /// failure) falls through silently; a `WalletRPC.Error` from a
+    /// source is a verified deterministic answer and rethrows —
+    /// exactly the ENS-tier discipline, applied to wallet reads.
+    private func verifiedSourcesResult<T>(
+        _ body: Data,
+        on chain: Chain,
+        parse: (Data) -> ParseResult<T>
+    ) async throws -> T? {
+        guard !registry.verifiedSources.isEmpty,
+              let (method, params) = Self.decodeRequest(body) else { return nil }
+        for source in registry.verifiedSources {
+            guard source.isAvailable(chainID: chain.id),
+                  source.serves(method: method, params: params, chainID: chain.id) else { continue }
+            try Task.checkCancellation()
+            do {
+                let result = try await source.result(method: method, params: params, chainID: chain.id)
+                // Re-wrap as a standard envelope so the caller's existing
+                // parse closure (typed or untyped) consumes it unchanged.
+                let envelope = try JSONSerialization.data(withJSONObject: [
+                    "jsonrpc": "2.0", "id": 1, "result": result,
+                ])
+                if case .success(let value) = parse(envelope) {
+                    chainDataLog.info(
+                        "[chain-data] \(method, privacy: .public) chain=\(chain.id) via \(source.sourceName, privacy: .public)"
+                    )
+                    return value
+                }
+                // The source answered but the caller's decoder didn't
+                // accept the shape — treat as unserved, fall through.
+            } catch let error as Error {
+                throw error
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // ChainSourceUnavailable and friends — next source/pool.
+                continue
+            }
+        }
+        return nil
+    }
+
+    /// `(method, params)` out of an encoded request body, for source
+    /// gating. Nil for anything unexpectedly shaped — the pool then
+    /// handles it as before.
+    private static func decodeRequest(_ body: Data) -> (method: String, params: [Any])? {
+        guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let method = obj["method"] as? String else { return nil }
+        return (method, obj["params"] as? [Any] ?? [])
     }
 
     // MARK: - Typed methods

@@ -16,6 +16,12 @@ final class ChainRegistry {
     /// Lazy so `WalletRPC`'s back-reference to `self` is safe — `self` is
     /// fully initialized by the time any view pulls the RPC.
     @ObservationIgnored lazy var walletRPC: WalletRPC = WalletRPC(registry: self)
+    /// Verified chain-data sources walked ahead of the RPC pool, in
+    /// order (Myotis → Colibri, installed by the app at startup; empty →
+    /// pool-only, which is what unit tests get). Reference types, so
+    /// `WalletRPC` value copies snapshotted at `TransactionService.init`
+    /// still see later installations.
+    @ObservationIgnored var verifiedSources: [ChainDataSource] = []
 
     init(
         chainStore: ChainStore,
