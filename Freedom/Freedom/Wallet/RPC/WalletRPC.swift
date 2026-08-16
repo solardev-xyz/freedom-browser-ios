@@ -223,8 +223,19 @@ struct WalletRPC {
                 throw error
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as ChainSourceUnavailable {
+                // Expected during warm-up / peer churn — next source. The
+                // reason makes a one-shot degradation (e.g. a transient
+                // mainnet snap-state miss answered by Colibri instead)
+                // self-explaining in the field.
+                chainDataLog.info(
+                    "[chain-data] \(method, privacy: .public) chain=\(chain.id) \(source.sourceName, privacy: .public) unavailable: \(error.reason, privacy: .public) — falling through"
+                )
+                continue
             } catch {
-                // ChainSourceUnavailable and friends — next source/pool.
+                chainDataLog.info(
+                    "[chain-data] \(method, privacy: .public) chain=\(chain.id) \(source.sourceName, privacy: .public) failed: \(String(describing: error), privacy: .public) — falling through"
+                )
                 continue
             }
         }
