@@ -229,6 +229,13 @@ final class BrowserTab {
                 ),
                 forURLScheme: "ipns"
             )
+            // Read path for Radicle: pages fetch('rad:<rid>/…') public
+            // repo data from the embedded node's storage — actions go
+            // through the consented window.radicle provider instead.
+            config.setURLSchemeHandler(
+                RadSchemeHandler(services: radicle),
+                forURLScheme: "rad"
+            )
         }
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         // iOS defaults this to false, which silently voids window.open

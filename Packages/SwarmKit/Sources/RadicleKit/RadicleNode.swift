@@ -214,6 +214,49 @@ public final class RadicleNode {
         await Self.blocking { RadicleKit.unseedRepo(rid: rid) }
     }
 
+    // Repo-content reads (the `rad:` scheme handler's surface) — all
+    // httpd-shaped JSON straight from the embedded storage.
+
+    public func treeAtJSON(rid: String, revision: String, path: String) async -> String {
+        await Self.blocking { RadicleKit.treeAt(rid: rid, revision: revision, path: path) }
+    }
+
+    public func blobAtJSON(rid: String, revision: String, path: String) async -> String {
+        await Self.blocking { RadicleKit.blobAt(rid: rid, revision: revision, path: path) }
+    }
+
+    public func commitsJSON(rid: String, parent: String, page: UInt32, perPage: UInt32) async -> String {
+        await Self.blocking { RadicleKit.commits(rid: rid, parent: parent, page: page, perPage: perPage) }
+    }
+
+    public func commitJSON(rid: String, revision: String) async -> String {
+        await Self.blocking { RadicleKit.commit(rid: rid, revision: revision) }
+    }
+
+    public func remotesJSON(rid: String) async -> String {
+        await Self.blocking { RadicleKit.remotes(rid: rid) }
+    }
+
+    public func repoStatsJSON(rid: String, revision: String) async -> String {
+        await Self.blocking { RadicleKit.repoStats(rid: rid, revision: revision) }
+    }
+
+    public func issuesJSON(rid: String) async -> String {
+        await Self.blocking { RadicleKit.issues(rid: rid) }
+    }
+
+    public func issueJSON(rid: String, issueId: String) async -> String {
+        await Self.blocking { RadicleKit.issue(rid: rid, issueId: issueId) }
+    }
+
+    public func patchesJSON(rid: String) async -> String {
+        await Self.blocking { RadicleKit.patches(rid: rid) }
+    }
+
+    public func patchJSON(rid: String, patchId: String) async -> String {
+        await Self.blocking { RadicleKit.patch(rid: rid, patchId: patchId) }
+    }
+
     /// Seed + fetch with progress. Blocks a detached task for the whole
     /// fetch; `onEvent` is invoked on the main actor per phase event.
     /// Cancel with `cancelClone(rid:)`.
