@@ -69,6 +69,29 @@ public final class RadicleNode {
         await Task.detached(priority: .userInitiated) { work() }.value
     }
 
+    /// First writable temp location whose socket path fits under the
+    /// 104-byte `sun_path` cap, or nil if none does (start then fails
+    /// with the Rust layer's SUN_LEN error, which is at least honest).
+    nonisolated static func shortSocketPath() -> String? {
+        var candidates: [String] = []
+        // Darwin per-user temp dir: short host path (`/var/folders/…/T/`)
+        // when running in the simulator; equals the sandbox tmp on device.
+        var buf = [CChar](repeating: 0, count: 1024)
+        if confstr(_CS_DARWIN_USER_TEMP_DIR, &buf, buf.count) > 0,
+           let dir = String(validatingUTF8: buf) {
+            candidates.append(dir)
+        }
+        candidates.append(NSTemporaryDirectory())
+        for dir in candidates {
+            let path = (dir.hasSuffix("/") ? dir : dir + "/") + "rad.sock"
+            if path.utf8.count <= 103,
+               FileManager.default.isWritableFile(atPath: dir) {
+                return path
+            }
+        }
+        return nil
+    }
+
     private static func decode(_ json: String) -> [String: Any] {
         (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
     }
@@ -83,14 +106,19 @@ public final class RadicleNode {
         lastError = nil
 
         // Radicle binds a control socket under the profile home, and
-        // unix socket paths cap at ~104 bytes on Apple platforms
-        // (`SUN_LEN`). The sandbox's Application Support path is far too
-        // long, so redirect the socket to $TMPDIR (the shortest
-        // app-writable location) via RAD_SOCKET — same workaround
-        // desktop Freedom uses for macOS. The socket itself is unused on
-        // iOS (no `rad` CLI will ever dial it); it just has to bind.
-        let socketPath = NSTemporaryDirectory() + "rad.sock"
-        setenv("RAD_SOCKET", socketPath, 1)
+        // unix socket paths cap at 104 bytes on Apple platforms
+        // (`sun_path`, so ≤103 usable). The sandbox's Application
+        // Support path is far too long, so redirect the socket via
+        // RAD_SOCKET — same workaround desktop Freedom uses for macOS.
+        // The socket itself is unused on iOS (no `rad` CLI will ever
+        // dial it); it just has to bind. On device $TMPDIR fits (~97
+        // bytes) but in the SIMULATOR it is the enormous CoreSimulator
+        // container path, so probe candidates and take the first that
+        // fits — the Darwin per-user temp dir (`/var/folders/…/T/`)
+        // covers the simulator.
+        if let socketPath = Self.shortSocketPath() {
+            setenv("RAD_SOCKET", socketPath, 1)
+        }
 
         let result = await Self.blocking { RadicleKit.start(home: home, alias: alias) }
         let decoded = Self.decode(result)
