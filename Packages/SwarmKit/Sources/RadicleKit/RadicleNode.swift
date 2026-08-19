@@ -72,18 +72,26 @@ public final class RadicleNode {
     /// First writable temp location whose socket path fits under the
     /// 104-byte `sun_path` cap, or nil if none does (start then fails
     /// with the Rust layer's SUN_LEN error, which is at least honest).
-    nonisolated static func shortSocketPath() -> String? {
-        var candidates: [String] = []
-        // Darwin per-user temp dir: short host path (`/var/folders/…/T/`)
-        // when running in the simulator; equals the sandbox tmp on device.
+    ///
+    /// On device the sandbox tmp (~97 bytes with the filename) fits. In
+    /// the SIMULATOR every sandbox-relative dir is remapped under the
+    /// CoreSimulator device container and exceeds the cap (measured:
+    /// even DARWIN_USER_TEMP_DIR is 100 bytes there), so the host's
+    /// `/tmp` is the fallback — simulator apps are host processes and
+    /// may write it; on device it isn't writable and is skipped. The
+    /// `/tmp` socket is pid-scoped because, unlike the per-app sandbox
+    /// dirs, it's shared across concurrently running simulators.
+    public nonisolated static func shortSocketPath() -> String? {
+        var candidates: [(dir: String, file: String)] = []
         var buf = [CChar](repeating: 0, count: 1024)
         if confstr(_CS_DARWIN_USER_TEMP_DIR, &buf, buf.count) > 0,
            let dir = String(validatingUTF8: buf) {
-            candidates.append(dir)
+            candidates.append((dir, "rad.sock"))
         }
-        candidates.append(NSTemporaryDirectory())
-        for dir in candidates {
-            let path = (dir.hasSuffix("/") ? dir : dir + "/") + "rad.sock"
+        candidates.append((NSTemporaryDirectory(), "rad.sock"))
+        candidates.append(("/tmp", "freedom-rad.\(getpid()).sock"))
+        for (dir, file) in candidates {
+            let path = (dir.hasSuffix("/") ? dir : dir + "/") + file
             if path.utf8.count <= 103,
                FileManager.default.isWritableFile(atPath: dir) {
                 return path
