@@ -64,9 +64,14 @@ public final class RadicleNode {
         return base.appendingPathComponent("radicle", isDirectory: true).path
     }
 
-    /// Run a blocking UniFFI export off the main actor.
+    /// Run a blocking UniFFI export off the main actor. Deliberately at
+    /// default priority, not .userInitiated: every one of these calls
+    /// parks on a channel served by the Rust node's event-loop thread,
+    /// which std::thread spawns at default QoS — a higher-QoS waiter
+    /// would be a priority inversion (Thread Performance Checker flags
+    /// exactly that), and boosting the waiter can't speed up the node.
     private static func blocking(_ work: @Sendable @escaping () -> String) async -> String {
-        await Task.detached(priority: .userInitiated) { work() }.value
+        await Task.detached { work() }.value
     }
 
     /// First writable temp location whose socket path fits under the
