@@ -3,6 +3,7 @@ import SwiftData
 import SwarmKit
 import IPFSKit
 import MyotisKit
+import RadicleKit
 import ENSNormalize
 
 @main
@@ -10,6 +11,9 @@ struct FreedomApp: App {
     @State private var swarm: SwarmNode
     @State private var ipfs: IPFSNode
     @State private var myotis: MyotisNode
+    @State private var radicle: RadicleNode
+    @State private var radiclePermissionStore: RadiclePermissionStore
+    @State private var radicleSeedTracker: RadicleSeedTracker
     @State private var settings: SettingsStore
     @State private var historyStore: HistoryStore
     @State private var bookmarkStore: BookmarkStore
@@ -41,7 +45,7 @@ struct FreedomApp: App {
                 for: TabRecord.self, HistoryEntry.self, Bookmark.self, Favicon.self,
                 DappPermission.self, AutoApproveRule.self,
                 SwarmPermission.self, SwarmFeedRecord.self, SwarmFeedIdentity.self,
-                SwarmPublishHistoryRecord.self,
+                SwarmPublishHistoryRecord.self, RadiclePermission.self,
                 ChainRecord.self
             )
             self.modelContainer = container
@@ -183,6 +187,31 @@ struct FreedomApp: App {
                 currentStamps: { stamps.stamps },
                 getTag: { try await swarmBee.getTag(uid: $0) }
             )
+            // Embedded Radicle node (publish-capable: the no-spawn build
+            // serves fetches in-process, so peers replicate the phone's
+            // COB writes back). Provider gate mirrors desktop's
+            // experimental setting via `nodeFailureReason`.
+            let radicleInstance = RadicleNode()
+            self._radicle = State(wrappedValue: radicleInstance)
+            let radiclePermissions = RadiclePermissionStore(context: container.mainContext)
+            self._radiclePermissionStore = State(wrappedValue: radiclePermissions)
+            let radicleTracker = RadicleSeedTracker(node: radicleInstance)
+            self._radicleSeedTracker = State(wrappedValue: radicleTracker)
+            let radicleServices = RadicleServices(
+                node: radicleInstance,
+                permissionStore: radiclePermissions,
+                seedTracker: radicleTracker,
+                nodeFailureReason: {
+                    if !settings.radicleNodeEnabled {
+                        return RadicleBridge.ErrorPayload.Reason.integrationDisabled
+                    }
+                    switch radicleInstance.status {
+                    case .running: return nil
+                    case .starting: return RadicleBridge.ErrorPayload.Reason.nodeNotReady
+                    default: return RadicleBridge.ErrorPayload.Reason.nodeStopped
+                    }
+                }
+            )
             let adblockService = AdblockService(settings: settings)
             self._adblock = State(wrappedValue: adblockService)
             self._adblockUpdate = State(wrappedValue: AdblockUpdateService(
@@ -197,6 +226,7 @@ struct FreedomApp: App {
                 settings: settings,
                 wallet: wallet,
                 swarm: swarmServices,
+                radicle: radicleServices,
                 adblock: adblockService,
                 ipfs: ipfsInstance
             ))
@@ -216,6 +246,9 @@ struct FreedomApp: App {
                 .environment(swarm)
                 .environment(ipfs)
                 .environment(myotis)
+                .environment(radicle)
+                .environment(radiclePermissionStore)
+                .environment(radicleSeedTracker)
                 .environment(settings)
                 .environment(tabStore)
                 .environment(historyStore)
@@ -250,6 +283,7 @@ struct FreedomApp: App {
                 .task { await startNodeIfNeeded() }
                 .task { startIpfsIfNeeded() }
                 .task { startMyotisIfNeeded() }
+                .task { await startRadicleIfNeeded() }
                 .task { beeReadiness.start() }
                 .task { stampService.start() }
                 .task { beeWalletInfo.start() }
@@ -309,6 +343,19 @@ struct FreedomApp: App {
         guard settings.myotisNodeEnabled else { return }
         guard myotis.status == .idle else { return }
         myotis.start()
+    }
+
+    /// Brings the embedded Radicle node up alongside the other nodes.
+    /// Same XCTest guard as Myotis: never boot a live P2P node inside
+    /// the unit-test host. Seeds are dialed once after start; radicle's
+    /// own connection maintenance takes over from there.
+    private func startRadicleIfNeeded() async {
+        guard NSClassFromString("XCTestCase") == nil else { return }
+        guard settings.radicleNodeEnabled else { return }
+        guard radicle.status == .idle else { return }
+        await radicle.start(alias: "freedom-ios")
+        guard radicle.status == .running else { return }
+        await radicle.connectSeeds()
     }
 
     private func startNodeIfNeeded() async {

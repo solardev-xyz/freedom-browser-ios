@@ -15,6 +15,7 @@ struct MenuPill: View {
     let ethereumSegment: NodeSegmentState
     let gnosisSegment: NodeSegmentState
     let swarmStatsLine: String
+    let radicleStatsLine: String
     let ipfsStatsLine: String
     let ethereumStatsLine: String
     let gnosisStatsLine: String
@@ -28,6 +29,7 @@ struct MenuPill: View {
     let onNewTab: () -> Void
     let onWallet: () -> Void
     let onSwarmNode: () -> Void
+    let onRadicleNode: () -> Void
     let onIpfsNode: () -> Void
     let onLightClient: () -> Void
     let onSettings: () -> Void
@@ -78,6 +80,15 @@ struct MenuPill: View {
             // then Gnosis, Swarm, IPFS. Both chain rows open the same
             // light-client sheet (one engine, per-chain detail inside).
             Section("Nodes") {
+                // Radicle sits visually last (bottom), hence first in
+                // code per the bottom-up convention.
+                Button(action: onRadicleNode) {
+                    Label {
+                        Text(radicleStatsLine)
+                    } icon: {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                    }
+                }
                 Button(action: onIpfsNode) {
                     Label { Text(ipfsStatsLine) } icon: { Image("NodeIPFS") }
                 }

@@ -16,6 +16,7 @@
 		17E52FA0000000000000000C /* BigInt in Frameworks */ = {isa = PBXBuildFile; productRef = 17E52FB0000000000000000D /* BigInt */; };
 		17F5F0F0000000000000F503 /* IPFSKit in Frameworks */ = {isa = PBXBuildFile; productRef = 17F5F0F0000000000000F502 /* IPFSKit */; };
 		17F5F0F0000000000000F505 /* MyotisKit in Frameworks */ = {isa = PBXBuildFile; productRef = 17F5F0F0000000000000F504 /* MyotisKit */; };
+		17F5F0F0000000000000F507 /* RadicleKit in Frameworks */ = {isa = PBXBuildFile; productRef = 17F5F0F0000000000000F506 /* RadicleKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -67,6 +68,7 @@
 				170726AC2F96CD3900CCFF45 /* SwarmKit in Frameworks */,
 				17F5F0F0000000000000F503 /* IPFSKit in Frameworks */,
 				17F5F0F0000000000000F505 /* MyotisKit in Frameworks */,
+				17F5F0F0000000000000F507 /* RadicleKit in Frameworks */,
 				17C0118710000000000000A1 /* Colibri in Frameworks */,
 				17E52F300000000000000003 /* web3.swift in Frameworks */,
 				17E52F50000000000000000E /* ENSNormalize in Frameworks */,
@@ -127,6 +129,7 @@
 				170726AB2F96CD3900CCFF45 /* SwarmKit */,
 				17F5F0F0000000000000F502 /* IPFSKit */,
 				17F5F0F0000000000000F504 /* MyotisKit */,
+				17F5F0F0000000000000F506 /* RadicleKit */,
 				17C0118710000000000000A2 /* Colibri */,
 				17E52F200000000000000002 /* web3.swift */,
 				17E52F60000000000000000F /* ENSNormalize */,
@@ -625,6 +628,10 @@
 		17F5F0F0000000000000F504 /* MyotisKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MyotisKit;
+		};
+		17F5F0F0000000000000F506 /* RadicleKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RadicleKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

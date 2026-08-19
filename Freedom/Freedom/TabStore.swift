@@ -20,6 +20,7 @@ final class TabStore {
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private let wallet: WalletServices
     @ObservationIgnored private let swarm: SwarmServices
+    @ObservationIgnored private let radicle: RadicleServices
     @ObservationIgnored private let adblock: AdblockService
     @ObservationIgnored private let ipfs: IPFSNode
     @ObservationIgnored private var liveTabs: [UUID: BrowserTab] = [:]
@@ -32,6 +33,7 @@ final class TabStore {
         settings: SettingsStore,
         wallet: WalletServices,
         swarm: SwarmServices,
+        radicle: RadicleServices,
         adblock: AdblockService,
         ipfs: IPFSNode
     ) {
@@ -42,6 +44,7 @@ final class TabStore {
         self.settings = settings
         self.wallet = wallet
         self.swarm = swarm
+        self.radicle = radicle
         self.adblock = adblock
         self.ipfs = ipfs
         reloadRecords()
@@ -143,6 +146,7 @@ final class TabStore {
             settings: settings,
             wallet: wallet,
             swarm: swarm,
+            radicle: radicle,
             adblock: adblock,
             ipfs: ipfs
         )
@@ -173,6 +177,7 @@ final class TabStore {
             settings: settings,
             wallet: wallet,
             swarm: swarm,
+            radicle: radicle,
             adblock: adblock,
             ipfs: ipfs
         )

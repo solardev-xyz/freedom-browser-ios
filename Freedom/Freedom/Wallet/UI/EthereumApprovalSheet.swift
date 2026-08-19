@@ -21,6 +21,8 @@ struct EthereumApprovalSheet: View {
             ApproveChainSwitchSheet(approval: approval, details: details)
         case .swarmConnect, .swarmPublish, .swarmFeedAccess, .swarmMessaging:
             EmptyView()  // routed via the swarm approval binding's sheet
+        case .radicleConnect, .radicleSeed, .radicleSigning:
+            EmptyView()  // routed via the radicle approval binding's sheet
         }
     }
 }

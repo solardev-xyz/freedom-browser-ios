@@ -4,12 +4,14 @@ import SwiftUI
 import SwarmKit
 import IPFSKit
 import MyotisKit
+import RadicleKit
 import UIKit
 
 struct ContentView: View {
     @Environment(SwarmNode.self) private var swarm
     @Environment(IPFSNode.self) private var ipfs
     @Environment(MyotisNode.self) private var myotis
+    @Environment(RadicleNode.self) private var radicle
     @Environment(TabStore.self) private var tabStore
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(Vault.self) private var vault
@@ -42,6 +44,7 @@ struct ContentView: View {
     @State private var isShowingNode = false
     @State private var isShowingIpfsNode = false
     @State private var isShowingMyotisNode = false
+    @State private var isShowingRadicleNode = false
     @FocusState private var addressFocused: Bool
     /// Gates suggestions so they don't appear before the user actually
     /// types in the prefilled URL (Safari behavior). Reset on every
@@ -82,6 +85,13 @@ struct ContentView: View {
         approvalBinding(
             get: { tabStore.activeTab?.pendingSwarmApproval },
             deny: { tabStore.activeTab?.resolvePendingSwarmApproval(.denied) }
+        )
+    }
+
+    private var radicleApprovalBinding: Binding<ApprovalRequest?> {
+        approvalBinding(
+            get: { tabStore.activeTab?.pendingRadicleApproval },
+            deny: { tabStore.activeTab?.resolvePendingRadicleApproval(.denied) }
         )
     }
 
@@ -173,6 +183,9 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingMyotisNode) {
             MyotisNodeSheet(isPresented: $isShowingMyotisNode)
         }
+        .sheet(isPresented: $isShowingRadicleNode) {
+            RadicleNodeSheet(isPresented: $isShowingRadicleNode)
+        }
         .sheet(item: approvalBinding) { approval in
             EthereumApprovalSheet(approval: approval)
         }
@@ -202,8 +215,21 @@ struct ContentView: View {
             case .swarmMessaging(let details):
                 SwarmMessagingSheet(approval: approval, details: details)
             case .connect, .personalSign, .typedData,
-                 .sendTransaction, .switchChain:
-                EmptyView()  // routed via approvalBinding's sheet
+                 .sendTransaction, .switchChain,
+                 .radicleConnect, .radicleSeed, .radicleSigning:
+                EmptyView()  // routed via approvalBinding's / radicle's sheet
+            }
+        }
+        .sheet(item: radicleApprovalBinding) { approval in
+            switch approval.kind {
+            case .radicleConnect:
+                RadicleConnectSheet(approval: approval)
+            case .radicleSeed(let rid):
+                RadicleSeedSheet(approval: approval, rid: rid)
+            case .radicleSigning:
+                RadicleSigningSheet(approval: approval)
+            default:
+                EmptyView()  // other kinds route via their own bindings
             }
         }
         .onChange(of: tabStore.activeTab?.displayURL) { _, new in
@@ -400,6 +426,7 @@ struct ContentView: View {
                             chain: myotis.chainStatus[MyotisNetwork.gnosis.chainId]
                         ),
                         swarmStatsLine: swarmStatsLine,
+                        radicleStatsLine: radicleStatsLine,
                         ipfsStatsLine: ipfsStatsLine,
                         ethereumStatsLine: ethereumStatsLine,
                         gnosisStatsLine: gnosisStatsLine,
@@ -411,6 +438,7 @@ struct ContentView: View {
                         onNewTab: { tabStore.newTab() },
                         onWallet: { isShowingWallet = true },
                         onSwarmNode: { isShowingNode = true },
+                        onRadicleNode: { isShowingRadicleNode = true },
                         onIpfsNode: { isShowingIpfsNode = true },
                         onLightClient: { isShowingMyotisNode = true },
                         onSettings: { isShowingSettings = true }
@@ -586,6 +614,17 @@ struct ContentView: View {
     /// peer set, and cache-size numbers are implementation detail — a
     /// single state word keeps the row to one line (block counts live
     /// in the IPFS sheet).
+    /// "Radicle · Online (n peers)" / "Radicle · Off" — embedded node
+    /// row, same vocabulary as the Swarm line.
+    private var radicleStatsLine: String {
+        nodeLine(
+            prefix: "Radicle",
+            running: radicle.status == .running,
+            peerCount: radicle.connectedPeers,
+            status: radicle.status.rawValue
+        )
+    }
+
     private var ipfsStatsLine: String {
         guard ipfs.status == .running else {
             return "IPFS · \(ipfs.status.rawValue.capitalized)"

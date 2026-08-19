@@ -47,6 +47,17 @@ struct ApprovalRequest: Identifiable {
         /// prompt, and per-send consent for `swarm_sendPss` /
         /// `swarm_sendGsoc` when auto-approve is off.
         case swarmMessaging(SwarmMessagingDetails)
+        /// `radicle_requestAccess` — per-origin connection grant to the
+        /// embedded Radicle node.
+        case radicleConnect
+        /// `radicle_seed` — per-repo disk/bandwidth commitment. The
+        /// sheet's auto-approve toggle writes back to
+        /// `RadiclePermissionStore.autoApproveSeed`.
+        case radicleSeed(rid: String)
+        /// Radicle signing tier — identity disclosure + COB writes as
+        /// the user's one Radicle identity. One grant covers the tier
+        /// (forge UX, like an OAuth scope).
+        case radicleSigning
     }
 
     enum Decision {

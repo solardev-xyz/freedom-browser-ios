@@ -168,6 +168,14 @@ final class SettingsStore {
     var myotisNodeEnabled: Bool {
         didSet { defaults.set(myotisNodeEnabled, forKey: Keys.myotisNodeEnabled) }
     }
+    /// Whether the embedded Radicle node should be running. Default
+    /// **true** on this branch so the publish path is exercisable
+    /// out of the box; the toggle is the kill switch (and the
+    /// `window.radicle` provider reports `integration-disabled` while
+    /// off, matching desktop's experimental setting).
+    var radicleNodeEnabled: Bool {
+        didSet { defaults.set(radicleNodeEnabled, forKey: Keys.radicleNodeEnabled) }
+    }
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -201,6 +209,7 @@ final class SettingsStore {
             Keys.swarmNodeEnabled: true,
             Keys.ipfsNodeEnabled: true,
             Keys.myotisNodeEnabled: true,
+            Keys.radicleNodeEnabled: true,
         ])
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
         self.ensResolutionMethod = Self.migratedResolutionMethod(defaults: defaults)
@@ -234,6 +243,7 @@ final class SettingsStore {
         self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
         self.ipfsNodeEnabled = defaults.bool(forKey: Keys.ipfsNodeEnabled)
         self.myotisNodeEnabled = defaults.bool(forKey: Keys.myotisNodeEnabled)
+        self.radicleNodeEnabled = defaults.bool(forKey: Keys.radicleNodeEnabled)
     }
 
     /// One-time migration for installs predating the `ensResolutionMethod`
@@ -306,5 +316,6 @@ final class SettingsStore {
         static let swarmNodeEnabled = "swarmNodeEnabled"
         static let ipfsNodeEnabled = "ipfsNodeEnabled"
         static let myotisNodeEnabled = "myotisNodeEnabled"
+        static let radicleNodeEnabled = "radicleNodeEnabled"
     }
 }

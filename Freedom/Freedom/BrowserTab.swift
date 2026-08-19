@@ -104,6 +104,7 @@ final class BrowserTab {
     /// — `ApprovalResolver` is the fire-once guard.
     var pendingEthereumApproval: ApprovalRequest?
     var pendingSwarmApproval: ApprovalRequest?
+    var pendingRadicleApproval: ApprovalRequest?
 
     func resolvePendingApproval(_ decision: ApprovalRequest.Decision) {
         let pending = pendingEthereumApproval
@@ -114,6 +115,12 @@ final class BrowserTab {
     func resolvePendingSwarmApproval(_ decision: ApprovalRequest.Decision) {
         let pending = pendingSwarmApproval
         pendingSwarmApproval = nil
+        pending?.decide(decision)
+    }
+
+    func resolvePendingRadicleApproval(_ decision: ApprovalRequest.Decision) {
+        let pending = pendingRadicleApproval
+        pendingRadicleApproval = nil
         pending?.decide(decision)
     }
 
@@ -165,6 +172,7 @@ final class BrowserTab {
     @ObservationIgnored private let contentController: WKUserContentController
     @ObservationIgnored fileprivate var walletBridge: EthereumBridge?
     @ObservationIgnored fileprivate var swarmBridge: SwarmBridge?
+    @ObservationIgnored fileprivate var radicleBridge: RadicleBridge?
     /// Live preload task ID for the current ipfs/ipns navigation, if
     /// any. Cancelled and re-issued on every committed top-level
     /// navigation; cleared on failure.
@@ -177,6 +185,7 @@ final class BrowserTab {
         settings: SettingsStore,
         wallet: WalletServices,
         swarm: SwarmServices,
+        radicle: RadicleServices,
         adblock: AdblockService,
         ipfs: IPFSNode
     ) {
@@ -332,6 +341,12 @@ final class BrowserTab {
             services: swarm
         )
 
+        self.radicleBridge = RadicleBridge(
+            tab: self,
+            contentController: contentController,
+            services: radicle
+        )
+
         observeWebView()
         installPullToRefresh()
     }
@@ -345,6 +360,7 @@ final class BrowserTab {
         contentController.removeAllUserScripts()
         walletBridge?.installUserScript()
         swarmBridge?.installUserScript()
+        radicleBridge?.installUserScript()
         // SWIP messaging: subscriptions are session-scoped — the page
         // that opened them is going away (this runs from
         // didStartProvisionalNavigation), so tear them down like
@@ -554,6 +570,9 @@ final class BrowserTab {
     /// stopped-but-alive page keeps its subscriptions per the SWIP.
     func teardownSwarmSubscriptions() {
         swarmBridge?.cancelSubscriptions()
+        // Same lifecycle point for radicle: unhook the tab's seed-status
+        // relay from the session-scoped tracker.
+        radicleBridge?.detach()
     }
 
     /// Render the current webview contents at a reduced width as JPEG bytes.
