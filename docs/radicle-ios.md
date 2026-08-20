@@ -57,14 +57,13 @@ Swift into `RadicleKit/Generated/` → new release + Package.swift checksum.
 
 ## Roadmap — missing / next
 
-**1. Full publish-loop verification (the milestone).**
-Browsing on device works. Still to prove: create an issue from a dApp on
-the phone and watch a peer (desktop node) fetch it back — the in-process
-serve path on real hardware/network.
+**1. Full publish-loop verification — DONE (2026-08-20).** Phone-authored
+issues + comments replicated to iris AND rosa via the in-process serve
+path, verified through the seeds' public APIs. (Desktop's failure to
+show them was a desktop-side refetch/profile question, tracked
+separately — the seeds have the content.)
 
-**2. Release swap.** After smoke: flip `Packages/SwarmKit/Package.swift`
-from the local xcframework path to the v0.9.0 URL + checksum (pair is in
-the comment), push branches, merge.
+**2. Release swap — DONE.** SwarmKit consumes the v0.9.0 release.
 
 **3. Phase D — lifecycle (biggest real gap).** iOS suspends the app; the
 node has no pause/resume (uniffi surface is start/shutdown only, unlike
@@ -74,10 +73,10 @@ Needs: pause/resume in libradicle + scenePhase wiring + possibly
 background-task grace.
 
 **4. Peer count investigation (parked, observed on-device).** 0→2 peers
-is slow and plateaus at 2. Working theory: fresh profile dials only the
-2 preferred seeds; growth beyond that relies on gossip + address-book
-fill. Desktop's instant 8+ = warm persisted address book. Revisit with
-Phase D (same connection-maintenance subsystem).
+is slow; later in the same session the node reached 9+ on its own, so
+the plateau is transient address-book warm-up, not a hard cap. Still
+worth understanding the ramp rate. Revisit with Phase D (same
+connection-maintenance subsystem).
 
 **5. Revocation UI.** Radicle grants can only be dropped by the dApp
 itself (`radicle_disconnect`); no chrome-side "manage connected sites"
