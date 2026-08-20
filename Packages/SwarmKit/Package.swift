@@ -34,18 +34,11 @@ let package = Package(
         // `path: "../../../freedom-mobile-ffi/target/ios-xcframework/FreedomMobile.xcframework"`,
         // building locally with `./scripts/build-xcframework.sh` from
         // `../freedom-mobile-ffi`.
-        // DEV (radicle branch): local build while the v0.9.0 swap awaits
-        // on-device smoke — swap to the URL/checksum pair below (the
-        // published v0.9.0 is this exact build) once verified.
         .binaryTarget(
             name: "FreedomMobile",
-            path: "../../../freedom-mobile-ffi/target/ios-xcframework/FreedomMobile.xcframework"
+            url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.9.0/FreedomMobile.xcframework.zip",
+            checksum: "fb9442f8383b802010142911f842a7994129d00101696e882c5c304ca8e30c4a"
         ),
-        // .binaryTarget(
-        //     name: "FreedomMobile",
-        //     url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.9.0/FreedomMobile.xcframework.zip",
-        //     checksum: "fb9442f8383b802010142911f842a7994129d00101696e882c5c304ca8e30c4a"
-        // ),
         .target(
             name: "SwarmKit",
             dependencies: ["FreedomMobile"],
