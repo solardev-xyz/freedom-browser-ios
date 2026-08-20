@@ -809,7 +809,8 @@ public func commits(rid: String, parent: String, page: UInt32, perPage: UInt32) 
 })
 }
 /**
- * Connect to the profile's preferred seeds. `{"connected": n}`.
+ * Concurrently bootstrap from the effective seed book. The response retains
+ * `connected` and adds attempt/readiness diagnostics.
  */
 public func connectSeeds(timeoutMs: UInt32) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
@@ -1106,7 +1107,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_libradicle_uniffi_checksum_func_commits() != 3108) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_libradicle_uniffi_checksum_func_connect_seeds() != 45278) {
+    if (uniffi_libradicle_uniffi_checksum_func_connect_seeds() != 26283) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_libradicle_uniffi_checksum_func_create_issue() != 10048) {
