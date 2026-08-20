@@ -72,11 +72,12 @@ Until done, the phone effectively publishes only while foregrounded.
 Needs: pause/resume in libradicle + scenePhase wiring + possibly
 background-task grace.
 
-**4. Peer count investigation (parked, observed on-device).** 0→2 peers
-is slow; later in the same session the node reached 9+ on its own, so
-the plateau is transient address-book warm-up, not a hard cap. Still
-worth understanding the ramp rate. Revisit with Phase D (same
-connection-maintenance subsystem).
+**4. Peer connectivity — RESOLVED (2026-08-20).** libradicle v0.7.1
+(ffi v0.10.0) ships the adaptive seed bootstrap: 14-node
+independents-first seed book, 6-way concurrent dials, readiness target
+4, device-local promotion from node.db history. On-device result: 0→11
+peers in seconds (previously ~10 minutes to 1). connect_seeds now
+returns per-seed failure diagnostics for future debugging.
 
 **5. Revocation UI.** Radicle grants can only be dropped by the dApp
 itself (`radicle_disconnect`); no chrome-side "manage connected sites"
