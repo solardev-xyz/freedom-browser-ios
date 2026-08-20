@@ -415,16 +415,7 @@ struct ContentView: View {
                         .transition(.opacity)
                 } else if mode == .normal {
                     MenuPill(
-                        swarmSegment: .fromSwarm(swarm.status, peerCount: swarm.peerCount),
-                        ipfsSegment: .fromIpfs(ipfs.status),
-                        ethereumSegment: .fromMyotisChain(
-                            myotis.status,
-                            chain: myotis.chainStatus[MyotisNetwork.mainnet.chainId]
-                        ),
-                        gnosisSegment: .fromMyotisChain(
-                            myotis.status,
-                            chain: myotis.chainStatus[MyotisNetwork.gnosis.chainId]
-                        ),
+                        statusSegments: nodeStatusSegments,
                         swarmStatsLine: swarmStatsLine,
                         radicleStatsLine: radicleStatsLine,
                         ipfsStatsLine: ipfsStatsLine,
@@ -606,6 +597,45 @@ struct ContentView: View {
     /// pretend to have peers. Light/ultralight is intentionally not
     /// surfaced here; that distinction lives inside the Swarm node
     /// sheet so the at-a-glance menu line stays symmetric with IPFS.
+    /// One ring segment per ENABLED node, menu order. A node switched
+    /// off in settings contributes no segment — the ring redistributes,
+    /// so segment count mirrors how many networks are on.
+    private var nodeStatusSegments: [NodeStatusIcon.Segment] {
+        var segments: [NodeStatusIcon.Segment] = []
+        if settings.swarmNodeEnabled {
+            segments.append(.init(
+                name: "Swarm",
+                state: .fromSwarm(swarm.status, peerCount: swarm.peerCount)
+            ))
+        }
+        if settings.ipfsNodeEnabled {
+            segments.append(.init(name: "IPFS", state: .fromIpfs(ipfs.status)))
+        }
+        if settings.radicleNodeEnabled {
+            segments.append(.init(
+                name: "Radicle",
+                state: .fromRadicle(radicle.status, peerCount: radicle.connectedPeers)
+            ))
+        }
+        if settings.myotisNodeEnabled {
+            segments.append(.init(
+                name: "Ethereum light client",
+                state: .fromMyotisChain(
+                    myotis.status,
+                    chain: myotis.chainStatus[MyotisNetwork.mainnet.chainId]
+                )
+            ))
+            segments.append(.init(
+                name: "Gnosis light client",
+                state: .fromMyotisChain(
+                    myotis.status,
+                    chain: myotis.chainStatus[MyotisNetwork.gnosis.chainId]
+                )
+            ))
+        }
+        return segments
+    }
+
     private var swarmStatsLine: String {
         nodeLine(prefix: "Swarm", running: swarm.status == .running, peerCount: swarm.peerCount, status: swarm.status.rawValue)
     }

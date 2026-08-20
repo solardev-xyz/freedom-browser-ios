@@ -10,10 +10,9 @@ import IPFSKit
 /// item closest to the user's finger is first in code. We follow that
 /// convention so the visual top-down order matches the user's spec.
 struct MenuPill: View {
-    let swarmSegment: NodeSegmentState
-    let ipfsSegment: NodeSegmentState
-    let ethereumSegment: NodeSegmentState
-    let gnosisSegment: NodeSegmentState
+    /// Enabled nodes only, menu order — the label ring redistributes
+    /// among them (see NodeStatusIcon).
+    let statusSegments: [NodeStatusIcon.Segment]
     let swarmStatsLine: String
     let radicleStatsLine: String
     let ipfsStatsLine: String
@@ -83,11 +82,7 @@ struct MenuPill: View {
                 // Radicle sits visually last (bottom), hence first in
                 // code per the bottom-up convention.
                 Button(action: onRadicleNode) {
-                    Label {
-                        Text(radicleStatsLine)
-                    } icon: {
-                        Image(systemName: "point.3.connected.trianglepath.dotted")
-                    }
+                    Label { Text(radicleStatsLine) } icon: { Image("NodeRadicle") }
                 }
                 Button(action: onIpfsNode) {
                     Label { Text(ipfsStatsLine) } icon: { Image("NodeIPFS") }
@@ -103,12 +98,7 @@ struct MenuPill: View {
                 }
             }
         } label: {
-            NodeStatusIcon(
-                swarm: swarmSegment,
-                ipfs: ipfsSegment,
-                ethereum: ethereumSegment,
-                gnosis: gnosisSegment
-            )
+            NodeStatusIcon(segments: statusSegments)
         }
         .modifier(NativeGlassMenuStyle())
     }

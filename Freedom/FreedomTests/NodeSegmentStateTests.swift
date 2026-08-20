@@ -2,9 +2,10 @@ import XCTest
 import SwarmKit
 import IPFSKit
 import MyotisKit
+import RadicleKit
 @testable import Freedom
 
-/// Decision tables behind the 4-segment node indicator and the
+/// Decision tables behind the node indicator ring and the
 /// light-client menu rows. Pure — no views, no engines.
 final class NodeSegmentStateTests: XCTestCase {
     private func chain(
@@ -130,5 +131,17 @@ final class NodeSegmentStateTests: XCTestCase {
             ),
             "Ethereum · Paused"
         )
+    }
+
+    func testRadicleSegments() {
+        // Same shape as Swarm: running without a peer can neither fetch
+        // nor publish, so it reads as warming.
+        XCTAssertEqual(NodeSegmentState.fromRadicle(.idle, peerCount: 0), .off)
+        XCTAssertEqual(NodeSegmentState.fromRadicle(.stopping, peerCount: 3), .off)
+        XCTAssertEqual(NodeSegmentState.fromRadicle(.stopped, peerCount: 0), .off)
+        XCTAssertEqual(NodeSegmentState.fromRadicle(.failed, peerCount: 0), .failed)
+        XCTAssertEqual(NodeSegmentState.fromRadicle(.starting, peerCount: 0), .warming)
+        XCTAssertEqual(NodeSegmentState.fromRadicle(.running, peerCount: 0), .warming)
+        XCTAssertEqual(NodeSegmentState.fromRadicle(.running, peerCount: 11), .healthy)
     }
 }
