@@ -306,6 +306,17 @@ struct FreedomApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }
                     Task { await adblockUpdate.checkIfDue() }
+                    // Phase D (minimal): iOS froze every thread while
+                    // suspended, so the node's sessions are silently dead
+                    // on return. Re-dial the preferred seeds immediately
+                    // instead of waiting for the node's own timeouts to
+                    // notice; connect is idempotent for live sessions.
+                    if settings.radicleNodeEnabled, radicle.status == .running {
+                        Task {
+                            await radicle.connectSeeds()
+                            await radicle.refreshStatus()
+                        }
+                    }
                 }
                 // Process-killed-mid-publish rows have no in-memory state
                 // to resume from; flip them to `failed` once on cold start.
