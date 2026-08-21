@@ -78,60 +78,7 @@ final class NodeSegmentStateTests: XCTestCase {
         )
     }
 
-    func testMenuRowShowsPeerSumWhenVerified() {
-        // Beacon (CL libp2p) + state (EL snap) peers are disjoint
-        // networks — the row shows their sum as the live status.
-        XCTAssertEqual(
-            MyotisMenuLine.row(
-                "Ethereum", nodeStatus: .running,
-                chain: chain(ready: true, beaconPeers: 4, snapPeers: 5)
-            ),
-            "Ethereum · 9 peers"
-        )
-        XCTAssertEqual(
-            MyotisMenuLine.row(
-                "Gnosis", nodeStatus: .running,
-                chain: chain(ready: true, beaconPeers: 0, snapPeers: 1)
-            ),
-            "Gnosis · 1 peer"
-        )
-    }
 
-    func testMenuRowSyncingAppendsNonzeroPeers() {
-        XCTAssertEqual(
-            MyotisMenuLine.row(
-                "Ethereum", nodeStatus: .running,
-                chain: chain(ready: false, beaconPeers: 3, snapPeers: 0)
-            ),
-            "Ethereum · Syncing · 3 peers"
-        )
-        // Zero peers while syncing: bare state word, no "0 peers" noise.
-        XCTAssertEqual(
-            MyotisMenuLine.row(
-                "Ethereum", nodeStatus: .running,
-                chain: chain(ready: false, beaconPeers: 0, snapPeers: 0)
-            ),
-            "Ethereum · Syncing"
-        )
-    }
-
-    func testMenuRowStateWordsForNonRunning() {
-        XCTAssertEqual(
-            MyotisMenuLine.row("Ethereum", nodeStatus: .idle, chain: nil),
-            "Ethereum · Off"
-        )
-        XCTAssertEqual(
-            MyotisMenuLine.row("Ethereum", nodeStatus: .failed, chain: nil),
-            "Ethereum · Failed"
-        )
-        XCTAssertEqual(
-            MyotisMenuLine.row(
-                "Ethereum", nodeStatus: .running,
-                chain: chain(ready: false, paused: true, beaconPeers: 3)
-            ),
-            "Ethereum · Paused"
-        )
-    }
 
     func testRadicleSegments() {
         // Same shape as Swarm: running without a peer can neither fetch

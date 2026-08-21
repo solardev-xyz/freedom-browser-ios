@@ -9,15 +9,14 @@ import IPFSKit
 /// section order for menus attached to a bottom-of-screen button so the
 /// item closest to the user's finger is first in code. We follow that
 /// convention so the visual top-down order matches the user's spec.
-struct MenuPill: View {
+struct MenuPill: View, Equatable {
     /// Enabled nodes only, menu order — the label ring redistributes
     /// among them (see NodeStatusIcon).
     let statusSegments: [NodeStatusIcon.Segment]
-    let swarmStatsLine: String
-    let radicleStatsLine: String
-    let ipfsStatsLine: String
-    let ethereumStatsLine: String
-    let gnosisStatsLine: String
+    /// Live one-line summary for the Nodes row ("4 of 5 online · 73
+    /// peers"). A single row's text refreshing is harmless — unlike the
+    /// former nodes submenu, there is no expansion state to reset.
+    let nodesSummaryLine: String
 
     let isURLBookmarked: Bool
     let canBookmark: Bool
@@ -27,11 +26,24 @@ struct MenuPill: View {
     let onTabs: () -> Void
     let onNewTab: () -> Void
     let onWallet: () -> Void
-    let onSwarmNode: () -> Void
-    let onRadicleNode: () -> Void
-    let onIpfsNode: () -> Void
-    let onLightClient: () -> Void
+    let onNodes: () -> Void
     let onSettings: () -> Void
+
+    /// Data-only equality: the closures defeat SwiftUI's automatic
+    /// diffing, so without this the pill re-evaluates on EVERY
+    /// ContentView update (each poll tick), and every re-evaluation
+    /// rebuilds the UIKit menu — visible as a periodic "update rhythm"
+    /// and, worse, a rebuild resets the nodes submenu to collapsed
+    /// while it's open. Comparing just the displayed data means the
+    /// menu only rebuilds when something visible actually changed.
+    /// (Pair with `.equatable()` at the use site.)
+    static func == (lhs: MenuPill, rhs: MenuPill) -> Bool {
+        lhs.statusSegments == rhs.statusSegments
+            && lhs.nodesSummaryLine == rhs.nodesSummaryLine
+            && lhs.isURLBookmarked == rhs.isURLBookmarked
+            && lhs.canBookmark == rhs.canBookmark
+            && lhs.shareURL == rhs.shareURL
+    }
 
     var body: some View {
         Menu {
@@ -71,30 +83,20 @@ struct MenuPill: View {
                 }
             }
 
-            // Top-most section: tappable node entries grouped under one
-            // "Nodes" header. Each row's label already carries the node
-            // name + live state, so the section header just frames
-            // them. Per the bottom-up convention the code order is the
-            // REVERSE of the visual: Ethereum tops the visual menu,
-            // then Gnosis, Swarm, IPFS. Both chain rows open the same
-            // light-client sheet (one engine, per-chain detail inside).
-            Section("Nodes") {
-                // Radicle sits visually last (bottom), hence first in
-                // code per the bottom-up convention.
-                Button(action: onRadicleNode) {
-                    Label { Text(radicleStatsLine) } icon: { Image("NodeRadicle") }
-                }
-                Button(action: onIpfsNode) {
-                    Label { Text(ipfsStatsLine) } icon: { Image("NodeIPFS") }
-                }
-                Button(action: onSwarmNode) {
-                    Label { Text(swarmStatsLine) } icon: { Image("NodeSwarm") }
-                }
-                Button(action: onLightClient) {
-                    Label { Text(gnosisStatsLine) } icon: { Image("NodeGnosis") }
-                }
-                Button(action: onLightClient) {
-                    Label { Text(ethereumStatsLine) } icon: { Image("NodeEthereum") }
+            // Top-most section: ONE Nodes row. The per-node entries and
+            // their live peer counts live in the NodesDrawer sheet —
+            // menus are UIKit snapshots, so anything that ticks in here
+            // forces rebuilds (the former nodes submenu re-collapsed
+            // itself on every peer-count change). The summary line may
+            // refresh in place; a lone row has no state to lose.
+            Section {
+                // Text+Text+Image directly in the label builder — the
+                // documented recipe for a menu row title + subtitle +
+                // icon. Wrapping them in a Label collapses the subtitle.
+                Button(action: onNodes) {
+                    Text("Nodes")
+                    Text(nodesSummaryLine)
+                    Image(systemName: "network")
                 }
             }
         } label: {

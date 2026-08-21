@@ -213,12 +213,4 @@ enum MyotisMenuLine {
     /// is appended so warm-up reads as progress instead of a stall.
     /// "Verified" as a claim lives in the trust shield per resolution,
     /// not as a static menu label.
-    static func row(_ name: String, nodeStatus: MyotisStatus, chain: MyotisChainStatus?) -> String {
-        let state = state(nodeStatus: nodeStatus, chain: chain)
-        let peers = totalPeers(chain)
-        let peersText = "\(peers) peer\(peers == 1 ? "" : "s")"
-        if state == "Verified" { return "\(name) · \(peersText)" }
-        if state == "Syncing", peers > 0 { return "\(name) · Syncing · \(peersText)" }
-        return "\(name) · \(state)"
-    }
 }

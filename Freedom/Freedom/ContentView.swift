@@ -45,6 +45,7 @@ struct ContentView: View {
     @State private var isShowingIpfsNode = false
     @State private var isShowingMyotisNode = false
     @State private var isShowingRadicleNode = false
+    @State private var isShowingNodesDrawer = false
     @FocusState private var addressFocused: Bool
     /// Gates suggestions so they don't appear before the user actually
     /// types in the prefilled URL (Safari behavior). Reset on every
@@ -185,6 +186,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingRadicleNode) {
             RadicleNodeSheet(isPresented: $isShowingRadicleNode)
+        }
+        .sheet(isPresented: $isShowingNodesDrawer) {
+            NodesDrawer()
         }
         .sheet(item: approvalBinding) { approval in
             EthereumApprovalSheet(approval: approval)
@@ -416,11 +420,7 @@ struct ContentView: View {
                 } else if mode == .normal {
                     MenuPill(
                         statusSegments: nodeStatusSegments,
-                        swarmStatsLine: swarmStatsLine,
-                        radicleStatsLine: radicleStatsLine,
-                        ipfsStatsLine: ipfsStatsLine,
-                        ethereumStatsLine: ethereumStatsLine,
-                        gnosisStatsLine: gnosisStatsLine,
+                        nodesSummaryLine: nodesSummaryLine,
                         isURLBookmarked: isActiveURLBookmarked,
                         canBookmark: activeURL != nil,
                         shareURL: activeURL,
@@ -428,12 +428,10 @@ struct ContentView: View {
                         onTabs: { isShowingTabSwitcher = true },
                         onNewTab: { tabStore.newTab() },
                         onWallet: { isShowingWallet = true },
-                        onSwarmNode: { isShowingNode = true },
-                        onRadicleNode: { isShowingRadicleNode = true },
-                        onIpfsNode: { isShowingIpfsNode = true },
-                        onLightClient: { isShowingMyotisNode = true },
+                        onNodes: { isShowingNodesDrawer = true },
                         onSettings: { isShowingSettings = true }
                     )
+                    .equatable()
                     // iOS 26's `.buttonStyle(.glass)` reserves a slightly
                     // wider layout box than the visible circle, so the
                     // HStack's 8pt spacing leaves a bigger visual gap on
@@ -636,52 +634,38 @@ struct ContentView: View {
         return segments
     }
 
-    private var swarmStatsLine: String {
-        nodeLine(prefix: "Swarm", running: swarm.status == .running, peerCount: swarm.peerCount, status: swarm.status.rawValue)
-    }
-
-    /// "IPFS · Online" / "IPFS · Off". The Rust reader has no libp2p
-    /// peer set, and cache-size numbers are implementation detail — a
-    /// single state word keeps the row to one line (block counts live
-    /// in the IPFS sheet).
-    /// "Radicle · Online (n peers)" / "Radicle · Off" — embedded node
-    /// row, same vocabulary as the Swarm line.
-    private var radicleStatsLine: String {
-        nodeLine(
-            prefix: "Radicle",
-            running: radicle.status == .running,
-            peerCount: radicle.connectedPeers,
-            status: radicle.status.rawValue
-        )
-    }
-
-    private var ipfsStatsLine: String {
-        guard ipfs.status == .running else {
-            return "IPFS · \(ipfs.status.rawValue.capitalized)"
+    /// Nodes-row summary. "Online" counts healthy AND warming — a
+    /// syncing node is running, and the row shouldn't read as an outage
+    /// during normal warm-up. Disabled nodes are excluded from both
+    /// numbers, consistent with the ring. Peers = every count we have
+    /// (Swarm + Radicle + both Myotis networks' beacon+snap sets; the
+    /// IPFS reader has no peer concept).
+    private var nodesSummaryLine: String {
+        let segments = nodeStatusSegments
+        guard !segments.isEmpty else { return "none enabled" }
+        let online = segments.filter {
+            $0.state == .healthy || $0.state == .warming
+        }.count
+        var line = "\(online) of \(segments.count) online"
+        var peers = 0
+        if settings.swarmNodeEnabled { peers += swarm.peerCount }
+        if settings.radicleNodeEnabled { peers += radicle.connectedPeers }
+        if settings.myotisNodeEnabled {
+            for network in MyotisNetwork.allCases {
+                peers += MyotisMenuLine.totalPeers(myotis.chainStatus[network.chainId])
+            }
         }
-        return "IPFS · Online"
+        if peers > 0 {
+            line += " · \(peers) peer\(peers == 1 ? "" : "s")"
+        }
+        return line
     }
 
-    /// "Ethereum · Verified" / "· Syncing" / "· Off" — light-client
-    /// chain rows. Wording decided by `MyotisMenuLine` (pure, tested).
-    private var ethereumStatsLine: String {
-        MyotisMenuLine.row(
-            "Ethereum", nodeStatus: myotis.status,
-            chain: myotis.chainStatus[MyotisNetwork.mainnet.chainId]
-        )
-    }
 
-    private var gnosisStatsLine: String {
-        MyotisMenuLine.row(
-            "Gnosis", nodeStatus: myotis.status,
-            chain: myotis.chainStatus[MyotisNetwork.gnosis.chainId]
-        )
-    }
 
-    private func nodeLine(prefix: String, running: Bool, peerCount: Int, status: String) -> String {
-        guard running else { return "\(prefix) · \(status.capitalized)" }
-        return "\(prefix) · \(peerCount) peer\(peerCount == 1 ? "" : "s")"
-    }
+
+
+
 
 
     @ViewBuilder private var webArea: some View {
