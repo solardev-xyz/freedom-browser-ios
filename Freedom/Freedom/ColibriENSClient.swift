@@ -214,8 +214,37 @@ enum ColibriDiskStorage {
     static func register(directory: URL = defaultDirectory()) {
         wipeIfFormatChanged(at: directory)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        StorageBridge.registerStorage(DiskBacked(root: directory))
+        let router = Router(persistent: DiskBacked(root: directory))
+        Self.router = router
+        StorageBridge.registerStorage(router)
         log.info("[colibri] disk storage at \(directory.path, privacy: .public)")
+    }
+
+    /// The registered router, if `register` ran (nil in tests that
+    /// register their own adapter).
+    nonisolated(unsafe) private static var router: Router?
+
+    /// Run `body` with Colibri reading and writing a throwaway in-memory
+    /// store instead of the persisted verifier state. Used by checkpoint
+    /// recovery, which must bootstrap from a *fresh* committee so the
+    /// intercepted checkpointz request actually happens (desktop parity:
+    /// a fresh `Map` per verification worker). While `body` runs, other
+    /// Colibri users (ENS) also see the ephemeral store — they still
+    /// verify correctly, they just don't persist. Callers serialize.
+    nonisolated static func withEphemeralStorage<T: Sendable>(
+        _ body: @Sendable () async throws -> T
+    ) async throws -> T {
+        guard let router else {
+            // No disk router (unit-test host): still isolate the verifier
+            // state so recovery never leaks into a test adapter.
+            let fallback = Router(persistent: MemoryBacked())
+            StorageBridge.registerStorage(fallback)
+            Self.router = fallback
+            return try await withEphemeralStorage(body)
+        }
+        router.beginEphemeral()
+        defer { router.endEphemeral() }
+        return try await body()
     }
 
     /// Clears the verifier-state directory once per storage-format bump.
@@ -244,6 +273,50 @@ enum ColibriDiskStorage {
 /// an isolated deinit whose back-deployment shim aborts with a malloc
 /// error when `StorageBridge.registerStorage` releases a previously-
 /// registered instance (reproduced by the storage-migration tests).
+/// Routes Colibri's storage callbacks either to the persistent adapter
+/// or, inside `withEphemeralStorage`, to a throwaway in-memory map.
+/// Nonisolated + locked: the C core calls from arbitrary threads.
+private nonisolated final class Router: ColibriStorage, @unchecked Sendable {
+    private let persistent: ColibriStorage
+    private let lock = NSLock()
+    private var ephemeral: [String: Data]?
+
+    init(persistent: ColibriStorage) { self.persistent = persistent }
+
+    func beginEphemeral() { lock.withLock { ephemeral = [:] } }
+    func endEphemeral() { lock.withLock { ephemeral = nil } }
+
+    func get(key: String) -> Data? {
+        let scoped: Data?? = lock.withLock { ephemeral.map { $0[key] } }
+        if let scoped { return scoped }
+        return persistent.get(key: key)
+    }
+    func set(key: String, value: Data) {
+        let handled: Bool = lock.withLock {
+            guard ephemeral != nil else { return false }
+            ephemeral?[key] = value
+            return true
+        }
+        if !handled { persistent.set(key: key, value: value) }
+    }
+    func delete(key: String) {
+        let handled: Bool = lock.withLock {
+            guard ephemeral != nil else { return false }
+            ephemeral?.removeValue(forKey: key)
+            return true
+        }
+        if !handled { persistent.delete(key: key) }
+    }
+}
+
+private nonisolated final class MemoryBacked: ColibriStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var map: [String: Data] = [:]
+    func get(key: String) -> Data? { lock.withLock { map[key] } }
+    func set(key: String, value: Data) { lock.withLock { map[key] = value } }
+    func delete(key: String) { lock.withLock { _ = map.removeValue(forKey: key) } }
+}
+
 private nonisolated final class DiskBacked: ColibriStorage {
     let root: URL
     init(root: URL) { self.root = root }

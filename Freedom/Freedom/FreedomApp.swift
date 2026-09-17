@@ -73,6 +73,10 @@ struct FreedomApp: App {
             // availability is polled off the node, and the resolver skips
             // it whenever it can't serve.
             let myotisInstance = MyotisNode()
+            // Stale-anchor recovery corroborates each quorum checkpoint
+            // with a disposable Colibri verifier (desktop PR #353
+            // parity). Without it a stale anchor blocks as unsupported.
+            myotisInstance.checkpointCorroborator = ColibriCheckpointCorroborator()
             self._myotis = State(wrappedValue: myotisInstance)
             let myotisClient = MyotisENSClient(node: myotisInstance)
             let resolver = ENSResolver(
