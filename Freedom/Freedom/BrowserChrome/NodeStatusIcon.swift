@@ -46,16 +46,24 @@ enum NodeSegmentState: Equatable {
     }
 
     /// One light-client chain. `healthy` means verified reads are
-    /// actually servable (SYNCED + snap peer), not merely beacon-synced.
+    /// actually servable (SYNCED + snap peer, no recovery in flight),
+    /// not merely beacon-synced. A blocked checkpoint recovery is a
+    /// genuine failure that needs the user (Retry / Repair) → red;
+    /// recovering, waiting for a retry, or syncing slowly → warming.
     static func fromMyotisChain(
         _ status: MyotisStatus,
-        chain: MyotisChainStatus?
+        chain: MyotisChainStatus?,
+        recovery: MyotisRecoveryState? = nil
     ) -> NodeSegmentState {
         switch status {
         case .idle, .stopping, .stopped: return .off
         case .failed: return .failed
         case .starting: return .warming
-        case .running: return (chain?.ready ?? false) ? .healthy : .warming
+        case .running:
+            if let recovery {
+                return recovery.phase == .blocked && recovery.reason != .stalled ? .failed : .warming
+            }
+            return (chain?.ready ?? false) ? .healthy : .warming
         }
     }
 

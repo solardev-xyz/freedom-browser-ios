@@ -620,14 +620,16 @@ struct ContentView: View {
                 name: "Ethereum light client",
                 state: .fromMyotisChain(
                     myotis.status,
-                    chain: myotis.chainStatus[MyotisNetwork.mainnet.chainId]
+                    chain: myotis.chainStatus[MyotisNetwork.mainnet.chainId],
+                    recovery: myotis.recovery[MyotisNetwork.mainnet.chainId]
                 )
             ))
             segments.append(.init(
                 name: "Gnosis light client",
                 state: .fromMyotisChain(
                     myotis.status,
-                    chain: myotis.chainStatus[MyotisNetwork.gnosis.chainId]
+                    chain: myotis.chainStatus[MyotisNetwork.gnosis.chainId],
+                    recovery: myotis.recovery[MyotisNetwork.gnosis.chainId]
                 )
             ))
         }

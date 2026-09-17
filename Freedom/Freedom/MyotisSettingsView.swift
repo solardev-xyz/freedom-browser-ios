@@ -40,16 +40,18 @@ struct MyotisSettingsView: View {
         let status = myotis.chainStatus[network.chainId]
         LabeledContent(network.rawValue.capitalized) {
             if let status {
-                Text(chainSummary(status))
+                Text(chainSummary(status, recovery: myotis.recovery[network.chainId]))
             } else {
                 Text("—").foregroundStyle(.secondary)
             }
         }
     }
 
-    private func chainSummary(_ status: MyotisChainStatus) -> String {
+    private func chainSummary(_ status: MyotisChainStatus, recovery: MyotisRecoveryState?) -> String {
+        if let recovery { return recovery.label.lowercased() }
         guard status.running else { return "stopped" }
         if status.paused { return "paused" }
+        if status.isStaleAnchor { return "checkpoint expired" }
         guard status.beaconState == "SYNCED" else {
             return status.beaconState.isEmpty ? "starting" : status.beaconState.lowercased()
         }

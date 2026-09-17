@@ -105,7 +105,9 @@ struct NodesDrawer: View {
 
     private func chainLine(_ network: MyotisNetwork) -> String {
         let chain = myotis.chainStatus[network.chainId]
-        let state = MyotisMenuLine.state(nodeStatus: myotis.status, chain: chain)
+        let state = MyotisMenuLine.state(
+            nodeStatus: myotis.status, chain: chain, recovery: myotis.recovery[network.chainId]
+        )
         let peers = MyotisMenuLine.totalPeers(chain)
         guard peers > 0, state == "Verified" || state == "Syncing" else { return state }
         return "\(state) · \(peers) peer\(peers == 1 ? "" : "s")"
