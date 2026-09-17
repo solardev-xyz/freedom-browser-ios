@@ -26,7 +26,7 @@ let package = Package(
     targets: [
         // Combined Swarm + IPFS + Myotis Rust staticlib from
         // solardev-xyz/freedom-mobile-ffi (built from ant v0.5.43 +
-        // freedom-ipfs v0.4.3 + myotis v0.1.7). SHA256 verified by
+        // freedom-ipfs v0.4.3 + myotis v0.1.10 + libradicle v0.7.1). SHA256 verified by
         // SwiftPM before unpacking; bumps require a new release tag +
         // checksum.
         // Local-path development override: comment out the URL/checksum
@@ -36,8 +36,8 @@ let package = Package(
         // `../freedom-mobile-ffi`.
         .binaryTarget(
             name: "FreedomMobile",
-            url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.10.0/FreedomMobile.xcframework.zip",
-            checksum: "7570d65a26a43867546951ffb78acc952fa6e34066a0792c413178bbe198d415"
+            url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.11.0/FreedomMobile.xcframework.zip",
+            checksum: "f5d60c33b8d5eb3016db98c6ffa531d5a7c76c974dfef92e6e1e7947ac2bf6bd"
         ),
         .target(
             name: "SwarmKit",
