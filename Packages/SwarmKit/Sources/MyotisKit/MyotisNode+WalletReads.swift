@@ -196,7 +196,7 @@ extension MyotisNode {
     /// Verified EL head as a hex quantity for `eth_blockNumber`, nil when
     /// the chain isn't serving.
     public func blockNumberHex(chainId: UInt64) -> String? {
-        guard let status = chainStatus[chainId], status.ready, status.executionBlockNumber > 0 else {
+        guard isReady(chainId: chainId), let status = chainStatus[chainId], status.executionBlockNumber > 0 else {
             return nil
         }
         return "0x" + String(status.executionBlockNumber, radix: 16)
