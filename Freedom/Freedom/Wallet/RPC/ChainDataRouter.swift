@@ -47,12 +47,35 @@ final class ChainDataRouter {
         try await RPCSession.postBytes(url: url, body: body, timeout: timeout)
     }
 
+    /// A page-driven read gives a source this long before falling
+    /// through, when a later source exists (desktop
+    /// `INTERACTIVE_SOURCE_DEADLINE_MS`). Tests shorten it.
+    var interactiveDeadline: TimeInterval = 2
+
     private let registry: ChainRegistry
     private let transport: Transport
+    let adaptive: AdaptiveRouting
+    let admission: SourceAdmission
 
-    init(registry: ChainRegistry, transport: @escaping Transport = ChainDataRouter.defaultTransport) {
+    init(
+        registry: ChainRegistry,
+        transport: @escaping Transport = ChainDataRouter.defaultTransport,
+        clock: @escaping () -> Date = Date.init
+    ) {
         self.registry = registry
         self.transport = transport
+        self.adaptive = AdaptiveRouting(clock: clock)
+        self.admission = SourceAdmission()
+    }
+
+    /// The two-second budget is a *fall-through* allowance, not a global
+    /// ceiling: it only pays off when a later source can still answer
+    /// and a page the user is watching is waiting. Applied blindly it
+    /// would downgrade a verified wallet read on a slow network to an
+    /// unverified one, and on the last configured source it would turn
+    /// a read that would have succeeded into a failure.
+    func sourceWait(policy: ChainAccessPolicy, interactive: Bool, hasFallback: Bool) -> TimeInterval {
+        interactive && hasFallback ? min(policy.sourceTimeout, interactiveDeadline) : policy.sourceTimeout
     }
 
     // MARK: - Reads
@@ -76,16 +99,28 @@ final class ChainDataRouter {
         var directErrors: [Swift.Error] = []
         var sawEmptyPool = false
 
-        for source in policy.readOrder {
+        let order = policy.readOrder
+        for (index, source) in order.enumerated() {
             if directOnly && source != .direct { continue }
             try Task.checkCancellation()
+            let routeKey = source == .direct ? nil
+                : AdaptiveRouting.routeKey(source: source, chainID: chainID, method: method, params: params, context: context)
+            if adaptive.isBypassed(routeKey) {
+                log.info(
+                    "[chain-data] \(method, privacy: .public) chain=\(chainID) \(source.rawValue, privacy: .public) bypassed for this app workload: \(self.adaptive.bypassReason(routeKey) ?? "", privacy: .public)"
+                )
+                sourceFailures.append(ChainSourceUnavailable(reason: "\(source.rawValue) temporarily bypassed for this app workload"))
+                continue
+            }
+            let wait = sourceWait(policy: policy, interactive: context.isInteractive, hasFallback: index + 1 < order.count)
             let started = ContinuousClock.now
             do {
                 let answer: ChainDataResult
                 switch source {
                 case .myotis, .colibri:
                     answer = try await requestVerifiedSource(
-                        source, chainID: chainID, method: method, params: params, options: options
+                        source, chainID: chainID, method: method, params: params,
+                        options: options, policy: policy, routeKey: routeKey, wait: wait
                     )
                 case .quorum:
                     // Phase 3 lands the M-of-K tier; until then the order
@@ -96,6 +131,7 @@ final class ChainDataRouter {
                         chainID: chainID, method: method, params: params, policy: policy, options: options
                     )
                 }
+                adaptive.recordSuccess(routeKey)
                 let elapsed = started.duration(to: .now)
                 log.info(
                     "[chain-data] \(method, privacy: .public) chain=\(chainID) via \(source.rawValue, privacy: .public) \(Self.millis(elapsed))ms"
@@ -113,12 +149,13 @@ final class ChainDataRouter {
                 case .invalidResponse:
                     directErrors.append(error)
                 }
-                Self.logFailure(method: method, chainID: chainID, source: source, error: error)
+                Self.logFailure(method: method, chainID: chainID, source: source, error: error, elapsed: started.duration(to: .now))
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                adaptive.recordFailure(routeKey, kind: Self.failureKind(error))
                 sourceFailures.append(error)
-                Self.logFailure(method: method, chainID: chainID, source: source, error: error)
+                Self.logFailure(method: method, chainID: chainID, source: source, error: error, elapsed: started.duration(to: .now))
             }
         }
 
@@ -134,7 +171,10 @@ final class ChainDataRouter {
         chainID: Int,
         method: String,
         params: [Any],
-        options: Options
+        options: Options,
+        policy: ChainAccessPolicy,
+        routeKey: String?,
+        wait: TimeInterval
     ) async throws -> ChainDataResult {
         guard let source = registry.source(kind) else {
             throw ChainSourceUnavailable(reason: "\(kind.rawValue) is not installed")
@@ -145,6 +185,85 @@ final class ChainDataRouter {
         guard source.serves(method: method, params: params, chainID: chainID) else {
             throw ChainSourceUnavailable(reason: "\(kind.rawValue) cannot serve this \(method) shape")
         }
+        switch kind {
+        case .myotis:
+            return try await requestViaMyotis(source, chainID: chainID, method: method, params: params, options: options, budget: wait)
+        default:
+            let inFlightKey = routeKey ?? [
+                kind.rawValue, String(chainID), method, AdaptiveRouting.requestTarget(method: method, params: params),
+            ].joined(separator: "\u{1F}")
+            return try await requestViaColibri(source, chainID: chainID, method: method, params: params, options: options, routeKey: inFlightKey, wait: wait)
+        }
+    }
+
+    /// One read at a time per chain, a bounded queue behind it. One
+    /// budget covers the queue wait *and* the read, so serializing never
+    /// costs a caller more than a solo read would. The slot is held
+    /// until the engine settles — a deadline limits the caller's
+    /// patience, not native health; fallbacks answer meanwhile.
+    private func requestViaMyotis(
+        _ source: ChainDataSource,
+        chainID: Int,
+        method: String,
+        params: [Any],
+        options: Options,
+        budget: TimeInterval
+    ) async throws -> ChainDataResult {
+        guard let slot = admission.acquireMyotis(chainID: chainID) else {
+            throw ChainSourceUnavailable(reason: "Myotis has too many reads queued for this workload")
+        }
+        let started = ContinuousClock.now
+        if case .queued(let waiter) = slot {
+            do {
+                try await withSourceDeadline(budget, source: .myotis) { await waiter.wait() }
+            } catch {
+                admission.abandonMyotis(chainID: chainID, waiter: waiter)
+                throw error
+            }
+        }
+        let admission = self.admission
+        let work = Task { @MainActor () throws -> ChainDataResult in
+            defer { admission.releaseMyotis(chainID: chainID) }
+            return try await self.execute(source, kind: .myotis, chainID: chainID, method: method, params: params, options: options)
+        }
+        let elapsed = TimeInterval(started.duration(to: .now).components.seconds)
+            + TimeInterval(started.duration(to: .now).components.attoseconds) / 1e18
+        return try await withSourceDeadline(max(0.001, budget - elapsed), source: .myotis) { try await work.value }
+    }
+
+    /// A global and a per-route cap on prover work in flight; beyond
+    /// them the caller falls through instead of parking more. A prover
+    /// call cannot be cancelled, so it stays tracked until it settles
+    /// and its wait is never unbounded.
+    private func requestViaColibri(
+        _ source: ChainDataSource,
+        chainID: Int,
+        method: String,
+        params: [Any],
+        options: Options,
+        routeKey: String,
+        wait: TimeInterval
+    ) async throws -> ChainDataResult {
+        guard admission.admitColibri(routeKey: routeKey) else {
+            throw ChainSourceUnavailable(reason: "Colibri is already processing this workload")
+        }
+        let admission = self.admission
+        let work = Task { @MainActor () throws -> ChainDataResult in
+            defer { admission.releaseColibri(routeKey: routeKey) }
+            return try await self.execute(source, kind: .colibri, chainID: chainID, method: method, params: params, options: options)
+        }
+        return try await withSourceDeadline(wait, source: .colibri) { try await work.value }
+    }
+
+    /// The call itself, with the source's evidence attached.
+    private func execute(
+        _ source: ChainDataSource,
+        kind: ChainSource,
+        chainID: Int,
+        method: String,
+        params: [Any],
+        options: Options
+    ) async throws -> ChainDataResult {
         let headBefore = source.verifiedHead(chainID: chainID)
         let result = try await source.result(method: method, params: params, chainID: chainID)
         if options.rejectNull, result is NSNull {
@@ -164,6 +283,18 @@ final class ChainDataRouter {
             k: 1, m: 1
         )
         return ChainDataResult(result: result, trust: trust, source: kind)
+    }
+
+    /// What the adaptive layer should remember about a failure, if
+    /// anything. Desktop `failureKind`.
+    static func failureKind(_ error: Swift.Error) -> ChainSourceFailureKind? {
+        if error is ChainSourceDeadline { return .timeout }
+        if let unavailable = error as? ChainSourceUnavailable {
+            if let kind = unavailable.failureKind { return kind }
+            return ChainSourceUnavailable.isCapacityMessage(unavailable.reason) ? .capacity : nil
+        }
+        if (error as? URLError)?.code == .timedOut { return .timeout }
+        return ChainSourceUnavailable.isCapacityMessage(safeErrorMessage(error)) ? .capacity : nil
     }
 
     // MARK: - Direct tier
@@ -279,10 +410,10 @@ final class ChainDataRouter {
 
     // MARK: - Logging
 
-    private static func logFailure(method: String, chainID: Int, source: ChainSource, error: Swift.Error) {
+    private static func logFailure(method: String, chainID: Int, source: ChainSource, error: Swift.Error, elapsed: Duration) {
         let reason = (error as? ChainSourceUnavailable)?.reason ?? Self.safeErrorMessage(error)
         log.info(
-            "[chain-data] \(method, privacy: .public) chain=\(chainID) \(source.rawValue, privacy: .public) failed: \(reason, privacy: .public) — falling through"
+            "[chain-data] \(method, privacy: .public) chain=\(chainID) \(source.rawValue, privacy: .public) failed after \(Self.millis(elapsed))ms: \(reason, privacy: .public) — falling through"
         )
     }
 

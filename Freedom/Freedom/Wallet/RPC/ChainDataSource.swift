@@ -48,6 +48,13 @@ extension ChainDataSource {
 /// through to the next source. Not an error the caller ever sees.
 struct ChainSourceUnavailable: Error {
     let reason: String
+    /// Set when the source knows *why* (timeout, execution ceiling) so
+    /// the router's adaptive layer can remember the route.
+    var failureKind: ChainSourceFailureKind?
+
+    init(reason: String) {
+        self.reason = reason
+    }
 }
 
 // MARK: - Shared param gates (pure, unit-tested)

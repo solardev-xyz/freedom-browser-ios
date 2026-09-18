@@ -172,7 +172,7 @@ struct RoutingContext: Equatable, Sendable {
 
 /// A chain read with its provenance: the JSON value the caller asked
 /// for, the tier that produced it and the evidence behind it.
-struct ChainDataResult {
+struct ChainDataResult: @unchecked Sendable {
     /// JSON-RPC `result` as a Foundation JSON value (`NSNull` for a
     /// well-defined null).
     let result: Any

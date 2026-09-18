@@ -72,17 +72,20 @@ final class RPCRouter {
             return String(chain.id)
         case "eth_accounts":
             return permissionStore.accounts(for: origin.key)
+        // Page-driven reads carry the page's permission key so the
+        // chain-data router treats them as interactive: a slow verified
+        // source falls through after its interactive budget instead of
+        // stalling the page.
         case "eth_blockNumber":
-            let hex: String = try await registry.walletRPC.blockNumber(on: chain)
-            return hex
+            return try await read(method, params: [], chain: chain, origin: origin)
         case "eth_getBalance":
             guard let address = params.first as? String else {
                 throw RouterError.invalidParams(method: method, detail: "expected [address, blockTag]")
             }
-            let hex: String = try await registry.walletRPC.balance(of: address, on: chain)
-            return hex
+            let tag = params.count > 1 ? params[1] : "latest"
+            return try await read(method, params: [address, tag], chain: chain, origin: origin)
         case "eth_call":
-            return try await registry.walletRPC.callJSON(method: "eth_call", params: params, on: chain)
+            return try await read(method, params: params, chain: chain, origin: origin)
 
         case "eth_requestAccounts", "enable",
              "personal_sign", "eth_signTypedData_v4",
@@ -95,6 +98,12 @@ final class RPCRouter {
         default:
             throw RouterError.unsupportedMethod(method: method)
         }
+    }
+
+    private func read(_ method: String, params: [Any], chain: Chain, origin: OriginIdentity) async throws -> Any {
+        try await registry.chainData.request(
+            chainID: chain.id, method: method, params: params, context: RoutingContext(origin: origin.key)
+        ).result
     }
 
     func errorPayload(for error: Swift.Error) -> ErrorPayload {
