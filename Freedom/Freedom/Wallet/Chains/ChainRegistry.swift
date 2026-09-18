@@ -52,6 +52,12 @@ final class ChainRegistry {
         (policyOverrides[id] ?? ChainAccessPolicy.default(forChainID: id)).sanitized(forChainID: id)
     }
 
+    /// Whether a direct answer from this URL is the user's own node
+    /// (trust `userConfigured`) rather than a public endpoint's word.
+    func isUserConfigured(url: URL, chainID: Int) -> Bool {
+        chainStore.isUserAddedRPCURL(url.absoluteString, chainID: chainID)
+    }
+
     /// The installed source implementing a verified tier, if any.
     func source(_ kind: ChainSource) -> ChainDataSource? {
         verifiedSources.first { $0.kind == kind }

@@ -53,6 +53,27 @@ final class ChainStore {
         return record(id: id)?.rpcURLs ?? []
     }
 
+    /// True for an RPC URL the user added themselves, as opposed to one
+    /// the chain shipped with. Built-ins compare against their seed
+    /// lists; a custom chain's initial list counts as shipped.
+    func isUserAddedRPCURL(_ url: String, chainID id: Int) -> Bool {
+        let key = url.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !key.isEmpty, rpcURLs(forChainID: id).contains(where: { $0.lowercased() == key }) else { return false }
+        return !defaultRPCURLs(forChainID: id).contains { $0.lowercased() == key }
+    }
+
+    /// The RPC URLs a chain shipped with (the "Public RPCs" of the
+    /// settings page). Until the record carries its own seed snapshot
+    /// this is the built-in seed for mainnet and Gnosis and, for a
+    /// custom chain, its whole current list.
+    func defaultRPCURLs(forChainID id: Int) -> [String] {
+        switch id {
+        case Chain.mainnetID: return SettingsStore.defaultPublicRpcProviders
+        case Chain.gnosisID: return ChainRegistry.gnosisURLs.map(\.absoluteString)
+        default: return rpcURLs(forChainID: id)
+        }
+    }
+
     // MARK: - Writes
 
     enum AddChainError: Error {

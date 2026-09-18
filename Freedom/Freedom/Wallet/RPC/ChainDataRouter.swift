@@ -27,6 +27,9 @@ final class ChainDataRouter {
         /// next endpoint / tier) rather than a well-defined absence.
         /// `WalletRPC.call` sets it; `callOptional` does not.
         var rejectNull = false
+        /// Skip every verified tier (DEBUG smoke hook for the onchain
+        /// loader's unverified path). Never set from user-facing code.
+        var directOnly = false
 
         static let standard = Options()
     }
@@ -52,8 +55,8 @@ final class ChainDataRouter {
     /// `INTERACTIVE_SOURCE_DEADLINE_MS`). Tests shorten it.
     var interactiveDeadline: TimeInterval = 2
 
-    private let registry: ChainRegistry
-    private let transport: Transport
+    let registry: ChainRegistry
+    let transport: Transport
     let adaptive: AdaptiveRouting
     let admission: SourceAdmission
 
@@ -80,13 +83,33 @@ final class ChainDataRouter {
 
     // MARK: - Reads
 
-    /// Route one JSON-RPC read through the chain's policy.
+    /// Route one JSON-RPC read through the chain's policy. Throws only
+    /// `WalletRPC.Error` (deterministic answers, exhausted tiers) or
+    /// `CancellationError`; a tier's own failure never reaches a caller.
     func request(
         chainID: Int,
         method: String,
         params rawParams: [Any],
         context: RoutingContext = .wallet,
         options: Options = .standard
+    ) async throws -> ChainDataResult {
+        do {
+            return try await walk(chainID: chainID, method: method, params: rawParams, context: context, options: options)
+        } catch let error as WalletRPC.Error {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw WalletRPC.Error.allProvidersFailed([error])
+        }
+    }
+
+    private func walk(
+        chainID: Int,
+        method: String,
+        params rawParams: [Any],
+        context: RoutingContext,
+        options: Options
     ) async throws -> ChainDataResult {
         let policy = registry.policy(forChainID: chainID)
         let params = ChainCallShape.normalizeParams(method: method, params: rawParams)
@@ -98,10 +121,14 @@ final class ChainDataRouter {
         /// has always carried.
         var directErrors: [Swift.Error] = []
         var sawEmptyPool = false
+        /// A quorum member's answer the direct tier can reuse, and the
+        /// endpoints the quorum already asked.
+        var directFallback: DirectFallback?
+        var directAttempted: [URL] = []
 
         let order = policy.readOrder
         for (index, source) in order.enumerated() {
-            if directOnly && source != .direct { continue }
+            if (directOnly || options.directOnly) && source != .direct { continue }
             try Task.checkCancellation()
             let routeKey = source == .direct ? nil
                 : AdaptiveRouting.routeKey(source: source, chainID: chainID, method: method, params: params, context: context)
@@ -123,12 +150,28 @@ final class ChainDataRouter {
                         options: options, policy: policy, routeKey: routeKey, wait: wait
                     )
                 case .quorum:
-                    // Phase 3 lands the M-of-K tier; until then the order
-                    // walks past it silently.
-                    continue
+                    let next = index + 1 < order.count ? order[index + 1] : nil
+                    let outcome = await requestQuorum(
+                        chainID: chainID, method: method, params: params, policy: policy, options: options,
+                        wait: wait, allowDirectFallback: next == .direct
+                    )
+                    switch outcome {
+                    case .agreed(.value(let value), let trust):
+                        answer = ChainDataResult(result: value, trust: trust, source: .quorum)
+                    case .agreed(.deterministic(let error), _):
+                        // M members agree on the revert: a verified
+                        // deterministic answer, which ends the walk.
+                        throw error
+                    case .failed(let reason, let kind, let fallback, let attempted, let errors):
+                        directFallback = fallback
+                        directAttempted = attempted
+                        directErrors = errors
+                        throw ChainSourceUnavailable(reason: reason, kind: kind)
+                    }
                 case .direct:
                     answer = try await requestDirect(
-                        chainID: chainID, method: method, params: params, policy: policy, options: options
+                        chainID: chainID, method: method, params: params, policy: policy, options: options,
+                        fallback: directFallback, attempted: directAttempted, priorErrors: directErrors
                     )
                 }
                 adaptive.recordSuccess(routeKey)
@@ -139,7 +182,7 @@ final class ChainDataRouter {
                 return answer
             } catch let error as WalletRPC.Error {
                 switch error {
-                case .rpc, .insufficientFunds:
+                case .rpc, .insufficientFunds, .broadcastUncertain:
                     // Deterministic protocol answers end the walk.
                     throw error
                 case .allProvidersFailed(let errors):
@@ -162,6 +205,215 @@ final class ChainDataRouter {
         if !directErrors.isEmpty { throw WalletRPC.Error.allProvidersFailed(directErrors) }
         if sawEmptyPool { throw WalletRPC.Error.noProviders }
         throw WalletRPC.Error.allProvidersFailed(sourceFailures)
+    }
+
+    // MARK: - Broadcast
+
+    /// Which tier accepted a signed transaction.
+    struct BroadcastReceipt {
+        let hash: String
+        let source: ChainSource
+    }
+
+    /// Walk `policy.broadcastOrder`. An uncertain Myotis outcome is
+    /// terminal — the transaction may already be propagating over
+    /// devp2p, so it is never re-broadcast elsewhere; the wallet must
+    /// reconcile the original signed transaction. A direct node
+    /// rejection keeps its JSON-RPC code.
+    func broadcast(chainID: Int, rawTransaction: String) async throws -> BroadcastReceipt {
+        let policy = registry.policy(forChainID: chainID)
+        let method = "eth_sendRawTransaction"
+        let params: [Any] = [rawTransaction]
+        var sourceFailures: [Swift.Error] = []
+        var directErrors: [Swift.Error] = []
+        var sawEmptyPool = false
+        for source in policy.broadcastOrder {
+            try Task.checkCancellation()
+            do {
+                switch source {
+                case .myotis:
+                    guard let myotis = registry.source(.myotis),
+                          myotis.isAvailable(chainID: chainID),
+                          myotis.serves(method: method, params: params, chainID: chainID) else {
+                        throw ChainSourceUnavailable(reason: "myotis is not ready")
+                    }
+                    let hash: String
+                    do {
+                        guard let value = try await myotis.result(method: method, params: params, chainID: chainID) as? String else {
+                            throw WalletRPC.Error.broadcastUncertain(message: "unexpected engine response")
+                        }
+                        hash = value
+                    } catch let error as WalletRPC.Error {
+                        throw error
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        let reason = (error as? ChainSourceUnavailable)?.reason ?? Self.safeErrorMessage(error)
+                        throw WalletRPC.Error.broadcastUncertain(message: reason)
+                    }
+                    log.info("[chain-data] broadcast chain=\(chainID) via myotis tx=\(hash, privacy: .public)")
+                    return BroadcastReceipt(hash: hash, source: .myotis)
+                case .direct:
+                    let answer = try await requestDirect(
+                        chainID: chainID, method: method, params: params, policy: policy, options: .init(rejectNull: true)
+                    )
+                    guard let hash = answer.result as? String else { throw WalletRPC.Error.invalidResponse }
+                    log.info("[chain-data] broadcast chain=\(chainID) via direct \(answer.trust.agreed.first ?? "", privacy: .public) tx=\(hash, privacy: .public)")
+                    return BroadcastReceipt(hash: hash, source: .direct)
+                case .colibri, .quorum:
+                    throw ChainSourceUnavailable(reason: "\(source.rawValue) cannot broadcast transactions")
+                }
+            } catch let error as WalletRPC.Error {
+                switch error {
+                case .rpc, .insufficientFunds, .broadcastUncertain:
+                    throw error
+                case .allProvidersFailed(let errors):
+                    directErrors = errors
+                case .noProviders:
+                    sawEmptyPool = true
+                case .invalidResponse:
+                    directErrors.append(error)
+                }
+                Self.logFailure(method: method, chainID: chainID, source: source, error: error, elapsed: .zero)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                sourceFailures.append(error)
+                Self.logFailure(method: method, chainID: chainID, source: source, error: error, elapsed: .zero)
+            }
+        }
+        if !directErrors.isEmpty { throw WalletRPC.Error.allProvidersFailed(directErrors) }
+        if sawEmptyPool { throw WalletRPC.Error.noProviders }
+        throw WalletRPC.Error.allProvidersFailed(sourceFailures)
+    }
+
+    // MARK: - Fee quote
+
+    /// A gas price and the block it should be sanity-checked against,
+    /// from one source. Falling through the ladder independently for
+    /// each component is what produced mixed, invalid quotes on desktop;
+    /// here both come from the same tier — and on direct, the same URL.
+    struct FeeQuote {
+        /// Hex wei.
+        let gasPriceHex: String
+        /// Latest block's `baseFeePerGas`, hex wei; nil when the source
+        /// could not provide the header or the chain has no base fee.
+        let baseFeePerGasHex: String?
+        let source: ChainSource
+        let trust: ENSTrust
+    }
+
+    /// The walk stops at the first tier that answers both `eth_gasPrice`
+    /// and the latest header; a tier that can only give one of the two
+    /// falls through, so the wallet's base-fee floor is never skipped.
+    func feeQuote(chainID: Int) async throws -> FeeQuote {
+        let policy = registry.policy(forChainID: chainID)
+        let headerParams: [Any] = ["latest", false]
+        var sourceFailures: [Swift.Error] = []
+        var directErrors: [Swift.Error] = []
+        var sawEmptyPool = false
+        for (index, source) in policy.readOrder.enumerated() {
+            try Task.checkCancellation()
+            let wait = sourceWait(policy: policy, interactive: false, hasFallback: index + 1 < policy.readOrder.count)
+            do {
+                switch source {
+                case .myotis, .colibri:
+                    let price = try await requestVerifiedSource(
+                        source, chainID: chainID, method: "eth_gasPrice", params: [],
+                        options: .init(rejectNull: true), policy: policy, routeKey: nil, wait: wait
+                    )
+                    let header = try await requestVerifiedSource(
+                        source, chainID: chainID, method: "eth_getBlockByNumber", params: headerParams,
+                        options: .init(rejectNull: true), policy: policy, routeKey: nil, wait: wait
+                    )
+                    return try Self.feeQuote(price: price, header: header)
+                case .quorum:
+                    let priceOutcome = await requestQuorum(
+                        chainID: chainID, method: "eth_gasPrice", params: [], policy: policy,
+                        options: .init(rejectNull: true), wait: wait, allowDirectFallback: false
+                    )
+                    guard case .agreed(.value(let value), let trust) = priceOutcome else {
+                        throw ChainSourceUnavailable(reason: "RPC quorum did not agree on a gas price")
+                    }
+                    guard case .agreed(.value(let block), let headerTrust) = await requestQuorum(
+                        chainID: chainID, method: "eth_getBlockByNumber", params: headerParams, policy: policy,
+                        options: .init(rejectNull: true), wait: wait, allowDirectFallback: false
+                    ) else {
+                        throw ChainSourceUnavailable(reason: "RPC quorum did not agree on the latest header")
+                    }
+                    return try Self.feeQuote(
+                        price: ChainDataResult(result: value, trust: trust, source: .quorum),
+                        header: ChainDataResult(result: block, trust: headerTrust, source: .quorum)
+                    )
+                case .direct:
+                    return try await requestDirectFeeQuote(chainID: chainID, policy: policy)
+                }
+            } catch let error as WalletRPC.Error {
+                switch error {
+                case .rpc, .insufficientFunds, .broadcastUncertain:
+                    throw error
+                case .allProvidersFailed(let errors):
+                    directErrors = errors
+                case .noProviders:
+                    sawEmptyPool = true
+                case .invalidResponse:
+                    directErrors.append(error)
+                }
+                Self.logFailure(method: "feeQuote", chainID: chainID, source: source, error: error, elapsed: .zero)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                sourceFailures.append(error)
+                Self.logFailure(method: "feeQuote", chainID: chainID, source: source, error: error, elapsed: .zero)
+            }
+        }
+        if !directErrors.isEmpty { throw WalletRPC.Error.allProvidersFailed(directErrors) }
+        if sawEmptyPool { throw WalletRPC.Error.noProviders }
+        throw WalletRPC.Error.allProvidersFailed(sourceFailures)
+    }
+
+    /// Both components from the same URL, deliberately.
+    private func requestDirectFeeQuote(chainID: Int, policy: ChainAccessPolicy) async throws -> FeeQuote {
+        let urls = registry.rpcURLs(forChainID: chainID)
+        guard !urls.isEmpty else { throw WalletRPC.Error.noProviders }
+        let priceBody = try Self.encodeRequest(method: "eth_gasPrice", params: [])
+        let headerBody = try Self.encodeRequest(method: "eth_getBlockByNumber", params: ["latest", false])
+        var errors: [Swift.Error] = []
+        for url in urls {
+            try Task.checkCancellation()
+            switch await callEndpoint(url, body: priceBody, timeout: policy.sourceTimeout, chainID: chainID, rejectNull: true) {
+            case .answer(.value(let price)):
+                // Deliberately the same URL: an endpoint that quotes a
+                // price but cannot serve its own head is skipped whole.
+                guard case .answer(.value(let block)) = await callEndpoint(
+                    url, body: headerBody, timeout: policy.sourceTimeout, chainID: chainID, rejectNull: true
+                ) else {
+                    errors.append(WalletRPC.Error.invalidResponse)
+                    continue
+                }
+                let trust = Self.directTrust(endpoint: url, userConfigured: registry.isUserConfigured(url: url, chainID: chainID))
+                log.info("[chain-data] feeQuote chain=\(chainID) via direct \(url.hostOrAbsolute, privacy: .public)")
+                return try Self.feeQuote(
+                    price: ChainDataResult(result: price, trust: trust, source: .direct),
+                    header: ChainDataResult(result: block, trust: trust, source: .direct)
+                )
+            case .answer(.deterministic(let error)):
+                throw error
+            case .error(let error, _):
+                if error is CancellationError { throw error }
+                errors.append(error)
+            }
+        }
+        throw WalletRPC.Error.allProvidersFailed(errors)
+    }
+
+    private static func feeQuote(price: ChainDataResult, header: ChainDataResult) throws -> FeeQuote {
+        guard let gasPriceHex = price.result as? String, header.result is [String: Any] else {
+            throw WalletRPC.Error.invalidResponse
+        }
+        let baseFee = (header.result as? [String: Any])?["baseFeePerGas"] as? String
+        log.info("[chain-data] feeQuote chain via \(price.source.rawValue, privacy: .public) gasPrice=\(gasPriceHex, privacy: .public) baseFee=\(baseFee ?? "-", privacy: .public)")
+        return FeeQuote(gasPriceHex: gasPriceHex, baseFeePerGasHex: baseFee, source: price.source, trust: price.trust)
     }
 
     // MARK: - Verified sources (Myotis, Colibri)
@@ -303,56 +555,134 @@ final class ChainDataRouter {
     /// skipped): next URL on transport / malformed failure, which
     /// quarantines; a JSON-RPC error envelope iterates without
     /// quarantining (the provider is transport-healthy); a deterministic
-    /// answer throws. Every URL exhausted → `allProvidersFailed`.
+    /// answer throws. Every URL exhausted → `allProvidersFailed`. A
+    /// quorum member's answer is reused instead of a new request, and
+    /// endpoints the quorum already asked are not asked again.
     private func requestDirect(
         chainID: Int,
         method: String,
         params: [Any],
         policy: ChainAccessPolicy,
-        options: Options
+        options: Options,
+        fallback: DirectFallback? = nil,
+        attempted: [URL] = [],
+        priorErrors: [Swift.Error] = []
     ) async throws -> ChainDataResult {
         let urls = registry.rpcURLs(forChainID: chainID)
         guard !urls.isEmpty else { throw WalletRPC.Error.noProviders }
-        let body = try Self.encodeRequest(method: method, params: params)
-        var errors: [Swift.Error] = []
-        for url in urls {
-            try Task.checkCancellation()
-            let data: Data
-            do {
-                data = try await transport(url, body, policy.sourceTimeout)
-            } catch {
-                // Cancellation isn't a provider fault — rethrow without
-                // touching quarantine.
-                if error is CancellationError || (error as? URLError)?.code == .cancelled {
-                    throw error
-                }
-                registry.markFailure(url: url, chainID: chainID)
-                errors.append(error)
-                continue
+        if let fallback, urls.contains(fallback.url) {
+            switch fallback.answer {
+            case .deterministic(let error):
+                throw error
+            case .value(let value):
+                let trust = ENSTrust(
+                    level: registry.isUserConfigured(url: fallback.url, chainID: chainID) ? .userConfigured : .unverified,
+                    method: .direct,
+                    block: ENSBlock(number: 0, hash: ""),
+                    agreed: fallback.agreedURLs.map(\.hostOrAbsolute),
+                    dissented: fallback.dissentedURLs.map(\.hostOrAbsolute),
+                    queried: fallback.queriedURLs.map(\.hostOrAbsolute),
+                    k: fallback.k, m: fallback.m
+                )
+                log.info("[chain-data] \(method, privacy: .public) chain=\(chainID) direct reuses quorum member \(fallback.url.hostOrAbsolute, privacy: .public)")
+                return ChainDataResult(result: value, trust: trust, source: .direct)
             }
-            switch Self.parseEnvelope(data, rejectNull: options.rejectNull) {
-            case .success(let value):
-                registry.markSuccess(url: url, chainID: chainID)
+        }
+        let body = try Self.encodeRequest(method: method, params: params)
+        let skip = Set(attempted)
+        var errors: [Swift.Error] = []
+        for url in urls where !skip.contains(url) {
+            try Task.checkCancellation()
+            switch await callEndpoint(url, body: body, timeout: policy.sourceTimeout, chainID: chainID, rejectNull: options.rejectNull) {
+            case .answer(.value(let value)):
                 return ChainDataResult(
                     result: value,
-                    trust: Self.directTrust(endpoint: url, userConfigured: false),
+                    trust: Self.directTrust(endpoint: url, userConfigured: registry.isUserConfigured(url: url, chainID: chainID)),
                     source: .direct
                 )
-            case .rpcError(let code, let message, let hasRevertData):
-                if Self.isInsufficientFunds(message: message) {
-                    throw WalletRPC.Error.insufficientFunds(message: message)
-                }
-                if hasRevertData || code == Self.invalidParamsCode {
-                    throw WalletRPC.Error.rpc(code: code, message: message)
-                }
-                // Don't mark — the provider responded correctly per spec.
-                errors.append(WalletRPC.Error.rpc(code: code, message: message))
-            case .malformed(let error):
-                registry.markFailure(url: url, chainID: chainID)
+            case .answer(.deterministic(let error)):
+                throw error
+            case .error(let error, _):
+                if error is CancellationError { throw error }
                 errors.append(error)
             }
         }
-        throw WalletRPC.Error.allProvidersFailed(errors)
+        throw WalletRPC.Error.allProvidersFailed(errors.isEmpty ? priorErrors : errors)
+    }
+
+    /// One endpoint, one request: transport and malformed failures
+    /// quarantine the URL, a JSON-RPC error envelope does not, a
+    /// deterministic error is an answer. Shared by the direct tier and
+    /// every quorum leg.
+    func callEndpoint(
+        _ url: URL, body: Data, timeout: TimeInterval, chainID: Int, rejectNull: Bool
+    ) async -> QuorumLegResult {
+        let data: Data
+        do {
+            data = try await transport(url, body, timeout)
+        } catch {
+            // Cancellation isn't a provider fault — report without
+            // touching quarantine.
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                return .error(CancellationError(), kind: nil)
+            }
+            registry.markFailure(url: url, chainID: chainID)
+            return .error(error, kind: (error as? URLError)?.code == .timedOut ? .timeout : nil)
+        }
+        switch Self.parseEnvelope(data, rejectNull: rejectNull) {
+        case .success(let value):
+            registry.markSuccess(url: url, chainID: chainID)
+            return .answer(.value(value))
+        case .rpcError(let code, let message, let hasRevertData):
+            if Self.isInsufficientFunds(message: message) {
+                return .answer(.deterministic(.insufficientFunds(message: message)))
+            }
+            if hasRevertData || code == Self.invalidParamsCode {
+                return .answer(.deterministic(.rpc(code: code, message: message)))
+            }
+            // Don't mark — the provider responded correctly per spec.
+            let kind: ChainSourceFailureKind? = ChainSourceUnavailable.isCapacityMessage(message) ? .capacity : nil
+            return .error(WalletRPC.Error.rpc(code: code, message: message), kind: kind)
+        case .malformed(let error):
+            registry.markFailure(url: url, chainID: chainID)
+            return .error(error, kind: nil)
+        }
+    }
+
+    // MARK: - Quorum tier
+
+    /// K endpoints of the pool asked concurrently with the same bytes.
+    /// `wait` caps verification (the interactive budget when a source
+    /// follows); each leg keeps the configured endpoint timeout when a
+    /// direct tier follows so a late single answer can still serve it.
+    private func requestQuorum(
+        chainID: Int,
+        method: String,
+        params: [Any],
+        policy: ChainAccessPolicy,
+        options: Options,
+        wait: TimeInterval,
+        allowDirectFallback: Bool
+    ) async -> QuorumOutcome {
+        let k = policy.effectiveQuorumK
+        let m = policy.effectiveQuorumM
+        let timeout = min(policy.sourceTimeout, wait)
+        let endpointTimeout = allowDirectFallback ? policy.sourceTimeout : timeout
+        let urls = Array(registry.rpcURLs(forChainID: chainID).prefix(k))
+        guard urls.count >= m else {
+            return .failed(reason: "RPC quorum needs \(m) endpoints, \(urls.count) available", kind: nil, fallback: nil, attempted: [], errors: [])
+        }
+        let body: Data
+        do {
+            body = try Self.encodeRequest(method: method, params: params)
+        } catch {
+            return .failed(reason: "unencodable request", kind: nil, fallback: nil, attempted: [], errors: [error])
+        }
+        let run = QuorumRun(urls: urls, m: m, allowDirectFallback: allowDirectFallback)
+        let rejectNull = options.rejectNull
+        return await run.run(timeout: timeout) { [self] url in
+            await self.callEndpoint(url, body: body, timeout: endpointTimeout, chainID: chainID, rejectNull: rejectNull)
+        }
     }
 
     static func directTrust(endpoint: URL, userConfigured: Bool) -> ENSTrust {

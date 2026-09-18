@@ -43,10 +43,16 @@ final class ChainStackBundle {
     let mainnetPool: EthereumRPCPool
     let registry: ChainRegistry
 
+    /// `quorum: false` (the default) pins the seeded chains to the
+    /// single-shot ladder (Myotis → Colibri → direct): the wallet, bridge
+    /// and transaction suites script one endpoint at a time and are not
+    /// about the M-of-K tier. The chain-data router suites set their own
+    /// policies per test.
     init(
         settings: SettingsStore? = nil,
         clock: @escaping () -> Date = Date.init,
-        orderer: @escaping ([URL]) -> [URL] = { $0.shuffled() }
+        orderer: @escaping ([URL]) -> [URL] = { $0.shuffled() },
+        quorum: Bool = false
     ) throws {
         // Per-bundle UserDefaults suite by default — keeps the chain
         // store's migration markers and provider lists isolated from
@@ -65,6 +71,13 @@ final class ChainStackBundle {
             orderer: orderer
         )
         registry = ChainRegistry(chainStore: store, mainnetPool: mainnetPool, poolOrderer: orderer)
+        if !quorum {
+            for chain in store.allChains() {
+                var policy = ChainAccessPolicy.default(forChainID: chain.id)
+                policy.readOrder.removeAll { $0 == .quorum }
+                registry.policyOverrides[chain.id] = policy
+            }
+        }
     }
 }
 
@@ -205,4 +218,19 @@ func attachToKeyWindow(_ webView: WKWebView) {
         .compactMap { ($0 as? UIWindowScene)?.keyWindow }
         .first?
         .addSubview(webView)
+}
+
+/// Trust objects the way the chain-data router mints them, for tests
+/// that need a provenance without running the router.
+enum TestTrust {
+    static func verified(_ method: ENSResolutionMethod = .myotis, label: String = "myotis") -> ENSTrust {
+        ENSTrust(
+            level: .verified, method: method, block: ENSBlock(number: 0, hash: ""),
+            agreed: [label], dissented: [], queried: [label], k: 1, m: 1
+        )
+    }
+
+    static func direct(host: String = "a.example") -> ENSTrust {
+        ChainDataRouter.directTrust(endpoint: URL(string: "https://\(host)")!, userConfigured: false)
+    }
 }

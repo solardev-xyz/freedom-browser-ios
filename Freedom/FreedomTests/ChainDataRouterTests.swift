@@ -114,21 +114,29 @@ final class ChainDataRouterTests: XCTestCase {
     }
 
     func testDirectAnswerIsUnverifiedAndNamesTheEndpoint() async throws {
+        // A shipped endpoint (Gnosis seed) answers: unverified. A URL the
+        // user added (the mainnet list this suite replaces) would be
+        // `userConfigured` instead.
+        let host = ChainRegistry.gnosisURLs[0].host!
         let transport = Transport()
-        transport.answers["a.example"] = .success(try rpcResult("0x3"))
-        let r = try await router(transport).request(chainID: 1, method: "eth_blockNumber", params: [])
+        transport.answers[host] = .success(try rpcResult("0x3"))
+        let r = try await router(transport).request(chainID: 100, method: "eth_blockNumber", params: [])
         XCTAssertEqual(r.result as? String, "0x3")
         XCTAssertEqual(r.source, .direct)
         XCTAssertEqual(r.trust.level, .unverified)
         XCTAssertEqual(r.trust.method, .direct)
-        XCTAssertEqual(r.trust.agreed, ["a.example"])
-        XCTAssertEqual(r.trust.queried, ["a.example"])
+        XCTAssertEqual(r.trust.agreed, [host])
+        XCTAssertEqual(r.trust.queried, [host])
+
+        transport.answers["a.example"] = .success(try rpcResult("0x3"))
+        let mine = try await router(transport).request(chainID: 1, method: "eth_blockNumber", params: [])
+        XCTAssertEqual(mine.trust.level, .userConfigured)
     }
 
     func testDirectUsesTheConfiguredSourceTimeout() async throws {
         let transport = Transport()
         transport.answers["a.example"] = .success(try rpcResult("0x3"))
-        var policy = ChainAccessPolicy.default(forChainID: 1)
+        var policy = ChainAccessPolicy(readOrder: [.direct], broadcastOrder: [.direct])
         policy.quorumTimeoutMs = 7_000
         bundle.registry.policyOverrides[1] = policy
         _ = try await router(transport).request(chainID: 1, method: "eth_blockNumber", params: [])
