@@ -880,52 +880,75 @@ final class ENSResolver {
         return groups
     }
 
-    // MARK: - Forward addr(bytes32) resolution
+    // MARK: - Forward address resolution
 
-    private static let addrSelector = UniversalResolverABI.addrSelector
+    /// Cache key for chain-scoped lookups: mainnet keeps the bare name so
+    /// existing entries stay valid; other chains are prefixed so a Base
+    /// address can never be served for an Ethereum send or vice versa.
+    static func chainCacheKey(_ normalized: String, chainID: Int) -> String {
+        chainID == Chain.mainnetID ? normalized : "\(chainID):\(normalized)"
+    }
 
-    /// Resolve an ENS name to its primary Ethereum address. Same consensus
+    /// Resolve an ENS name to its address on `chainID`. Same consensus
     /// pipeline as `resolveContent` — a lying RPC could otherwise misroute
     /// the user's funds — just with a different selector and a different
-    /// success-payload decode.
-    func resolveAddress(_ name: String) async throws -> EthereumAddress {
+    /// success-payload decode. Resolution always starts on mainnet (the
+    /// ENS registry lives there); the destination chain only picks the
+    /// ENSIP-11 coin type, so an L2 send gets the name's record *for that
+    /// chain* and never silently falls back to the Ethereum address.
+    func resolveAddress(_ name: String, chainID: Int = Chain.mainnetID) async throws -> EthereumAddress {
         let normalized: String
         do {
             normalized = try name.ensNormalized()
         } catch {
             throw ENSResolutionError.invalidName
         }
+        guard UniversalResolverABI.coinType(forChainID: chainID) != nil else {
+            throw ENSResolutionError.unsupportedChain(chainID: chainID)
+        }
 
-        if let cached = addressCache[normalized], clock() < cached.expiresAt {
+        let key = Self.chainCacheKey(normalized, chainID: chainID)
+        if let cached = addressCache[key], clock() < cached.expiresAt {
             return try cached.outcome.get()
         }
-        if let task = addressInFlight[normalized] {
+        if let task = addressInFlight[key] {
             return try await task.value.get()
         }
 
         let task = Task { @MainActor in
-            let outcome = await self.doResolveAddress(normalized)
+            let outcome = await self.doResolveAddress(normalized, chainID: chainID)
             guard !Task.isCancelled else {
-                self.addressInFlight.removeValue(forKey: normalized)
+                self.addressInFlight.removeValue(forKey: key)
                 return outcome
             }
-            self.storeAddress(normalized: normalized, outcome: outcome)
+            self.storeAddress(key: key, outcome: outcome)
             return outcome
         }
-        addressInFlight[normalized] = task
+        addressInFlight[key] = task
         return try await task.value.get()
     }
 
-    private func doResolveAddress(_ normalized: String) async -> Result<EthereumAddress, ENSResolutionError> {
+    private func doResolveAddress(
+        _ normalized: String,
+        chainID: Int
+    ) async -> Result<EthereumAddress, ENSResolutionError> {
         let dnsEncoded: Data
         do {
             dnsEncoded = try ENSNameEncoding.dnsEncode(normalized)
         } catch {
             return .failure(.invalidName)
         }
-        let node = ENSNameEncoding.namehash(normalized)
-        let callData = Self.addrSelector + node
         let system = NameSystem.forName(normalized)
+        // The NameNFT registries (WNS/GNS) only carry the legacy
+        // `addr(bytes32)` record. Off mainnet that record is the wrong
+        // chain's address, so refuse rather than misroute (desktop parity).
+        if chainID != Chain.mainnetID, system.contractAddress != nil {
+            return .failure(.notSupportedOnChain(system: system, chainID: chainID))
+        }
+        let node = ENSNameEncoding.namehash(normalized)
+        guard let callData = UniversalResolverABI.addrCallData(node: node, chainID: chainID) else {
+            return .failure(.unsupportedChain(chainID: chainID))
+        }
 
         let consensus: ConsensusResult
         do {
@@ -947,10 +970,13 @@ final class ENSResolver {
 
         switch consensus {
         case .data(let abiEncoded, _, let trust):
-            guard let address = decodeAddress(abiEncoded) else {
+            // QuorumLeg already strips UR's outer `(bytes result, address)`
+            // — what's left is the inner return: a padded `address` for
+            // `addr(bytes32)`, ABI `bytes` for the multicoin record.
+            guard let address = UniversalResolverABI.decodeAddrResponse(abiEncoded, chainID: chainID) else {
                 return .failure(.notFound(reason: .emptyAddress, trust: trust))
             }
-            // Zero address from `addr()` is ENS's "no address record set".
+            // Zero address / empty bytes is ENS's "no address record set".
             if address == EthereumAddress.zero {
                 return .failure(.notFound(reason: .emptyAddress, trust: trust))
             }
@@ -962,30 +988,18 @@ final class ENSResolver {
         }
     }
 
-    private func decodeAddress(_ abiEncoded: Data) -> EthereumAddress? {
-        // QuorumLeg already strips UR's outer `(bytes result, address)` —
-        // for `addr() returns (address)` (static), `result` is just the
-        // 32-byte ABI-padded address, no further `bytes` layer to unwrap.
-        // Contrast with contenthash, where the inner return type IS
-        // `bytes`, hence ContenthashDecoder.unwrapABIBytes there.
-        guard let decoded = try? ABIDecoder.decodeData(
-            abiEncoded.web3.hexString, types: [EthereumAddress.self]
-        ).first else { return nil }
-        return try? decoded.decoded()
-    }
-
     private func storeAddress(
-        normalized: String,
+        key: String,
         outcome: Result<EthereumAddress, ENSResolutionError>
     ) {
         if let ttl = addressTTL(for: outcome) {
-            addressCache[normalized] = AddressCacheEntry(
+            addressCache[key] = AddressCacheEntry(
                 outcome: outcome,
                 expiresAt: clock().addingTimeInterval(ttl)
             )
             capAddressCache()
         }
-        addressInFlight.removeValue(forKey: normalized)
+        addressInFlight.removeValue(forKey: key)
     }
 
     /// Returns nil for transient failures (network) so retries can hit the
@@ -995,6 +1009,8 @@ final class ENSResolver {
         case .success: return 15 * 60
         case .failure(.allProvidersErrored), .failure(.customRpcFailed): return nil
         case .failure(.conflict), .failure(.anchorDisagreement): return 10
+        // Deterministic from the inputs alone — no network answer to age.
+        case .failure(.notSupportedOnChain), .failure(.unsupportedChain): return 15 * 60
         case .failure: return 60
         }
     }
@@ -1010,23 +1026,34 @@ final class ENSResolver {
 
     // MARK: - Reverse resolution
 
-    /// Reverse-resolve an Ethereum address to its ENS primary name.
-    /// Returns `.verified(name)` for a forward-verified primary,
+    /// Reverse-resolve an address to its ENS primary name for `chainID`
+    /// (ENSIP-19: the UR's `reverse(bytes,uint256)` takes the coin type,
+    /// so an L2 primary name is looked up as such and an Ethereum
+    /// primary is never shown for a Base address). Returns
+    /// `.verified(name)` for a forward-verified primary,
     /// `.unverified(claimedName)` when the contract surfaces a
     /// `ReverseAddressMismatch` (the on-chain spoof signal), or `.none`
     /// when no primary is set / the call failed. Single-shot via the
     /// wallet's RPC pool against Mainnet UR — display-only, so the
     /// consensus wave isn't worth the latency.
-    func reverseResolve(address: EthereumAddress) async throws -> ENSReverseResolution {
-        let key = address.asString().lowercased()
+    func reverseResolve(
+        address: EthereumAddress,
+        chainID: Int = Chain.mainnetID
+    ) async throws -> ENSReverseResolution {
+        guard let coinType = UniversalResolverABI.coinType(forChainID: chainID) else {
+            throw ENSResolutionError.unsupportedChain(chainID: chainID)
+        }
+        let key = Self.chainCacheKey(address.asString().lowercased(), chainID: chainID)
         if let cached = reverseCache[key], clock() < cached.expiresAt {
             return cached.result
         }
-        var result = try await fetchReverseName(address: address)
+        var result = try await fetchReverseName(address: address, coinType: coinType)
         // Desktop's contract-backed reverse fallback: only when ENS
         // positively has no primary name (not on transport failure, which
-        // throws above) do we consult the WNS/GNS registries.
-        if case .none = result, let fallback = await contractBackedReverse(address: address) {
+        // throws above) do we consult the WNS/GNS registries — and only
+        // on mainnet, where their records live.
+        if case .none = result, chainID == Chain.mainnetID,
+           let fallback = await contractBackedReverse(address: address) {
             result = fallback
         }
         let ttl: TimeInterval
@@ -1058,12 +1085,15 @@ final class ENSResolver {
         }
     }
 
-    private func fetchReverseName(address: EthereumAddress) async throws -> ENSReverseResolution {
+    private func fetchReverseName(
+        address: EthereumAddress,
+        coinType: BigUInt
+    ) async throws -> ENSReverseResolution {
         // Myotis first, same unconditional fall-through as forward
         // resolution.
         if let myotis, myotis.isAvailable {
             do {
-                let result = try await myotisReverse(address: address, client: myotis)
+                let result = try await myotisReverse(address: address, coinType: coinType, client: myotis)
                 noteMyotisServed()
                 return result
             } catch let err as ColibriENSError {
@@ -1078,7 +1108,7 @@ final class ENSResolver {
         // fall through to quorum unless `ensFallbackToQuorum` is disabled.
         if settings.ensResolutionMethod == .colibri, let colibri {
             do {
-                return try await colibriReverse(address: address, client: colibri)
+                return try await colibriReverse(address: address, coinType: coinType, client: colibri)
             } catch let err as ColibriENSError {
                 if !settings.ensFallbackToQuorum {
                     throw ReverseError.allProvidersFailed
@@ -1092,7 +1122,7 @@ final class ENSResolver {
         let providers = pool.availableProviders()
         guard !providers.isEmpty else { throw ReverseError.allProvidersFailed }
 
-        let callData = try UniversalResolverABI.encodeReverse(address: address)
+        let callData = try UniversalResolverABI.encodeReverse(address: address, coinType: coinType)
         let body: [String: Any] = [
             "jsonrpc": "2.0",
             "id": 1,
@@ -1237,10 +1267,11 @@ final class ENSResolver {
     /// other revert (e.g. `ResolverNotFound`) means no primary is set.
     private func colibriReverse(
         address: EthereumAddress,
+        coinType: BigUInt,
         client: ColibriENSClient
     ) async throws -> ENSReverseResolution {
         do {
-            let name = try await client.universalResolverReverse(address: address)
+            let name = try await client.universalResolverReverse(address: address, coinType: coinType)
             return name.isEmpty ? .none : .verified(name: name)
         } catch ColibriENSError.revert(let revertHex) {
             return try await provenReverseRevert(revertHex) { to, dataHex in
@@ -1253,10 +1284,11 @@ final class ENSResolver {
     /// vocabulary, same spoof decode.
     private func myotisReverse(
         address: EthereumAddress,
+        coinType: BigUInt,
         client: MyotisENSClient
     ) async throws -> ENSReverseResolution {
         do {
-            let name = try await client.universalResolverReverse(address: address)
+            let name = try await client.universalResolverReverse(address: address, coinType: coinType)
             return name.isEmpty ? .none : .verified(name: name)
         } catch ColibriENSError.revert(let revertHex) {
             return try await provenReverseRevert(revertHex) { to, dataHex in

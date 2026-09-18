@@ -99,6 +99,7 @@ struct SendFlowView: View {
         .onChange(of: recipientInput) { _, _ in scheduleResolution() }
         .onChange(of: amountInput) { _, _ in scheduleQuote() }
         .onChange(of: asset) { _, _ in onAssetChanged() }
+        .onChange(of: chain.id) { _, _ in onChainChanged() }
         .task(id: asset) { await refreshBalance() }
         .onDisappear {
             recipientTask?.cancel()
@@ -295,10 +296,16 @@ struct SendFlowView: View {
         scheduleQuote()
     }
 
+    /// Every resolution is pinned to the chain it started on. A chain
+    /// switch while a lookup is in flight (or after it settled) must not
+    /// carry an L1 primary name or an L1 address into an L2 review — the
+    /// picker change re-runs the recipient parse against the new chain.
     private func reverseLookupRecipient(address: EthereumAddress, hexInput: String) async {
-        let result = (try? await ensResolver.reverseResolve(address: address)) ?? .none
+        let chainID = chain.id
+        let result = (try? await ensResolver.reverseResolve(address: address, chainID: chainID)) ?? .none
         if Task.isCancelled { return }
-        guard recipientInput.trimmingCharacters(in: .whitespaces) == hexInput else { return }
+        guard recipientInput.trimmingCharacters(in: .whitespaces) == hexInput,
+              chain.id == chainID else { return }
         if case .resolved = recipientState {
             recipientState = .resolved(address, ensName: result, reverseInFlight: false)
         }
@@ -307,18 +314,28 @@ struct SendFlowView: View {
     private func resolveENS(name: String) async {
         try? await Task.sleep(for: .milliseconds(400))
         if Task.isCancelled { return }
+        let chainID = chain.id
         do {
-            let address = try await ensResolver.resolveAddress(name)
-            if Task.isCancelled { return }
+            let address = try await ensResolver.resolveAddress(name, chainID: chainID)
+            if Task.isCancelled || chain.id != chainID { return }
             // The user typed the name themselves and we forward-resolved
             // it — that's the strongest possible verification, treat as
             // `.verified` regardless of method.
             recipientState = .resolved(address, ensName: .verified(name: name), reverseInFlight: false)
             await refreshQuoteIfReady()
         } catch {
-            if Task.isCancelled { return }
+            if Task.isCancelled || chain.id != chainID { return }
             recipientState = .resolveFailed(message: ENSErrorFormatting.describe(error))
         }
+    }
+
+    /// The picker changed the destination chain: the recipient's address
+    /// and primary name were resolved for the previous chain, so redo
+    /// the lookup (an L2 send needs the name's record *for that chain*).
+    private func onChainChanged() {
+        quoteTask?.cancel()
+        quoteState = .idle
+        scheduleResolution()
     }
 
     private func refreshQuoteIfReady() async {
@@ -357,6 +374,7 @@ struct SendFlowView: View {
             quoteState = .failed("Wallet locked — reopen to retry.")
             return
         }
+        let chainID = chain.id
         let txParams: (to: EthereumAddress, value: BigUInt, data: Data)
         do {
             txParams = try TransactionService.buildSend(token: asset, recipient: recipient, amount: amount)
@@ -372,13 +390,15 @@ struct SendFlowView: View {
                 data: txParams.data,
                 on: chain
             )
-            if Task.isCancelled { return }
+            // A gas estimate belongs to the chain it was made on; a switch
+            // mid-estimate must not surface it under the new chain.
+            if Task.isCancelled || chain.id != chainID { return }
             quoteState = .ready(newQuote)
         } catch TransactionService.Error.insufficientBalance {
-            if Task.isCancelled { return }
+            if Task.isCancelled || chain.id != chainID { return }
             quoteState = .failed("Not enough \(chain.nativeSymbol) to cover the amount plus the network fee.")
         } catch {
-            if Task.isCancelled { return }
+            if Task.isCancelled || chain.id != chainID { return }
             quoteState = .failed("Couldn't estimate fee. Check connection.")
         }
     }

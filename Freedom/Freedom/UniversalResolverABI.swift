@@ -18,10 +18,56 @@ enum UniversalResolverABI {
     /// bytes4(keccak256("addr(bytes32)"))
     static let addrSelector = Data([0x3b, 0x3b, 0x57, 0xde])
 
+    /// bytes4(keccak256("addr(bytes32,uint256)")) — ENSIP-9 multicoin
+    /// address record, returns ABI `bytes`.
+    static let multicoinAddrSelector = Data([0xf1, 0xcb, 0x7e, 0x06])
+
     /// SLIP-44 coin type for Ethereum mainnet. Second arg to UR's
     /// `reverse(bytes,uint256)` — picks the canonical Ethereum-address
     /// primary name vs. other-chain primary names.
     static let ethereumCoinType: BigUInt = 60
+
+    /// ENSIP-11 coin type for an EVM chain: mainnet is SLIP-44 `60`,
+    /// every other chain is `0x80000000 | chainId`. Nil for chain IDs
+    /// the encoding can't represent (≥ 2^31) or non-positive ones.
+    static func coinType(forChainID chainID: Int) -> BigUInt? {
+        guard chainID >= 1, chainID < 0x8000_0000 else { return nil }
+        return chainID == 1 ? ethereumCoinType : BigUInt(0x8000_0000) | BigUInt(chainID)
+    }
+
+    /// Inner resolver calldata for an address lookup on `chainID`:
+    /// `addr(bytes32)` on mainnet (the legacy record every resolver
+    /// serves), `addr(bytes32,uint256)` with the ENSIP-11 coin type
+    /// elsewhere. Nil when the chain has no coin type.
+    static func addrCallData(node: Data, chainID: Int) -> Data? {
+        guard let coinType = coinType(forChainID: chainID) else { return nil }
+        if chainID == 1 { return addrSelector + node }
+        return multicoinAddrSelector + node + uint256Word(coinType)
+    }
+
+    /// Decode the inner return of an address lookup built by
+    /// `addrCallData`: a padded `address` on mainnet, ABI `bytes` (a
+    /// 20-byte EVM address, or empty for "no record") elsewhere. Nil on
+    /// malformed data; the zero address / empty bytes decode to `.zero`
+    /// so callers can treat both as "no address record".
+    static func decodeAddrResponse(_ abiEncoded: Data, chainID: Int) -> EthereumAddress? {
+        if chainID == 1 {
+            guard let decoded = try? ABIDecoder.decodeData(
+                abiEncoded.web3.hexString, types: [EthereumAddress.self]
+            ).first else { return nil }
+            return try? decoded.decoded()
+        }
+        guard let decoded = try? ABIDecoder.decodeData(abiEncoded.web3.hexString, types: [Data.self]).first,
+              let bytes = try? decoded.decoded() as Data else { return nil }
+        if bytes.isEmpty { return .zero }
+        guard bytes.count == 20 else { return nil }
+        return EthereumAddress(bytes.web3.hexString)
+    }
+
+    static func uint256Word(_ value: BigUInt) -> Data {
+        let raw = value.serialize()
+        return Data(repeating: 0, count: max(0, 32 - raw.count)) + raw.suffix(32)
+    }
 
     /// UR custom errors that prove no resolver serves the name. Every
     /// other revert is a resolver *execution* failure and must not be

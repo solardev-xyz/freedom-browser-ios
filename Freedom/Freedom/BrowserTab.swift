@@ -1093,7 +1093,11 @@ enum ENSErrorFormatting {
         case ENSResolutionError.notFound(.ccipDisabled, _):
             return "This ENS name resolves via an offchain gateway (CCIP-Read). Enable it in Settings → Advanced to load it."
         case ENSResolutionError.notFound(.emptyAddress, _):
-            return "This ENS name has no Ethereum address set."
+            return "This name has no address record for this network."
+        case ENSResolutionError.notSupportedOnChain(let system, _):
+            return "\(system.label) names only resolve on Ethereum. Pick Ethereum or enter a 0x address."
+        case ENSResolutionError.unsupportedChain:
+            return "Name resolution isn't supported on this network."
         case ENSResolutionError.unsupportedCodec(let rawBytes, _):
             // Diagnostic: surface the first few bytes so we can tell which
             // failure mode bit (ABI-unwrap garbage vs. unrecognized codec)

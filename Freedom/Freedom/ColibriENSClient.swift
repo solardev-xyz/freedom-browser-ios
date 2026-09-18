@@ -1,3 +1,4 @@
+import BigInt
 import Foundation
 import Colibri
 import OSLog
@@ -71,9 +72,10 @@ final class ColibriENSClient {
     /// revert surfaces as `ColibriENSError.revert(data:)`, which
     /// `ENSResolver.colibriReverse` decodes into `.unverified`.
     func universalResolverReverse(
-        address: EthereumAddress
+        address: EthereumAddress,
+        coinType: BigUInt = UniversalResolverABI.ethereumCoinType
     ) async throws -> String {
-        let encoded = try UniversalResolverABI.encodeReverse(address: address)
+        let encoded = try UniversalResolverABI.encodeReverse(address: address, coinType: coinType)
         let hex = try await provenEthCall(to: UniversalResolverABI.address, callData: encoded)
         return UniversalResolverABI.decodeReverseResponse(hex) ?? ""
     }

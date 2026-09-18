@@ -67,5 +67,11 @@ enum ENSResolutionError: Error {
     /// fall back to the public pool, which would defeat the privacy
     /// intent of choosing a custom RPC.
     case customRpcFailed
+    /// A NameNFT system (WNS/GNS) was asked for an address on a chain
+    /// other than mainnet. Those registries only hold the legacy
+    /// `addr(bytes32)` record, which would be the wrong chain's address.
+    case notSupportedOnChain(system: NameSystem, chainID: Int)
+    /// The chain has no ENSIP-11 coin type (ID ≥ 2^31 or non-positive).
+    case unsupportedChain(chainID: Int)
     case notImplemented
 }

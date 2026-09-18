@@ -1,3 +1,4 @@
+import BigInt
 import Foundation
 import MyotisKit
 import OSLog
@@ -91,9 +92,10 @@ final class MyotisENSClient {
     /// reverts surface as `ColibriENSError.revert(data:)` exactly like the
     /// Colibri path, so the resolver's spoof decoding is shared.
     func universalResolverReverse(
-        address: EthereumAddress
+        address: EthereumAddress,
+        coinType: BigUInt = UniversalResolverABI.ethereumCoinType
     ) async throws -> String {
-        let encoded = try UniversalResolverABI.encodeReverse(address: address)
+        let encoded = try UniversalResolverABI.encodeReverse(address: address, coinType: coinType)
         let hex = try await provenEthCall(to: UniversalResolverABI.address, callData: encoded)
         return UniversalResolverABI.decodeReverseResponse(hex) ?? ""
     }
