@@ -323,7 +323,7 @@ final class ColibriChainSource: ChainDataSource {
     private let settings: SettingsStore
     private let chainStore: ChainStore
     private var cached: [Int: Colibri] = [:]
-    private var cachedKey: String?
+    private var cachedKeys: [Int: String] = [:]
 
     init(settings: SettingsStore, chainStore: ChainStore) {
         self.settings = settings
@@ -334,12 +334,9 @@ final class ColibriChainSource: ChainDataSource {
         Self.supportedChains.contains(chainID)
     }
 
-    /// The prover host answering for the chain (mainnet honours the
-    /// user's override, other chains use the binding's defaults).
+    /// The prover host answering for the chain.
     func evidenceLabel(chainID: Int) -> String {
-        let prover = chainID == 1
-            ? resolvedMainnetProver
-            : (Colibri.defaultProvers(for: UInt64(max(0, chainID))).first ?? sourceName)
+        let prover = provers(chainID: chainID).first ?? sourceName
         return URL(string: prover)?.hostOrAbsolute ?? prover
     }
 
@@ -371,27 +368,30 @@ final class ColibriChainSource: ChainDataSource {
     }
 
     /// Mirror of `ColibriENSClient.currentClient`, parameterized by
-    /// chain: mainnet honours the user's prover override, Gnosis uses
-    /// the binding's per-chain prover defaults.
+    /// chain: each chain's policy may override the prover and the ZK
+    /// setting (mainnet's live in the ENS settings keys); an empty
+    /// override means the binding's per-chain defaults.
     private func currentClient(chainID: Int) -> Colibri {
-        let key = "\(resolvedMainnetProver)|\(settings.ensColibriZkProof)"
-        if cachedKey != key { cached.removeAll(); cachedKey = key }
-        if let client = cached[chainID] { return client }
+        let policy = chainStore.policy(forChainID: chainID)
+        let key = "\(chainID)|\(provers(chainID: chainID))|\(policy.zkProof)"
+        if let client = cached[chainID], cachedKeys[chainID] == key { return client }
         let client = Colibri()
         client.chainId = UInt64(chainID)
-        client.provers = chainID == 1
-            ? [resolvedMainnetProver]
-            : Colibri.defaultProvers(for: UInt64(chainID))
-        client.zkProof = settings.ensColibriZkProof
+        client.provers = provers(chainID: chainID)
+        client.zkProof = policy.zkProof
         client.privacyMode = .basic
         client.maxLatestAgeSeconds = 60
         client.eth_rpcs = chainStore.rpcURLs(forChainID: chainID)
         cached[chainID] = client
+        cachedKeys[chainID] = key
         return client
     }
 
-    private var resolvedMainnetProver: String {
-        let raw = settings.ensColibriProverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        return raw.isEmpty ? ColibriENSClient.defaultProverURL : raw
+    private func provers(chainID: Int) -> [String] {
+        if let override = chainStore.policy(forChainID: chainID).trimmedProverURL {
+            return [override]
+        }
+        if chainID == 1 { return [ColibriENSClient.defaultProverURL] }
+        return Colibri.defaultProvers(for: UInt64(max(0, chainID)))
     }
 }

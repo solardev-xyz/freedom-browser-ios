@@ -22,9 +22,8 @@ final class ChainRegistry {
     /// `WalletRPC` value copies snapshotted at `TransactionService.init`
     /// still see later installations.
     @ObservationIgnored var verifiedSources: [ChainDataSource] = []
-    /// Per-chain routing policy overrides. Phase 1 of the chain-data
-    /// router keeps policy in memory (tests and the defaults); the
-    /// persisted `ChainRecord` fields replace this in Phase 5.
+    /// Per-chain routing policy overrides for tests; production policy
+    /// lives on the `ChainRecord` (see `ChainStore.policy(forChainID:)`).
     @ObservationIgnored var policyOverrides: [Int: ChainAccessPolicy] = [:]
 
     init(
@@ -45,11 +44,11 @@ final class ChainRegistry {
     /// same router the bridge and the onchain loader use.
     var chainData: ChainDataRouter { walletRPC.router }
 
-    /// The routing policy the router applies for a chain — the override
-    /// when one is set, else desktop's defaults — sanitized for the
-    /// chain (unsupported tiers dropped, never empty).
+    /// The routing policy the router applies for a chain — a test
+    /// override when one is set, else the persisted per-chain policy —
+    /// sanitized for the chain (unsupported tiers dropped, never empty).
     func policy(forChainID id: Int) -> ChainAccessPolicy {
-        (policyOverrides[id] ?? ChainAccessPolicy.default(forChainID: id)).sanitized(forChainID: id)
+        (policyOverrides[id] ?? chainStore.policy(forChainID: id)).sanitized(forChainID: id)
     }
 
     /// Whether a direct answer from this URL is the user's own node
@@ -114,10 +113,19 @@ final class ChainRegistry {
     }
 
     /// Exposed for tests + the chain store seed. Single source of truth
-    /// for which URLs ship with Gnosis on first launch.
+    /// for which URLs ship with Gnosis. Refreshed 2026-09-18 against
+    /// live probes (Ankr now needs a key, Blast API shut down).
     static let gnosisURLs: [URL] = [
         URL(string: "https://rpc.gnosischain.com")!,
-        URL(string: "https://rpc.ankr.com/gnosis")!,
-        URL(string: "https://gnosis-mainnet.public.blastapi.io")!,
+        URL(string: "https://gnosis-rpc.publicnode.com")!,
+        URL(string: "https://gnosis.drpc.org")!,
+        URL(string: "https://rpc.gnosis.gateway.fm")!,
+    ]
+
+    /// Every Gnosis seed that ever shipped (see `legacyPublicRpcProviders`).
+    static let legacyGnosisURLs: Set<String> = [
+        "https://rpc.gnosischain.com",
+        "https://rpc.ankr.com/gnosis",
+        "https://gnosis-mainnet.public.blastapi.io",
     ]
 }

@@ -24,6 +24,13 @@ final class ENSResolver {
         case data(resolvedData: Data, resolverAddress: EthereumAddress, trust: ENSTrust)
         case notFound(reason: ENSNotFoundReason, trust: ENSTrust)
         case conflict(groups: [ENSConflictGroup], trust: ENSTrust)
+
+        var trustLevel: ENSTrustLevel {
+            switch self {
+            case .data(_, _, let trust), .notFound(_, let trust), .conflict(_, let trust):
+                return trust.level
+            }
+        }
     }
 
     enum ConsensusError: Error {
@@ -370,79 +377,140 @@ final class ENSResolver {
     ) async throws -> ConsensusResult {
         let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
 
-        // Myotis first: fully-P2P verification with no prover in the
-        // loop, on whenever the embedded node reports itself able to
-        // serve (SYNCED + snap peer). Fall-through is UNCONDITIONAL —
-        // unlike Colibri, a failed P2P read is an expected warm-up /
-        // churn condition, not a security signal worth failing closed
-        // over, and the tiers below independently re-verify. An
-        // OffchainLookup revert also falls through here: the quorum path
-        // owns the CCIP gateway drive (the Colibri tier repeats the
-        // call in that rare case — accepted redundancy for a linear
-        // pipeline).
-        if let myotis, myotis.isAvailable {
+        // Desktop "Resolution order": the enabled methods, top to bottom.
+        // A tier's own failure (prover error, P2P warm-up, an infeasible
+        // quorum, a dead custom node) falls through to the next one; a
+        // deterministic answer — data, a verified negative, a conflict,
+        // an anchor disagreement — ends the walk. With "prefer verified"
+        // on, an unverified Direct RPC answer is held while later methods
+        // try to produce a verified one.
+        var unverifiedFallback: ConsensusResult?
+        var lastError: Error?
+        /// The user's own node failing is the actionable message when
+        /// nothing else answers either — surfaced over generic failures.
+        var customRPCError: Error?
+        let enabled = settings.ensEnabledResolutionMethods
+        for (index, method) in enabled.enumerated() {
+            try Task.checkCancellation()
             do {
-                let result = try await tryMyotis(
-                    dnsEncodedName: dnsEncodedName, callData: callData,
-                    client: myotis, system: system
-                )
-                noteMyotisServed()
-                return result
-            } catch let err as ColibriENSError {
-                log.info(
-                    "[ens] myotis-fallthrough error=\(String(describing: err), privacy: .public)"
-                )
-                noteMyotisFallthrough()
-                // fall through to Colibri / quorum
-            }
-        }
-
-        // Colibri primary: cryptographic verification via the sync committee
-        // (or ZK sync proof). On verification failure or network/prover
-        // error we log loudly and fall through to the legacy quorum path
-        // below unless `ensFallbackToQuorum` is explicitly disabled.
-        // Loud-fallback is load-bearing: silent fall-through would hide
-        // both prover health regressions and the rare "active attack"
-        // signal.
-        if settings.ensResolutionMethod == .colibri, let colibri {
-            do {
-                return try await tryColibri(
-                    dnsEncodedName: dnsEncodedName, callData: callData,
-                    client: colibri, system: system
-                )
-            } catch let err as ColibriENSError {
-                if !settings.ensFallbackToQuorum {
-                    throw ENSResolutionError.allProvidersErrored
+                let result: ConsensusResult
+                switch method {
+                case .myotis:
+                    guard let myotis, myotis.isAvailable else { continue }
+                    do {
+                        result = try await tryMyotis(
+                            dnsEncodedName: dnsEncodedName, callData: callData,
+                            client: myotis, system: system
+                        )
+                        noteMyotisServed()
+                    } catch let err as ColibriENSError {
+                        log.info("[ens] myotis-fallthrough error=\(String(describing: err), privacy: .public)")
+                        noteMyotisFallthrough()
+                        throw err
+                    }
+                case .colibri:
+                    guard let colibri else { continue }
+                    do {
+                        result = try await tryColibri(
+                            dnsEncodedName: dnsEncodedName, callData: callData,
+                            client: colibri, system: system
+                        )
+                    } catch let err as ColibriENSError {
+                        // Loud on purpose: a silent fall-through would hide
+                        // prover health regressions and the rare attack signal.
+                        log.warning("[ens] colibri-fallback error=\(String(describing: err), privacy: .public)")
+                        throw err
+                    }
+                case .quorum:
+                    result = try await resolveQuorumTier(
+                        dnsEncodedName: dnsEncodedName, callData: callData,
+                        timeout: timeout, system: system
+                    )
+                case .userConfigured:
+                    result = try await resolveDirectTier(
+                        dnsEncodedName: dnsEncodedName, callData: callData,
+                        timeout: timeout, system: system
+                    )
+                case .direct:
+                    continue
                 }
-                log.warning(
-                    "[ens] colibri-fallback error=\(String(describing: err), privacy: .public)"
-                )
-                // fall through to legacy path
+                let isLast = index == enabled.count - 1
+                if settings.ensPreferVerified, !isLast, result.trustLevel == .unverified {
+                    log.info("[ens] \(method.rawValue, privacy: .public) answered unverified — holding while later methods try")
+                    if unverifiedFallback == nil { unverifiedFallback = result }
+                    continue
+                }
+                return result
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error where Self.isTierFallThrough(error) {
+                log.info("[ens] \(method.rawValue, privacy: .public) unavailable: \(String(describing: error), privacy: .public) — next method")
+                if case ENSResolutionError.customRpcFailed = error { customRPCError = error }
+                lastError = error
+                continue
             }
         }
+        if let unverifiedFallback { return unverifiedFallback }
+        throw customRPCError ?? lastError ?? ENSResolutionError.allProvidersErrored
+    }
 
-        // See ENSResolutionError.customRpcFailed — fail-closed by design.
-        if settings.ensResolutionMethod == .userConfigured {
+    /// A tier could not answer — the walk moves on. Everything else a
+    /// tier throws is the chain's answer or a security signal.
+    private static func isTierFallThrough(_ error: Error) -> Bool {
+        if error is ColibriENSError || error is TierUnavailable || error is ConsensusError { return true }
+        if case ENSResolutionError.customRpcFailed = error { return true }
+        if case ENSResolutionError.allProvidersErrored = error { return true }
+        return false
+    }
+
+    /// "This method cannot serve right now" — the resolution order's
+    /// fall-through signal, never shown to the user.
+    struct TierUnavailable: Error {
+        let reason: String
+    }
+
+    /// Direct RPC: the user's own endpoint when one is configured
+    /// (single-source, `userConfigured`), else the first public
+    /// endpoint that answers (`unverified`). Desktop's Direct method,
+    /// which tries the user's endpoints before the public ones.
+    private func resolveDirectTier(
+        dnsEncodedName: Data,
+        callData: Data,
+        timeout: TimeInterval,
+        system: NameSystem
+    ) async throws -> ConsensusResult {
+        if !settings.ensRpcUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return try await resolveCustomRPC(
                 dnsEncodedName: dnsEncodedName, callData: callData,
                 timeout: timeout, system: system
             )
         }
+        return try await resolveDirect(
+            candidates: pool.availableProviders(),
+            dnsEncodedName: dnsEncodedName, callData: callData,
+            timeout: timeout, system: system
+        )
+    }
 
+    /// RPC quorum: feasibility → anchor → wave → optional second wave →
+    /// trust-labelled result. Infeasible (too few providers, K/M below
+    /// the floor, no corroborated anchor) throws `TierUnavailable` so
+    /// the order can move on; an anchor disagreement propagates.
+    private func resolveQuorumTier(
+        dnsEncodedName: Data,
+        callData: Data,
+        timeout: TimeInterval,
+        system: NameSystem
+    ) async throws -> ConsensusResult {
         let available = pool.availableProviders()
-        guard !available.isEmpty else { throw ConsensusError.noProviders }
+        guard !available.isEmpty else { throw TierUnavailable(reason: "no providers") }
 
         let desiredK = max(1, min(settings.ensQuorumK, 9))
         let desiredM = max(1, min(settings.ensQuorumM, desiredK))
-        let quorumDisabled = !settings.enableEnsQuorum
         let underpowered = desiredK < AnchorCorroboration.minQuorumProviders || desiredM < 2
 
-        if quorumDisabled || underpowered || available.count < AnchorCorroboration.minQuorumProviders {
-            return try await resolveDirect(
-                candidates: available,
-                dnsEncodedName: dnsEncodedName, callData: callData,
-                timeout: timeout, system: system
-            )
+        if underpowered || available.count < AnchorCorroboration.minQuorumProviders {
+            throw TierUnavailable(reason: "quorum infeasible")
         }
 
         // getPinnedBlock throws on hash disagreement (security signal),
@@ -450,22 +518,14 @@ final class ENSResolver {
         let pinned = try await anchor.getPinnedBlock()
 
         guard let block = pinned else {
-            return try await resolveDirect(
-                candidates: pool.availableProviders(),
-                dnsEncodedName: dnsEncodedName, callData: callData,
-                timeout: timeout, system: system
-            )
+            throw TierUnavailable(reason: "quorum infeasible")
         }
 
         // Refresh pool — anchor step may have quarantined flakes; reusing
         // the pre-anchor snapshot would waste the wave on dead providers.
         let waveAvailable = pool.availableProviders()
         if waveAvailable.count < AnchorCorroboration.minQuorumProviders {
-            return try await resolveDirect(
-                candidates: waveAvailable,
-                dnsEncodedName: dnsEncodedName, callData: callData,
-                timeout: timeout, system: system
-            )
+            throw TierUnavailable(reason: "quorum infeasible")
         }
 
         let effectiveK = min(desiredK, waveAvailable.count)
@@ -1131,37 +1191,67 @@ final class ENSResolver {
         address: EthereumAddress,
         coinType: BigUInt
     ) async throws -> ENSReverseResolution {
-        // Myotis first, same unconditional fall-through as forward
-        // resolution.
-        if let myotis, myotis.isAvailable {
-            do {
-                let result = try await myotisReverse(address: address, coinType: coinType, client: myotis)
-                noteMyotisServed()
-                return result
-            } catch let err as ColibriENSError {
-                log.info(
-                    "[ens] myotis-fallthrough reverse address=\(address.asString(), privacy: .public) error=\(String(describing: err), privacy: .public)"
-                )
-                noteMyotisFallthrough()
-            }
-        }
-
-        // Colibri primary path. On `ColibriENSError` we log loudly and
-        // fall through to quorum unless `ensFallbackToQuorum` is disabled.
-        if settings.ensResolutionMethod == .colibri, let colibri {
-            do {
-                return try await colibriReverse(address: address, coinType: coinType, client: colibri)
-            } catch let err as ColibriENSError {
-                if !settings.ensFallbackToQuorum {
-                    throw ReverseError.allProvidersFailed
+        // The same resolution order as forward lookups. Reverse is
+        // display-only and single-shot on the RPC side, so the quorum and
+        // Direct RPC methods share one provider walk: the user's own
+        // endpoint first when Direct is enabled, then the public pool.
+        let enabled = settings.ensEnabledResolutionMethods
+        var rpcWalkDone = false
+        for method in enabled {
+            try Task.checkCancellation()
+            switch method {
+            case .myotis:
+                guard let myotis, myotis.isAvailable else { continue }
+                do {
+                    let result = try await myotisReverse(address: address, coinType: coinType, client: myotis)
+                    noteMyotisServed()
+                    return result
+                } catch let err as ColibriENSError {
+                    log.info(
+                        "[ens] myotis-fallthrough reverse address=\(address.asString(), privacy: .public) error=\(String(describing: err), privacy: .public)"
+                    )
+                    noteMyotisFallthrough()
                 }
-                log.warning(
-                    "[ens] colibri-fallback reverse address=\(address.asString(), privacy: .public) error=\(String(describing: err), privacy: .public)"
-                )
+            case .colibri:
+                guard let colibri else { continue }
+                do {
+                    return try await colibriReverse(address: address, coinType: coinType, client: colibri)
+                } catch let err as ColibriENSError {
+                    log.warning(
+                        "[ens] colibri-fallback reverse address=\(address.asString(), privacy: .public) error=\(String(describing: err), privacy: .public)"
+                    )
+                }
+            case .quorum, .userConfigured:
+                guard !rpcWalkDone else { continue }
+                rpcWalkDone = true
+                var providers: [URL] = []
+                if enabled.contains(.userConfigured), let custom = customRPCURL() { providers.append(custom) }
+                if enabled.contains(.quorum) || providers.isEmpty { providers += pool.availableProviders() }
+                do {
+                    return try await reverseViaProviders(providers, address: address, coinType: coinType)
+                } catch ReverseError.allProvidersFailed {
+                    continue
+                }
+            case .direct:
+                continue
             }
         }
+        throw ReverseError.allProvidersFailed
+    }
 
-        let providers = pool.availableProviders()
+    /// The user's Direct RPC endpoint, when it parses as an http(s) URL.
+    private func customRPCURL() -> URL? {
+        let trimmed = settings.ensRpcUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https", url.host != nil else { return nil }
+        return url
+    }
+
+    private func reverseViaProviders(
+        _ providers: [URL],
+        address: EthereumAddress,
+        coinType: BigUInt
+    ) async throws -> ENSReverseResolution {
         guard !providers.isEmpty else { throw ReverseError.allProvidersFailed }
 
         let callData = try UniversalResolverABI.encodeReverse(address: address, coinType: coinType)

@@ -30,6 +30,7 @@ final class ChainStore {
         self.context = context
         self.settings = settings
         seedAndMigrateIfNeeded()
+        refreshSeedsIfNeeded()
     }
 
     // MARK: - Reads
@@ -54,24 +55,79 @@ final class ChainStore {
     }
 
     /// True for an RPC URL the user added themselves, as opposed to one
-    /// the chain shipped with. Built-ins compare against their seed
-    /// lists; a custom chain's initial list counts as shipped.
+    /// the chain shipped with (its `defaultRPCURLs` snapshot).
     func isUserAddedRPCURL(_ url: String, chainID id: Int) -> Bool {
         let key = url.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !key.isEmpty, rpcURLs(forChainID: id).contains(where: { $0.lowercased() == key }) else { return false }
         return !defaultRPCURLs(forChainID: id).contains { $0.lowercased() == key }
     }
 
-    /// The RPC URLs a chain shipped with (the "Public RPCs" of the
-    /// settings page). Until the record carries its own seed snapshot
-    /// this is the built-in seed for mainnet and Gnosis and, for a
-    /// custom chain, its whole current list.
+    /// The RPC URLs a chain shipped with. Built-ins: the current seed;
+    /// custom chains: the list they were added with.
     func defaultRPCURLs(forChainID id: Int) -> [String] {
-        switch id {
-        case Chain.mainnetID: return SettingsStore.defaultPublicRpcProviders
-        case Chain.gnosisID: return ChainRegistry.gnosisURLs.map(\.absoluteString)
-        default: return rpcURLs(forChainID: id)
+        _ = version
+        return record(id: id)?.defaultRPCURLs ?? []
+    }
+
+    /// The user's own endpoints for a chain, in list order.
+    func userAddedRPCURLs(forChainID id: Int) -> [String] {
+        rpcURLs(forChainID: id).filter { isUserAddedRPCURL($0, chainID: id) }
+    }
+
+    // MARK: - Routing policy
+
+    /// The chain-data routing policy for a chain. Orders come from the
+    /// record (empty = desktop default). Mainnet's quorum, prover and ZK
+    /// settings are the ENS keys in `SettingsStore` — one source of
+    /// truth shared by name resolution and the chain-data router — and
+    /// the record fields hold them for every other chain.
+    func policy(forChainID id: Int) -> ChainAccessPolicy {
+        _ = version
+        var policy = ChainAccessPolicy.default(forChainID: id)
+        guard let record = record(id: id) else { return policy }
+        let readOrder = record.readOrder.compactMap(ChainSource.init(rawValue:))
+        if !readOrder.isEmpty { policy.readOrder = readOrder }
+        let broadcastOrder = record.broadcastOrder.compactMap(ChainSource.init(rawValue:))
+        if !broadcastOrder.isEmpty { policy.broadcastOrder = broadcastOrder }
+        if id == Chain.mainnetID {
+            policy.quorumK = settings.ensQuorumK
+            policy.quorumM = settings.ensQuorumM
+            policy.quorumTimeoutMs = settings.ensQuorumTimeoutMs
+            policy.proverURL = settings.ensColibriProverUrl
+            policy.zkProof = settings.ensColibriZkProof
+        } else {
+            policy.quorumK = record.quorumK
+            policy.quorumM = record.quorumM
+            policy.quorumTimeoutMs = record.quorumTimeoutMs
+            policy.proverURL = record.proverURL
+            policy.zkProof = record.zkProof
         }
+        return policy
+    }
+
+    /// Persist a policy. Orders are stored as given (the router sanitizes
+    /// on read); quorum numbers are clamped so the settings page cannot
+    /// store an impossible M > K.
+    func updatePolicy(forChainID id: Int, _ policy: ChainAccessPolicy) {
+        guard let record = record(id: id) else { return }
+        let sanitized = policy.sanitized(forChainID: id)
+        record.readOrder = policy.readOrder.map(\.rawValue)
+        record.broadcastOrder = policy.broadcastOrder.map(\.rawValue)
+        if id == Chain.mainnetID {
+            settings.ensQuorumK = sanitized.quorumK
+            settings.ensQuorumM = sanitized.quorumM
+            settings.ensQuorumTimeoutMs = sanitized.quorumTimeoutMs
+            settings.ensColibriProverUrl = sanitized.proverURL ?? ""
+            settings.ensColibriZkProof = sanitized.zkProof
+        } else {
+            record.quorumK = sanitized.quorumK
+            record.quorumM = sanitized.quorumM
+            record.quorumTimeoutMs = sanitized.quorumTimeoutMs
+            record.proverURL = sanitized.proverURL ?? ""
+            record.zkProof = sanitized.zkProof
+        }
+        save()
+        version += 1
     }
 
     // MARK: - Writes
@@ -83,6 +139,15 @@ final class ChainStore {
     func updateRPCURLs(forChainID id: Int, _ urls: [String]) {
         guard let record = record(id: id) else { return }
         record.rpcURLs = urls
+        save()
+        version += 1
+    }
+
+    /// Back to the shipped list (the "Public RPCs"), dropping the user's
+    /// own endpoints.
+    func resetRPCURLs(forChainID id: Int) {
+        guard let record = record(id: id), !record.defaultRPCURLs.isEmpty else { return }
+        record.rpcURLs = record.defaultRPCURLs
         save()
         version += 1
     }
@@ -112,6 +177,9 @@ final class ChainStore {
             rpcURLs: rpcURLs,
             sortOrder: nextSortOrder()
         )
+        // What the chain was added with counts as shipped: the user's
+        // later additions are the ones tried first and labelled theirs.
+        record.defaultRPCURLs = rpcURLs
         context.insert(record)
         save()
         version += 1
@@ -170,7 +238,7 @@ final class ChainStore {
     }
 
     private func seedRecord(template: Chain, rpcURLs: [String], sortOrder: Int) -> ChainRecord {
-        ChainRecord(
+        let record = ChainRecord(
             id: template.id,
             displayName: template.displayName,
             nativeName: template.nativeName,
@@ -182,6 +250,66 @@ final class ChainStore {
             rpcURLs: rpcURLs,
             sortOrder: sortOrder
         )
+        record.defaultRPCURLs = Self.seedURLs(forChainID: template.id) ?? rpcURLs
+        return record
+    }
+
+    /// The current shipped list for a built-in chain.
+    static func seedURLs(forChainID id: Int) -> [String]? {
+        switch id {
+        case Chain.mainnetID: return SettingsStore.defaultPublicRpcProviders
+        case Chain.gnosisID: return ChainRegistry.gnosisURLs.map(\.absoluteString)
+        default: return nil
+        }
+    }
+
+    /// URLs that were a seed at some point and are not one now.
+    private static func retiredSeedURLs(forChainID id: Int) -> Set<String> {
+        let current = Set((seedURLs(forChainID: id) ?? []).map { $0.lowercased() })
+        let everShipped: Set<String>
+        switch id {
+        case Chain.mainnetID: everShipped = SettingsStore.legacyPublicRpcProviders
+        case Chain.gnosisID: everShipped = ChainRegistry.legacyGnosisURLs
+        default: everShipped = []
+        }
+        return Set(everShipped.map { $0.lowercased() }).subtracting(current)
+    }
+
+    /// Bring built-in records seeded by an older build up to the current
+    /// seed: the snapshot is refreshed, retired public endpoints (dead
+    /// ones, keyed-only ones) are dropped, new ones added, and the user's
+    /// own endpoints stay first. A record whose list contains no shipped
+    /// endpoint at all was deliberately made private — it keeps its list
+    /// and only gets the snapshot. Custom chains get their snapshot
+    /// backfilled from their current list.
+    private func refreshSeedsIfNeeded() {
+        var changed = false
+        for record in records() {
+            guard let seed = Self.seedURLs(forChainID: record.id) else {
+                if record.defaultRPCURLs.isEmpty {
+                    record.defaultRPCURLs = record.rpcURLs
+                    changed = true
+                }
+                continue
+            }
+            guard record.defaultRPCURLs != seed else { continue }
+            let seedKeys = Set(seed.map { $0.lowercased() })
+            let retired = Self.retiredSeedURLs(forChainID: record.id)
+            let oldSnapshot = Set(record.defaultRPCURLs.map { $0.lowercased() })
+            let shippedKeys = seedKeys.union(retired).union(oldSnapshot)
+            let hadShipped = record.rpcURLs.contains { shippedKeys.contains($0.lowercased()) }
+            if hadShipped {
+                let mine = record.rpcURLs.filter { !shippedKeys.contains($0.lowercased()) }
+                record.rpcURLs = mine + seed
+                log.info("[chainstore] refreshed chain \(record.id) seed: kept \(mine.count) user endpoints")
+            }
+            record.defaultRPCURLs = seed
+            changed = true
+        }
+        if changed {
+            save()
+            version += 1
+        }
     }
 
     // MARK: - Internals
