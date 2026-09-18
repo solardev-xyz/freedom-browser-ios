@@ -140,6 +140,27 @@ final class ENSReverseResolveTests: XCTestCase {
     }
 
 
+    /// A revert with data that is neither a mismatch nor an
+    /// OffchainLookup is the contract saying "no reverse record for this
+    /// coin type" (UR wraps it as `ResolverError`; live Base lookups do
+    /// this). Terminal `.none`, cached like any other negative — not a
+    /// provider fault to rotate past.
+    func testReverseVerifiedRevertIsNoPrimaryAndCached() async throws {
+        var transportCalls = 0
+        let resolverError = "0x95c0c752" + String(repeating: "0", count: 62) + "20"
+            + String(repeating: "0", count: 63) + "4" + "eb57ceb9" + String(repeating: "0", count: 56)
+        let revert = revertEnvelope(dataHex: resolverError)
+        let resolver = makeResolver { _, _, _ in
+            transportCalls += 1
+            return revert
+        }
+        let first = try await resolver.reverseResolve(address: vitalik, chainID: 8453)
+        XCTAssertEqual(first, .none)
+        let second = try await resolver.reverseResolve(address: vitalik, chainID: 8453)
+        XCTAssertEqual(second, .none)
+        XCTAssertEqual(transportCalls, 1, "negative answer is cached")
+    }
+
     /// Transport failure is transient — should throw, not cache, so the
     /// next attempt re-tries the network instead of returning a stale nil.
     func testReverseAllProvidersFailedThrows() async {

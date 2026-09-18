@@ -119,6 +119,58 @@ final class ConsensusResolveTests: XCTestCase {
         XCTAssertEqual(trust.level, .unverified)
     }
 
+    /// The direct tier walks the pool: a dead first provider (anchor or
+    /// leg failure) is quarantined and the next one answers, instead of
+    /// the whole resolution failing on one bad shuffle. Five of the nine
+    /// default public providers were dead during the ENSv2 live run.
+    func testDirectTierRotatesPastDeadProvidersAndQuarantinesThem() async throws {
+        settings.ensPublicRpcProviders = [alpha, bravo, charlie].map(\.absoluteString)
+        settings.enableEnsQuorum = false
+        // Deterministic order so the dead providers are walked first.
+        pool = EthereumRPCPool(
+            chainID: Chain.mainnetID,
+            urlSource: { [settings] in settings!.ensPublicRpcProviders },
+            clock: { [unowned self] in self.clock.now },
+            orderer: { $0 }
+        )
+        // alpha: anchor fails. bravo: anchor ok, leg errors. charlie: healthy.
+        let anchor = makeAnchor(
+            heads: [bravo: 1000, charlie: 1000],
+            hashes: [bravo: [992: "0xblock"], charlie: [992: "0xblock"]]
+        )
+        let resolver = ENSResolver(
+            pool: pool, settings: settings, anchor: anchor,
+            legRunner: makeLegRunner([
+                bravo: .error(RPCError.httpStatus(403)),
+                charlie: .data(resolvedData: sampleBytes, resolverAddress: sampleResolver),
+            ])
+        )
+        let result = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data())
+        guard case .data(let bytes, _, let trust) = result else { return XCTFail("expected .data, got \(result)") }
+        XCTAssertEqual(bytes, sampleBytes)
+        XCTAssertEqual(trust.level, .unverified)
+        XCTAssertEqual(trust.agreed, [charlie.hostOrAbsolute])
+        let remaining = pool.availableProviders()
+        XCTAssertEqual(remaining, [charlie], "dead providers must be quarantined; the healthy one stays")
+    }
+
+    func testDirectTierThrowsWhenEveryProviderIsDead() async {
+        settings.ensPublicRpcProviders = [alpha, bravo].map(\.absoluteString)
+        settings.enableEnsQuorum = false
+        let resolver = ENSResolver(
+            pool: pool, settings: settings, anchor: makeAnchor(heads: [:]),
+            legRunner: makeLegRunner([:])
+        )
+        do {
+            _ = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data())
+            XCTFail("expected allErrored")
+        } catch ENSResolver.ConsensusError.allErrored {
+            XCTAssertTrue(pool.availableProviders().isEmpty)
+        } catch {
+            XCTFail("wrong error: \(error)")
+        }
+    }
+
     func testHashDisagreementPropagates() async throws {
         settings.ensPublicRpcProviders = [alpha, bravo, charlie].map(\.absoluteString)
         // Three distinct hashes at the same block → anchor throws.

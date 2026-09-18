@@ -438,8 +438,8 @@ final class ENSResolver {
         let underpowered = desiredK < AnchorCorroboration.minQuorumProviders || desiredM < 2
 
         if quorumDisabled || underpowered || available.count < AnchorCorroboration.minQuorumProviders {
-            return try await resolveSingleSource(
-                url: available[0],
+            return try await resolveDirect(
+                candidates: available,
                 dnsEncodedName: dnsEncodedName, callData: callData,
                 timeout: timeout, system: system
             )
@@ -450,9 +450,8 @@ final class ENSResolver {
         let pinned = try await anchor.getPinnedBlock()
 
         guard let block = pinned else {
-            let fresh = pool.availableProviders()
-            return try await resolveSingleSource(
-                url: fresh.first ?? available[0],
+            return try await resolveDirect(
+                candidates: pool.availableProviders(),
                 dnsEncodedName: dnsEncodedName, callData: callData,
                 timeout: timeout, system: system
             )
@@ -462,8 +461,8 @@ final class ENSResolver {
         // the pre-anchor snapshot would waste the wave on dead providers.
         let waveAvailable = pool.availableProviders()
         if waveAvailable.count < AnchorCorroboration.minQuorumProviders {
-            return try await resolveSingleSource(
-                url: waveAvailable.first ?? available[0],
+            return try await resolveDirect(
+                candidates: waveAvailable,
                 dnsEncodedName: dnsEncodedName, callData: callData,
                 timeout: timeout, system: system
             )
@@ -759,6 +758,40 @@ final class ENSResolver {
             queried: [Self.myotisProviderLabel],
             k: 1, m: 1
         )
+    }
+
+    /// The direct tier: one unverified answer from the first provider
+    /// that can give one. Iterates the (shuffled, non-quarantined) pool
+    /// on transport / anchor / leg failure, quarantining as it goes, so
+    /// a dead first provider degrades to the next one instead of to
+    /// "all providers failed" (desktop's direct tier walks the list the
+    /// same way). A deterministic answer — data, a verified negative,
+    /// a custom-RPC failure — ends the walk.
+    private func resolveDirect(
+        candidates: [URL],
+        dnsEncodedName: Data,
+        callData: Data,
+        timeout: TimeInterval,
+        system: NameSystem = .ens
+    ) async throws -> ConsensusResult {
+        guard !candidates.isEmpty else { throw ConsensusError.noProviders }
+        for url in candidates {
+            try Task.checkCancellation()
+            do {
+                let result = try await resolveSingleSource(
+                    url: url,
+                    dnsEncodedName: dnsEncodedName, callData: callData,
+                    timeout: timeout, system: system
+                )
+                pool.markSuccess(url)
+                return result
+            } catch ConsensusError.allErrored {
+                log.info("[ens] direct provider failed, trying next host=\(url.hostOrAbsolute, privacy: .public)")
+                pool.markFailure(url)
+                continue
+            }
+        }
+        throw ConsensusError.allErrored
     }
 
     private func resolveSingleSource(
@@ -1173,6 +1206,18 @@ final class ENSResolver {
                 }
                 if let primary = try await ccipRetry(error: error, providerURL: url, timeout: timeout) {
                     return primary.isEmpty ? .none : .verified(name: primary)
+                }
+                // Any other revert *with data* is the contract answering:
+                // no reverse resolver / no record for this coin type (the
+                // UR wraps it as `ResolverError`, which is what an L2 coin
+                // type with no primary produces). Display-only lookup, so
+                // "no primary" is the terminal answer — not a provider
+                // fault to rotate past. Dataless errors and failed CCIP
+                // hops still try the next provider.
+                if let revertHex = error["data"] as? String,
+                   CCIPResolver.selectorOf(revertHex) != CCIPResolver.offchainLookupSelector,
+                   !(revertHex.web3.hexData ?? Data()).isEmpty {
+                    return .none
                 }
                 continue
             }
