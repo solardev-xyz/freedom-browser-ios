@@ -55,7 +55,7 @@ struct MyotisSettingsView: View {
         guard status.beaconState == "SYNCED" else {
             return status.beaconState.isEmpty ? "starting" : status.beaconState.lowercased()
         }
-        let readiness = status.ready ? "verified reads" : "finding state peers"
+        let readiness = status.ready ? "verified reads" : status.notServingReason
         let peers = status.peerCount == 1 ? "1 peer" : "\(status.peerCount) peers"
         return "synced · \(peers) · \(readiness)"
     }

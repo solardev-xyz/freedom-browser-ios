@@ -8,7 +8,7 @@ import MyotisKit
 final class MyotisRecoveryTests: XCTestCase {
     private func status(
         beacon: String = "SYNCED", finalizedSlot: UInt64 = 0, finalizedRoot: String = "",
-        snapPeers: Int = 1, elReader: Bool = true, hunting: Bool = false
+        snapPeers: Int = 1, elReader: Bool = true, hunting: Bool = false, lcHunting: Bool = false
     ) -> MyotisChainStatus {
         var s = MyotisChainStatus()
         s.running = true
@@ -17,7 +17,8 @@ final class MyotisRecoveryTests: XCTestCase {
         s.finalizedRootHex = finalizedRoot
         s.snapPeers = snapPeers
         s.elReaderAvailable = elReader
-        s.lcHunting = hunting
+        s.elHunting = hunting
+        s.lcHunting = lcHunting
         return s
     }
 
@@ -69,10 +70,17 @@ final class MyotisRecoveryTests: XCTestCase {
         XCTAssertFalse(MyotisRecoveryPolicy.isAnchorMismatch(status: status(beacon: "STALE_ANCHOR", finalizedSlot: 1000, finalizedRoot: MyotisCheckpointTests.otherRoot), checkpoint: cp))
     }
 
-    func testReadinessRequiresElReaderAndNoHunt() {
+    func testReadinessRequiresElReaderAndNoElHunt() {
         XCTAssertTrue(status().ready)
         XCTAssertFalse(status(elReader: false).ready)
         XCTAssertFalse(status(hunting: true).ready)
+        // The LC hunt is NOT a gate (mainnet's LC pool is thin; the chain
+        // serves fine while hunting for more light-client servers).
+        XCTAssertTrue(status(lcHunting: true).ready)
+        XCTAssertEqual(status(hunting: true).notServingReason, "EL hunting for a head")
+        XCTAssertEqual(status(snapPeers: 0, elReader: false).notServingReason, "no state peer, EL reader down")
+        XCTAssertEqual(status().notServingReason, "")
+        XCTAssertEqual(status(beacon: "CATCHING_UP", snapPeers: 0).notServingReason, "")
         XCTAssertFalse(status(beacon: "STALE_ANCHOR").ready)
         XCTAssertTrue(status(beacon: "STALE_ANCHOR").isStaleAnchor)
     }
@@ -81,7 +89,7 @@ final class MyotisRecoveryTests: XCTestCase {
         let json = """
         {"beaconState":"STALE_ANCHOR","currentPeriod":1825,"targetPeriod":1858,"wsBoundPeriods":13,
          "finalizedSlot":12345,"finalizedRootHex":"\(MyotisCheckpointTests.root.dropFirst(2))",
-         "elReaderAvailable":true,"lcHunting":false,"running":true,"paused":false,"snapPeers":0,"peerCount":2}
+         "elReaderAvailable":true,"lcHunting":true,"elHunting":false,"running":true,"paused":false,"snapPeers":0,"peerCount":2}
         """
         let decoded = MyotisChainStatus.decode(json)
         XCTAssertTrue(decoded.isStaleAnchor)
@@ -94,7 +102,10 @@ final class MyotisRecoveryTests: XCTestCase {
         let old = MyotisChainStatus.decode(#"{"beaconState":"SYNCED","running":true,"snapPeers":1}"#)
         XCTAssertTrue(old.elReaderAvailable)
         XCTAssertFalse(old.lcHunting)
+        XCTAssertFalse(old.elHunting)
         XCTAssertTrue(old.ready)
+        XCTAssertTrue(decoded.lcHunting)
+        XCTAssertFalse(decoded.elHunting)
     }
 
     func testLabelsAndMessages() {

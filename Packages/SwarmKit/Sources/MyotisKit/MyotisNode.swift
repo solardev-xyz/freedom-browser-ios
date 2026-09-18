@@ -73,8 +73,12 @@ public struct MyotisChainStatus: Sendable, Equatable {
     public var wsBoundPeriods: UInt64 = 0
     /// EL reader up (vs. failed to start — the CL-only degraded mode).
     public var elReaderAvailable: Bool = true
-    /// LC hunt engaged (starved of light-client servers).
+    /// LC hunt engaged (starved of light-client servers). Display only:
+    /// a SYNCED chain keeps serving verified reads during an LC hunt.
     public var lcHunting: Bool = false
+    /// EL reader hunting for a servable head context. First reads during
+    /// a hunt fail on the cold context — desktop gates readiness on it.
+    public var elHunting: Bool = false
 
     /// The engine's own park state: trust anchor past the bound.
     public var isStaleAnchor: Bool { beaconState == "STALE_ANCHOR" }
@@ -85,10 +89,24 @@ public struct MyotisChainStatus: Sendable, Equatable {
     /// with "state unavailable" / "no snap peer available" (observed in
     /// the Phase 0 spike). Gating on `snapPeers >= 1` skips the tier
     /// during that warm-up instead of burning a failed attempt per
-    /// resolution. Desktop also requires the EL reader up and no LC hunt
-    /// (first reads during a hunt fail on the cold context).
+    /// resolution. Desktop also requires the EL reader up and no EL hunt
+    /// (first reads during a hunt fail on the cold context). The LC hunt
+    /// flag is deliberately NOT a gate: on mainnet the light-client
+    /// server pool is thin and the hunt stays engaged for long stretches
+    /// while the chain is SYNCED and perfectly able to serve.
     public var ready: Bool {
-        running && !paused && beaconState == "SYNCED" && snapPeers >= 1 && elReaderAvailable && !lcHunting
+        running && !paused && beaconState == "SYNCED" && snapPeers >= 1 && elReaderAvailable && !elHunting
+    }
+
+    /// Why a SYNCED chain is not serving — for the node log and the
+    /// chain card. Empty when ready or not yet synced.
+    public var notServingReason: String {
+        guard running, !paused, beaconState == "SYNCED", !ready else { return "" }
+        var reasons: [String] = []
+        if snapPeers < 1 { reasons.append("no state peer") }
+        if !elReaderAvailable { reasons.append("EL reader down") }
+        if elHunting { reasons.append("EL hunting for a head") }
+        return reasons.joined(separator: ", ")
     }
 
     public init() {}
@@ -112,6 +130,7 @@ public struct MyotisChainStatus: Sendable, Equatable {
             var wsBoundPeriods: UInt64?
             var elReaderAvailable: Bool?
             var lcHunting: Bool?
+            var elHunting: Bool?
         }
         var status = MyotisChainStatus()
         guard let raw = try? JSONDecoder().decode(Raw.self, from: Data(json.utf8)) else {
@@ -131,6 +150,7 @@ public struct MyotisChainStatus: Sendable, Equatable {
         status.wsBoundPeriods = raw.wsBoundPeriods ?? 0
         status.elReaderAvailable = raw.elReaderAvailable ?? true
         status.lcHunting = raw.lcHunting ?? false
+        status.elHunting = raw.elHunting ?? false
         return status
     }
 }
@@ -820,8 +840,15 @@ public final class MyotisNode {
                     // A status read that raced a relaunch belongs to the
                     // old handle — drop it.
                     guard self.handles[chainId] == snapshot[chainId] else { continue }
-                    let wasStale = self.chainStatus[chainId]?.isStaleAnchor ?? false
+                    let previous = self.chainStatus[chainId]
+                    let wasStale = previous?.isStaleAnchor ?? false
                     self.chainStatus[chainId] = fresh
+                    // Diagnose "synced but not serving" once per change of
+                    // reason — this is what a Colibri takeover looks like.
+                    let reason = fresh.notServingReason
+                    if !reason.isEmpty, reason != previous?.notServingReason {
+                        self.append("chain \(chainId): synced but not serving — \(reason)")
+                    }
                     if fresh.isStaleAnchor, !wasStale {
                         self.append("chain \(chainId): STALE_ANCHOR — anchor period \(fresh.currentPeriod), wall \(fresh.targetPeriod), bound \(fresh.wsBoundPeriods)")
                     }
