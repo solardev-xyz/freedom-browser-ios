@@ -292,7 +292,7 @@ struct SendFlowView: View {
             recipientTask = Task { await resolveENS(name: trimmed) }
             return
         }
-        recipientState = .invalid(message: "Enter 0x… or a name ending in .eth, .box, .wei, or .gwei.")
+        recipientState = .invalid(message: "Enter a 0x address or a name (vitalik.eth, example.com).")
         scheduleQuote()
     }
 
@@ -348,11 +348,13 @@ struct SendFlowView: View {
         await refreshQuote(recipient: recipient, amount: amount)
     }
 
-    /// Name-shaped only — mainnet resolution decides whether the name
-    /// actually has an addr record. `.wei`/`.gwei` resolve through their
-    /// NameNFT registries via the same `resolveAddress` entry point.
+    /// Name-shaped only — resolution decides whether the name actually
+    /// has an address record. Any dot-separated candidate qualifies
+    /// (ENSv2: DNS-imported names, emoji labels, subdomains); `.wei` /
+    /// `.gwei` resolve through their NameNFT registries via the same
+    /// `resolveAddress` entry point.
     private func isENSShape(_ s: String) -> Bool {
-        NameSystem.isSupportedName(s)
+        NameSystem.isPotentialEnsName(s)
     }
 
     private func scheduleQuote() {

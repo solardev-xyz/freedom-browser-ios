@@ -280,9 +280,18 @@ final class ENSResolver {
             // normalization can produce non-ASCII hosts (emoji.eth,
             // IDN labels) — `URL(string:)` rejects those, `URLComponents`
             // handles the percent/IDN encoding.
+            //
+            // One exception: a DNS-imported ENS name (`example.com`)
+            // whose contenthash is IPNS. `ipns://example.com` already
+            // means DNSLink, so the name-host form would change meaning
+            // on reload; such names load by content key instead (the tab
+            // still carries the ENS trust). Suffix names (`.eth`) have no
+            // DNS equivalent and keep the name-host origin.
+            let nameHostIsUnambiguous = codec != .ipns
+                || NameSystem.navigableSuffixes.contains(where: normalized.hasSuffix)
             var components = URLComponents()
             components.scheme = codec.scheme
-            components.host = normalized
+            components.host = nameHostIsUnambiguous ? normalized : contentRef
             guard let uri = components.url else {
                 return .failure(.unsupportedCodec(rawBytes: innerBytes, trust: trust))
             }

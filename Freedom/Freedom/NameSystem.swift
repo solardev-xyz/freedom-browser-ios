@@ -58,6 +58,45 @@ enum NameSystem: String, Equatable, Sendable, CaseIterable {
     /// DNS equivalent.
     static let navigableSuffixes: [String] = [".eth", ".wei", ".gwei"]
 
+    /// ENSv2 candidate detection (desktop `isPotentialEnsName`, per the
+    /// ENS readiness guide): any dot-separated string may be an ENS
+    /// name — `.eth`, a DNS-imported name (`gregskril.com`), a
+    /// subdomain, an emoji or IDN label. Shape check only; ENSIP-15
+    /// normalization runs in the resolver. Used where the user *asked*
+    /// for a name (wallet recipient, explicit `ens://` or content-scheme
+    /// host), never to reroute a bare DNS name typed into the address
+    /// bar away from HTTPS.
+    static func isPotentialEnsName(_ value: some StringProtocol) -> Bool {
+        guard value.contains(".") else { return false }
+        for scalar in value.unicodeScalars {
+            let v = scalar.value
+            if v < 32 || v == 127 { return false }
+            if " \t\n\r/:@?#%\\".unicodeScalars.contains(scalar) { return false }
+        }
+        return value.split(separator: ".", omittingEmptySubsequences: false)
+            .allSatisfy { !$0.isEmpty }
+    }
+
+    /// Hosts that mean "a public/loopback IPFS gateway URL pasted in
+    /// gateway form" (`ipfs://ipfs.io/ipfs/<cid>`, Kubo dir-listing
+    /// links as `ipfs://localhost:8080/ipfs/<cid>`), which the IPFS
+    /// handler serves by its embedded reference. A gateway hostname is
+    /// a well-formed DNS name, so name detection must decline these or
+    /// the CID never loads (desktop `KNOWN_GATEWAY_HOSTS`).
+    static func isKnownIpfsGatewayHost(_ host: some StringProtocol) -> Bool {
+        let lower = host.lowercased()
+        if knownIpfsGatewayHosts.contains(lower) { return true }
+        return lower.hasSuffix(".localhost")
+    }
+
+    private static let knownIpfsGatewayHosts: Set<String> = [
+        "localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1",
+        "dweb.link", "ipfs.io", "gateway.ipfs.io",
+        "cf-ipfs.com", "cloudflare-ipfs.com",
+        "gateway.pinata.cloud", "nftstorage.link", "w3s.link",
+        "4everland.io", "trustless-gateway.link",
+    ]
+
     /// Systems the reverse-resolution fallback probes, in order. Desktop's
     /// `CONTRACT_BACKED_REVERSE_SYSTEMS`.
     static let contractBacked: [NameSystem] = [.wns, .gns]

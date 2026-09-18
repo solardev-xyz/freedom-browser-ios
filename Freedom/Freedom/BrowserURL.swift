@@ -80,16 +80,33 @@ enum BrowserURL: Hashable {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
+        // Explicit `ens://<name>[/path]` is a request for name resolution
+        // whatever the host looks like — a DNS-imported name
+        // (`ens://gregskril.com`), an emoji label — so it's parsed here
+        // by hand rather than through `URL`, which can't carry a
+        // non-ASCII host through `classify` intact.
+        if trimmed.lowercased().hasPrefix("ens://") {
+            let tail = trimmed.dropFirst("ens://".count)
+            let name = tail.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
+            guard !name.isEmpty, !name.contains(" "), NameSystem.isPotentialEnsName(name) else { return nil }
+            return .ens(name: name.lowercased(), path: String(tail.dropFirst(name.count)))
+        }
+
         if let url = URL(string: trimmed), let classified = classify(url) {
             return classified
         }
 
         // Bare Ethereum name like "vitalik.eth" / "wns.wei" / "apoorv.gwei"
-        // (case-insensitive).
-        let lowerTrimmed = trimmed.lowercased()
-        if !trimmed.contains(" "),
-           NameSystem.navigableSuffixes.contains(where: lowerTrimmed.hasSuffix) {
-            return .ens(name: lowerTrimmed)
+        // (case-insensitive), optionally with a path tail. Handled before
+        // the generic hostname branch because a non-ASCII label
+        // (`🦇.eth/blog`) doesn't survive the `https://` round-trip.
+        if !trimmed.contains(" ") {
+            let host = trimmed.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
+            let lowerHost = host.lowercased()
+            if NameSystem.navigableSuffixes.contains(where: lowerHost.hasSuffix),
+               NameSystem.isPotentialEnsName(lowerHost) {
+                return .ens(name: lowerHost, path: String(trimmed.dropFirst(host.count)))
+            }
         }
 
         if SwarmRef.isValid(trimmed), let url = URL(string: "bzz://\(trimmed)") {
