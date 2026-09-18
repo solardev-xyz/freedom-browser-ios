@@ -135,6 +135,7 @@ enum QuorumLeg {
             return try await RPCSession.withTimeout(seconds: timeout * 2) {
                 try await CCIPResolver.resolve(
                     revertData: bytes,
+                    sender: to,
                     ethCall: { target, callHex in
                         try await ethCallAtBlockHash(
                             rpcURL: rpcURL, to: target, dataHex: callHex,

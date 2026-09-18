@@ -443,3 +443,92 @@ final class CCIPResolverTests: XCTestCase {
         return try encoder.encoded()
     }
 }
+
+// MARK: - Sender check + response bound (ENSv2 readiness)
+
+extension CCIPResolverTests {
+    private static let sender: EthereumAddress = "0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe"
+    private static let other: EthereumAddress = "0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63"
+
+    private static func okGateway(_ payload: Data = Data([0x01])) -> CCIPResolver.HTTPClient {
+        let body = try! JSONSerialization.data(withJSONObject: ["data": payload.web3.hexString])
+        return { _, _ in CCIPResolver.GatewayResponse(status: 200, body: body) }
+    }
+
+    func testSenderMismatchRejectsBeforeAnyGatewayRequest() async {
+        let revert = encodeOffchainLookupRevert(address: Self.other, urls: ["https://gw.example/{data}"])
+        let hits = ActorCallTracker()
+        do {
+            _ = try await CCIPResolver.resolve(
+                revertData: revert,
+                sender: Self.sender.asString(),
+                ethCall: { _, _ in "0x" },
+                http: { _, _ in
+                    await hits.increment()
+                    return CCIPResolver.GatewayResponse(status: 200, body: Data())
+                },
+                timeout: 1
+            )
+            XCTFail("expected senderMismatch")
+        } catch CCIPResolver.CCIPError.senderMismatch(let expected, let actual) {
+            XCTAssertEqual(expected.lowercased(), Self.sender.asString().lowercased())
+            XCTAssertEqual(actual.lowercased(), Self.other.asString().lowercased())
+        } catch {
+            XCTFail("wrong error: \(error)")
+        }
+        let n = await hits.value
+        XCTAssertEqual(n, 0)
+    }
+
+    func testMatchingSenderIsCaseInsensitive() async throws {
+        let revert = encodeOffchainLookupRevert(address: Self.sender, urls: ["https://gw.example/{data}"])
+        let result = try await CCIPResolver.resolve(
+            revertData: revert,
+            sender: Self.sender.asString().uppercased().replacingOccurrences(of: "0X", with: "0x"),
+            ethCall: { _, _ in "0xcafe" },
+            http: Self.okGateway(),
+            timeout: 1
+        )
+        XCTAssertEqual(result, "0xcafe")
+    }
+
+    /// A nested lookup must come from the contract whose callback we
+    /// just executed, not from an arbitrary third contract.
+    func testNestedLookupSenderMustMatchCallbackTarget() async {
+        let first = encodeOffchainLookupRevert(address: Self.sender, urls: ["https://gw.example/{data}"])
+        let nested = encodeOffchainLookupRevert(address: Self.other, urls: ["https://gw2.example/{data}"])
+        do {
+            _ = try await CCIPResolver.resolve(
+                revertData: first,
+                sender: Self.sender.asString(),
+                ethCall: { _, _ in throw RPCError.executionRevert(data: nested.web3.hexString) },
+                http: Self.okGateway(),
+                timeout: 1
+            )
+            XCTFail("expected senderMismatch")
+        } catch CCIPResolver.CCIPError.senderMismatch {
+            // expected
+        } catch {
+            XCTFail("wrong error: \(error)")
+        }
+    }
+
+    func testOversizedGatewayBodyIsSkipped() async {
+        let revert = encodeOffchainLookupRevert(address: Self.sender, urls: ["https://gw.example/{data}"])
+        let huge = Data(count: CCIPResolver.maxGatewayResponseBytes + 1)
+        do {
+            _ = try await CCIPResolver.resolve(
+                revertData: revert,
+                sender: Self.sender.asString(),
+                ethCall: { _, _ in "0x" },
+                http: { _, _ in CCIPResolver.GatewayResponse(status: 200, body: huge) },
+                timeout: 1
+            )
+            XCTFail("expected allGatewaysFailed")
+        } catch CCIPResolver.CCIPError.allGatewaysFailed {
+            // expected — the only gateway was over the cap
+        } catch {
+            XCTFail("wrong error: \(error)")
+        }
+    }
+}

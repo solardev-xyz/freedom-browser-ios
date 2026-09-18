@@ -78,6 +78,20 @@ final class ColibriENSClient {
         return UniversalResolverABI.decodeReverseResponse(hex) ?? ""
     }
 
+    /// EIP-3668 callback executor — see `MyotisENSClient.ccipCallback`.
+    /// The callback is re-verified by the prover like any other call, so
+    /// gateway data never bypasses the proof.
+    func ccipCallback(to: String, dataHex: String) async throws -> String {
+        guard let callData = dataHex.web3.hexData else {
+            throw ColibriENSError.unexpectedResponse(dataHex)
+        }
+        do {
+            return try await provenEthCall(to: EthereumAddress(to), callData: callData)
+        } catch ColibriENSError.revert(let data) {
+            throw RPCError.executionRevert(data: data)
+        }
+    }
+
     /// One eth_call through the Colibri verifier, returning the proven
     /// return data as hex. Errors come back as typed `ColibriENSError`.
     private func provenEthCall(to: EthereumAddress, callData: Data) async throws -> String {

@@ -24,7 +24,22 @@ enum CCIPResolver {
         case allGatewaysFailed
         case clientError(status: Int)
         case tooManyRedirects
+        /// The `OffchainLookup.sender` isn't the contract whose call
+        /// reverted. EIP-3668 requires the client to reject this: an
+        /// unrelated contract's revert data must not steer a gateway
+        /// request or a callback at a contract we never called.
+        case senderMismatch(expected: String, actual: String)
     }
+
+    /// Per-gateway response cap. Desktop parity (`ccip-fetch.js`): a
+    /// hostile gateway can't make the client buffer an unbounded body
+    /// before the callback re-executes it.
+    static let maxGatewayResponseBytes = 4 * 1024 * 1024
+
+    /// Per-gateway request budget on the proven tiers (desktop parity).
+    /// The quorum legs keep using the quorum timeout so a CCIP hop can't
+    /// stall a wave beyond its wall-clock budget.
+    static let gatewayTimeout: TimeInterval = 15
 
     struct GatewayRequest: Equatable {
         let url: URL
@@ -50,8 +65,13 @@ enum CCIPResolver {
     /// a hostile gateway from spinning the client forever via new reverts.
     static let maxRedirects = 4
 
+    /// `sender` is the contract whose call produced `revertData`. When
+    /// given, the parsed `OffchainLookup.sender` must match it (nested
+    /// lookups are always checked against the callback target they
+    /// came from). Callers that hold the address should pass it.
     static func resolve(
         revertData: Data,
+        sender: String? = nil,
         ethCall: @escaping EthCallExecutor,
         http: @escaping HTTPClient,
         timeout: TimeInterval,
@@ -60,6 +80,9 @@ enum CCIPResolver {
         guard depth <= maxRedirects else { throw CCIPError.tooManyRedirects }
 
         let lookup = try parseOffchainLookup(data: revertData)
+        if let sender, lookup.address.asString().lowercased() != sender.lowercased() {
+            throw CCIPError.senderMismatch(expected: sender, actual: lookup.address.asString())
+        }
         let gatewayBytes = try await fetchFromGateways(lookup: lookup, http: http, timeout: timeout)
         let callback = encodeCallback(lookup: lookup, gatewayResponse: gatewayBytes)
 
@@ -75,7 +98,8 @@ enum CCIPResolver {
                 throw RPCError.executionRevert(data: innerHex)
             }
             return try await resolve(
-                revertData: bytes, ethCall: ethCall, http: http,
+                revertData: bytes, sender: lookup.address.asString(),
+                ethCall: ethCall, http: http,
                 timeout: timeout, depth: depth + 1
             )
         }
@@ -162,6 +186,7 @@ enum CCIPResolver {
                 throw CCIPError.clientError(status: resp.status)
             }
             guard (200..<300).contains(resp.status),
+                  resp.body.count <= maxGatewayResponseBytes,
                   let data = parseGatewayBody(resp.body) else { continue }
             return data
         }

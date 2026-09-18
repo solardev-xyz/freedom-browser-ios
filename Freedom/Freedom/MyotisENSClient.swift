@@ -98,6 +98,22 @@ final class MyotisENSClient {
         return UniversalResolverABI.decodeReverseResponse(hex) ?? ""
     }
 
+    /// EIP-3668 callback executor: one proven eth_call with the
+    /// `CCIPResolver` boundary contract — a revert with data surfaces as
+    /// `RPCError.executionRevert` so the resolver can recurse on nested
+    /// `OffchainLookup`s; every other failure keeps the
+    /// `ColibriENSError` taxonomy so the tier falls through as usual.
+    func ccipCallback(to: String, dataHex: String) async throws -> String {
+        guard let callData = dataHex.web3.hexData else {
+            throw ColibriENSError.unexpectedResponse(dataHex)
+        }
+        do {
+            return try await provenEthCall(to: EthereumAddress(to), callData: callData)
+        } catch ColibriENSError.revert(let data) {
+            throw RPCError.executionRevert(data: data)
+        }
+    }
+
     /// One eth_call through the embedded engine, returning the proven
     /// return data as hex. `unavailable`/`error` outcomes map to
     /// `.proofFailed` — the resolver treats those as transient and falls

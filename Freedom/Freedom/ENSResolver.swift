@@ -553,11 +553,17 @@ final class ENSResolver {
         } catch ColibriENSError.revert(let revertHex) {
             switch Self.classifyColibriRevert(revertHex) {
             case .offchainLookup:
-                // An `OffchainLookup` revert means the name has content
-                // behind a CCIP gateway — NOT "no content". Rethrow so the
-                // quorum fallback (which drives CCIP via `CCIPResolver`)
-                // handles it.
-                throw ColibriENSError.revert(data: revertHex)
+                // CCIP-gated record. Drive the gateway hop here and
+                // re-execute the callback through the same verifier, so
+                // the answer keeps Colibri trust (desktop PR #352).
+                guard settings.enableCcipRead else {
+                    return .notFound(reason: .ccipDisabled, trust: trust)
+                }
+                let hex = try await provenCCIP(revertHex: revertHex) { to, dataHex in
+                    try await client.ccipCallback(to: to, dataHex: dataHex)
+                }
+                let (data, resolver) = try UniversalResolverABI.decodeResolveResponse(hex)
+                return .data(resolvedData: data, resolverAddress: resolver, trust: trust)
             case .dataless:
                 // Desktop-parity hardening (freedom-browser #116): a revert
                 // carrying no return data is ambiguous — a degraded prover
@@ -602,9 +608,16 @@ final class ENSResolver {
         } catch ColibriENSError.revert(let revertHex) {
             switch Self.classifyColibriRevert(revertHex) {
             case .offchainLookup:
-                // CCIP-gated content — the quorum path drives the
-                // gateway hop. Rethrow to fall through.
-                throw ColibriENSError.revert(data: revertHex)
+                // CCIP-gated record: gateway hop + callback re-executed
+                // in the engine's own EVM, so the result stays P2P-verified.
+                guard settings.enableCcipRead else {
+                    return .notFound(reason: .ccipDisabled, trust: trust)
+                }
+                let hex = try await provenCCIP(revertHex: revertHex) { to, dataHex in
+                    try await client.ccipCallback(to: to, dataHex: dataHex)
+                }
+                let (data, resolver) = try UniversalResolverABI.decodeResolveResponse(hex)
+                return .data(resolvedData: data, resolverAddress: resolver, trust: trust)
             case .dataless:
                 // Ambiguous shape; don't mint a verified negative.
                 throw ColibriENSError.proofFailed(
@@ -613,6 +626,51 @@ final class ENSResolver {
             case .verifiedNotFound:
                 return .notFound(reason: .noContenthash, trust: trust)
             }
+        }
+    }
+
+    /// Whole-pass budget for a proven-tier CCIP drive: up to
+    /// `CCIPResolver.maxRedirects` gateway rounds at
+    /// `CCIPResolver.gatewayTimeout` each would otherwise let a slow
+    /// gateway chain hold a resolution for a minute.
+    static let provenCCIPBudget: TimeInterval = 30
+
+    /// EIP-3668 on a proven tier: gateway hop(s) via `CCIPResolver`,
+    /// with every callback `eth_call` re-executed through `call` — the
+    /// same verifier that produced the revert — so gateway data is only
+    /// ever accepted after the resolver contract validated it under
+    /// proof. The sender must be the Universal Resolver (the contract we
+    /// called). Every failure maps to `ColibriENSError.proofFailed`: a
+    /// gateway outage or a callback revert is not a verified negative,
+    /// so the tier falls through instead of caching "no record".
+    private func provenCCIP(
+        revertHex: String,
+        call: @escaping CCIPResolver.EthCallExecutor
+    ) async throws -> String {
+        guard let revertBytes = revertHex.web3.hexData else {
+            throw ColibriENSError.unexpectedResponse(revertHex)
+        }
+        let http = reverseCCIPHTTP
+        do {
+            return try await RPCSession.withTimeout(seconds: Self.provenCCIPBudget) {
+                try await CCIPResolver.resolve(
+                    revertData: revertBytes,
+                    sender: Self.universalResolverAddress.asString(),
+                    ethCall: call,
+                    http: http,
+                    timeout: CCIPResolver.gatewayTimeout
+                )
+            }
+        } catch let err as CCIPResolver.CCIPError {
+            log.warning("[ens] proven ccip failed: \(String(describing: err), privacy: .public)")
+            throw ColibriENSError.proofFailed(message: "ccip: \(err)")
+        } catch RPCError.executionRevert(let data) {
+            log.warning("[ens] proven ccip callback reverted: \(data ?? "", privacy: .public)")
+            throw ColibriENSError.proofFailed(message: "ccip callback reverted")
+        } catch let err as ColibriENSError {
+            throw err
+        } catch {
+            throw ColibriENSError.proofFailed(message: "ccip: \(error)")
         }
     }
 
@@ -1164,12 +1222,9 @@ final class ENSResolver {
             let name = try await client.universalResolverReverse(address: address)
             return name.isEmpty ? .none : .verified(name: name)
         } catch ColibriENSError.revert(let revertHex) {
-            guard UniversalResolverABI.isReverseAddressMismatch(revertHex: revertHex) else {
-                return .none
+            return try await provenReverseRevert(revertHex) { to, dataHex in
+                try await client.ccipCallback(to: to, dataHex: dataHex)
             }
-            return .unverified(
-                claimedName: UniversalResolverABI.decodeReverseMismatchClaimedName(revertHex: revertHex)
-            )
         }
     }
 
@@ -1183,13 +1238,33 @@ final class ENSResolver {
             let name = try await client.universalResolverReverse(address: address)
             return name.isEmpty ? .none : .verified(name: name)
         } catch ColibriENSError.revert(let revertHex) {
-            guard UniversalResolverABI.isReverseAddressMismatch(revertHex: revertHex) else {
-                return .none
+            return try await provenReverseRevert(revertHex) { to, dataHex in
+                try await client.ccipCallback(to: to, dataHex: dataHex)
             }
+        }
+    }
+
+    /// Shared revert handling for `UR.reverse()` on the proven tiers:
+    /// `ReverseAddressMismatch` is the spoof signal; `OffchainLookup`
+    /// means the primary name lives behind a CCIP gateway (Namestone
+    /// et al.) and is driven through the same verifier; any other
+    /// revert means no primary is set.
+    private func provenReverseRevert(
+        _ revertHex: String,
+        call: @escaping CCIPResolver.EthCallExecutor
+    ) async throws -> ENSReverseResolution {
+        if UniversalResolverABI.isReverseAddressMismatch(revertHex: revertHex) {
             return .unverified(
                 claimedName: UniversalResolverABI.decodeReverseMismatchClaimedName(revertHex: revertHex)
             )
         }
+        if CCIPResolver.selectorOf(revertHex) == CCIPResolver.offchainLookupSelector {
+            guard settings.enableCcipRead else { return .none }
+            let hex = try await provenCCIP(revertHex: revertHex, call: call)
+            let primary = UniversalResolverABI.decodeReverseResponse(hex) ?? ""
+            return primary.isEmpty ? .none : .verified(name: primary)
+        }
+        return .none
     }
 
     /// nil for any shape other than a CCIP-Read-eligible OffchainLookup
@@ -1210,6 +1285,7 @@ final class ENSResolver {
             resultHex = try await RPCSession.withTimeout(seconds: timeout * 2) {
                 try await CCIPResolver.resolve(
                     revertData: revertBytes,
+                    sender: Self.universalResolverAddress.asString(),
                     ethCall: { [transport = self.reverseTransport] target, callHex in
                         try await Self.reverseEthCall(
                             transport: transport,
