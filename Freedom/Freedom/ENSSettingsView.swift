@@ -112,7 +112,7 @@ struct ENSSettingsView: View {
 
     private var methodFooter: String {
         switch settings.ensResolutionMethod {
-        case .myotis:
+        case .myotis, .direct:
             // Not selectable; kept for switch exhaustiveness.
             return ""
         case .colibri:

@@ -17,6 +17,9 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "ChainData"
 protocol ChainDataSource: AnyObject {
     /// For logs.
     var sourceName: String { get }
+    /// Which policy tier this source implements; the router looks
+    /// sources up by it when walking a chain's `readOrder`.
+    var kind: ChainSource { get }
     /// Whether the source can plausibly answer for this chain right now.
     /// False skips it without burning an attempt.
     func isAvailable(chainID: Int) -> Bool
@@ -27,6 +30,18 @@ protocol ChainDataSource: AnyObject {
     func serves(method: String, params: [Any], chainID: Int) -> Bool
     /// The JSON-RPC `result` value (`NSNull` for a well-defined null).
     func result(method: String, params: [Any], chainID: Int) async throws -> Any
+    /// Who vouches for an answer, for the trust sheet: the light client
+    /// label, or the prover host.
+    func evidenceLabel(chainID: Int) -> String
+    /// The verified head the source executes against, when it exposes
+    /// one. Sampled before and after a call so the router only labels
+    /// an answer with a block that stayed stable around it.
+    func verifiedHead(chainID: Int) -> UInt64?
+}
+
+extension ChainDataSource {
+    func evidenceLabel(chainID: Int) -> String { sourceName }
+    func verifiedHead(chainID: Int) -> UInt64? { nil }
 }
 
 /// "This source can't serve the request right now" — the ladder falls
@@ -120,6 +135,7 @@ private extension Data {
 @MainActor
 final class MyotisChainSource: ChainDataSource {
     let sourceName = "myotis"
+    let kind: ChainSource = .myotis
     private let node: MyotisNode
 
     init(node: MyotisNode) {
@@ -128,6 +144,13 @@ final class MyotisChainSource: ChainDataSource {
 
     func isAvailable(chainID: Int) -> Bool {
         chainID >= 0 && node.isReady(chainId: UInt64(chainID))
+    }
+
+    func evidenceLabel(chainID: Int) -> String { ENSResolver.myotisProviderLabel }
+
+    func verifiedHead(chainID: Int) -> UInt64? {
+        guard chainID >= 0, let hex = node.blockNumberHex(chainId: UInt64(chainID)) else { return nil }
+        return UInt64(hex.dropFirst(hex.lowercased().hasPrefix("0x") ? 2 : 0), radix: 16)
     }
 
     func serves(method: String, params: [Any], chainID: Int) -> Bool {
@@ -286,6 +309,7 @@ final class MyotisChainSource: ChainDataSource {
 @MainActor
 final class ColibriChainSource: ChainDataSource {
     let sourceName = "colibri"
+    let kind: ChainSource = .colibri
     private static let supportedChains: Set<Int> = [1, 100]
     private static let servableMethods: Set<String> = ["eth_call", "eth_getBalance"]
 
@@ -301,6 +325,15 @@ final class ColibriChainSource: ChainDataSource {
 
     func isAvailable(chainID: Int) -> Bool {
         Self.supportedChains.contains(chainID)
+    }
+
+    /// The prover host answering for the chain (mainnet honours the
+    /// user's override, other chains use the binding's defaults).
+    func evidenceLabel(chainID: Int) -> String {
+        let prover = chainID == 1
+            ? resolvedMainnetProver
+            : (Colibri.defaultProvers(for: UInt64(max(0, chainID))).first ?? sourceName)
+        return URL(string: prover)?.hostOrAbsolute ?? prover
     }
 
     func serves(method: String, params: [Any], chainID: Int) -> Bool {

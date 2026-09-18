@@ -31,10 +31,14 @@ enum ENSResolutionMethod: String, CaseIterable, Equatable {
     case colibri
     case quorum
     case userConfigured = "user-configured"
+    /// One RPC endpoint's unverified word — the chain-data router's
+    /// last tier. Never an ENS resolution method: kept out of the
+    /// picker, only ever minted by `ChainDataRouter`.
+    case direct
 
     /// The cases the ENS settings method picker offers.
     static var selectableCases: [ENSResolutionMethod] {
-        allCases.filter { $0 != .myotis }
+        allCases.filter { $0 != .myotis && $0 != .direct }
     }
 
     var displayName: String {
@@ -43,6 +47,7 @@ enum ENSResolutionMethod: String, CaseIterable, Equatable {
         case .colibri: "Colibri"
         case .quorum: "Quorum"
         case .userConfigured: "Custom RPC"
+        case .direct: "Direct RPC"
         }
     }
 }

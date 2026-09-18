@@ -1,12 +1,9 @@
 import Foundation
-import OSLog
 
-private let chainDataLog = Logger(subsystem: "com.browser.Freedom", category: "ChainData")
-
-/// Single-shot JSON-RPC with fall-through across a chain's provider list.
-/// Not consensus (that's ENS's job) — a lying RPC here gives the user a
-/// wrong balance, not an attacker-chosen redirect, so the latency cost of
-/// consensus isn't worth it.
+/// Typed façade over `ChainDataRouter` for wallet-internal reads:
+/// `Encodable` params in, `Decodable` results out, provenance dropped.
+/// The router walks the chain's policy (Myotis → Colibri → quorum →
+/// direct); the error cases below are what its walk reports.
 @MainActor
 struct WalletRPC {
     enum Error: Swift.Error, LocalizedError {
@@ -40,25 +37,31 @@ struct WalletRPC {
         }
     }
 
-    /// Single-URL transport. Takes pre-encoded JSON, returns the raw
-    /// response body. Default delegates to `RPCSession.postBytes` with an
-    /// 8s per-URL timeout; tests inject a stub.
+    /// Single-URL transport as the wallet tests inject it: pre-encoded
+    /// JSON in, raw response body out. The router's own transport
+    /// additionally takes the per-source timeout; a wrapped test
+    /// transport ignores it.
     typealias Transport = @Sendable (URL, Data) async throws -> Data
 
-    /// `-32602 Invalid params` (EIP-1474). Every well-behaved server would
-    /// reject the same way, so iteration won't help — short-circuit.
-    private static let invalidParamsCode = -32602
+    /// The router every read goes through. Exposed so the dapp bridge
+    /// and the onchain-app loader can route with a page context and
+    /// still share this instance's transport (tests inject one here).
+    let router: ChainDataRouter
 
-    let registry: ChainRegistry
-    let transport: Transport
-
-    init(registry: ChainRegistry, transport: @escaping Transport = WalletRPC.defaultTransport) {
-        self.registry = registry
-        self.transport = transport
+    /// Production: the router with its default timeout-aware transport.
+    init(registry: ChainRegistry) {
+        self.router = ChainDataRouter(registry: registry)
     }
 
-    nonisolated static let defaultTransport: Transport = { url, body in
-        try await RPCSession.postBytes(url: url, body: body, timeout: 8)
+    /// Tests: a two-argument transport stub, wrapped for the router.
+    init(registry: ChainRegistry, transport: @escaping Transport) {
+        self.router = ChainDataRouter(registry: registry, transport: { url, body, _ in
+            try await transport(url, body)
+        })
+    }
+
+    init(router: ChainDataRouter) {
+        self.router = router
     }
 
     func call<P: Encodable, R: Decodable>(
@@ -66,9 +69,14 @@ struct WalletRPC {
         params: P,
         on chain: Chain
     ) async throws -> R {
-        // fanOut(allowNull: false) never returns nil — a nil result buckets
-        // into transportErrors and eventually throws `allProvidersFailed`.
-        try await fanOut(method: method, params: params, on: chain, allowNull: false)!
+        let result = try await router.request(
+            chainID: chain.id,
+            method: method,
+            params: try Self.jsonParams(params),
+            options: .init(rejectNull: true)
+        ).result
+        guard let value: R = Self.decode(result) else { throw Error.invalidResponse }
+        return value
     }
 
     /// Convenience for no-params calls like `eth_blockNumber`. Separate
@@ -86,169 +94,33 @@ struct WalletRPC {
         params: P,
         on chain: Chain
     ) async throws -> R? {
-        try await fanOut(method: method, params: params, on: chain, allowNull: true)
+        let result = try await router.request(
+            chainID: chain.id,
+            method: method,
+            params: try Self.jsonParams(params)
+        ).result
+        if result is NSNull { return nil }
+        guard let value: R = Self.decode(result) else { throw Error.invalidResponse }
+        return value
     }
 
-    /// Typed fan-out: encodes an `Encodable` request once, decodes the
-    /// envelope via `JSONDecoder`. `allowNull` controls whether an envelope
-    /// with `"result": null` is treated as a successful nil response (used
-    /// by `eth_getTransactionByHash`) or as malformed and retry-next-URL.
-    private func fanOut<P: Encodable, R: Decodable>(
-        method: String,
-        params: P,
-        on chain: Chain,
-        allowNull: Bool
-    ) async throws -> R? {
-        let body = try RPCSession.encoder.encode(Request(method: method, params: params))
-        return try await fanOutBody(body, on: chain) { data -> ParseResult<R?> in
-            do {
-                let envelope = try RPCSession.decoder.decode(RPCSession.Response<R>.self, from: data)
-                if let err = envelope.error {
-                    return .rpcError(code: err.code, message: err.message, hasRevertData: err.data != nil)
-                }
-                if let result = envelope.result {
-                    return .success(result)
-                }
-                return allowNull ? .success(nil) : .malformed(Error.invalidResponse)
-            } catch {
-                return .malformed(error)
-            }
+    /// `Encodable` params → the Foundation JSON array the router and its
+    /// sources work on. One round trip through `JSONEncoder`, so the
+    /// bytes every tier sees are the ones the typed API always sent.
+    private static func jsonParams<P: Encodable>(_ params: P) throws -> [Any] {
+        let data = try RPCSession.encoder.encode(params)
+        let object = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+        return object as? [Any] ?? []
+    }
+
+    /// Foundation JSON value → the caller's `Decodable`. Nil when the
+    /// shape does not match (a provider quirk the caller reports as
+    /// `invalidResponse`).
+    private static func decode<R: Decodable>(_ value: Any) -> R? {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]) else {
+            return nil
         }
-    }
-
-    private enum ParseResult<T> {
-        case success(T)
-        /// `hasRevertData` flags an EIP-474 execution revert (`error.data`
-        /// populated). Deterministic protocol answer → short-circuit.
-        case rpcError(code: Int, message: String, hasRevertData: Bool)
-        case malformed(Swift.Error)
-    }
-
-    /// Walks the chain's verified sources (Myotis → Colibri, desktop
-    /// chain-data-router parity), then iterates the RPC pool's URLs;
-    /// tries next on transport / malformed failure. Short-circuits on
-    /// protocol-deterministic RPC errors (execution revert, `-32602`,
-    /// `insufficient funds`). Other RPC errors iterate but don't
-    /// quarantine — a JSON-RPC envelope means transport-healthy.
-    private func fanOutBody<T>(
-        _ body: Data,
-        on chain: Chain,
-        parse: (Data) -> ParseResult<T>
-    ) async throws -> T {
-        if let value: T = try await verifiedSourcesResult(body, on: chain, parse: parse) {
-            return value
-        }
-        let urls = registry.rpcURLs(for: chain)
-        guard !urls.isEmpty else { throw Error.noProviders }
-        var errors: [Swift.Error] = []
-        for url in urls {
-            try Task.checkCancellation()
-
-            let data: Data
-            do {
-                data = try await transport(url, body)
-            } catch {
-                // Cancellation isn't a provider fault — rethrow without
-                // touching quarantine.
-                if error is CancellationError || (error as? URLError)?.code == .cancelled {
-                    throw error
-                }
-                registry.markFailure(url: url, on: chain)
-                errors.append(error)
-                continue
-            }
-            switch parse(data) {
-            case .success(let value):
-                registry.markSuccess(url: url, on: chain)
-                return value
-            case .rpcError(let code, let message, let hasRevertData):
-                if Self.isInsufficientFunds(message: message) {
-                    throw Error.insufficientFunds(message: message)
-                }
-                if hasRevertData || code == Self.invalidParamsCode {
-                    throw Error.rpc(code: code, message: message)
-                }
-                // Don't mark — provider responded correctly per JSON-RPC spec.
-                errors.append(Error.rpc(code: code, message: message))
-            case .malformed(let err):
-                registry.markFailure(url: url, on: chain)
-                errors.append(err)
-            }
-        }
-        throw Error.allProvidersFailed(errors)
-    }
-
-    /// Substring match is fragile across exotic clients but covers the
-    /// common public-RPC universe (geth/erigon/anvil all carry
-    /// "insufficient funds" in the message).
-    private static func isInsufficientFunds(message: String) -> Bool {
-        message.lowercased().contains("insufficient funds")
-    }
-
-    // MARK: - Verified source ladder
-
-    /// Try the registry's verified sources in order before touching the
-    /// pool. Returns nil when no source served (fall through to URLs).
-    /// A `ChainSourceUnavailable` (or any non-deterministic source
-    /// failure) falls through silently; a `WalletRPC.Error` from a
-    /// source is a verified deterministic answer and rethrows —
-    /// exactly the ENS-tier discipline, applied to wallet reads.
-    private func verifiedSourcesResult<T>(
-        _ body: Data,
-        on chain: Chain,
-        parse: (Data) -> ParseResult<T>
-    ) async throws -> T? {
-        guard !registry.verifiedSources.isEmpty,
-              let (method, params) = Self.decodeRequest(body) else { return nil }
-        for source in registry.verifiedSources {
-            guard source.isAvailable(chainID: chain.id),
-                  source.serves(method: method, params: params, chainID: chain.id) else { continue }
-            try Task.checkCancellation()
-            do {
-                let result = try await source.result(method: method, params: params, chainID: chain.id)
-                // Re-wrap as a standard envelope so the caller's existing
-                // parse closure (typed or untyped) consumes it unchanged.
-                let envelope = try JSONSerialization.data(withJSONObject: [
-                    "jsonrpc": "2.0", "id": 1, "result": result,
-                ])
-                if case .success(let value) = parse(envelope) {
-                    chainDataLog.info(
-                        "[chain-data] \(method, privacy: .public) chain=\(chain.id) via \(source.sourceName, privacy: .public)"
-                    )
-                    return value
-                }
-                // The source answered but the caller's decoder didn't
-                // accept the shape — treat as unserved, fall through.
-            } catch let error as Error {
-                throw error
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let error as ChainSourceUnavailable {
-                // Expected during warm-up / peer churn — next source. The
-                // reason makes a one-shot degradation (e.g. a transient
-                // mainnet snap-state miss answered by Colibri instead)
-                // self-explaining in the field.
-                chainDataLog.info(
-                    "[chain-data] \(method, privacy: .public) chain=\(chain.id) \(source.sourceName, privacy: .public) unavailable: \(error.reason, privacy: .public) — falling through"
-                )
-                continue
-            } catch {
-                chainDataLog.info(
-                    "[chain-data] \(method, privacy: .public) chain=\(chain.id) \(source.sourceName, privacy: .public) failed: \(String(describing: error), privacy: .public) — falling through"
-                )
-                continue
-            }
-        }
-        return nil
-    }
-
-    /// `(method, params)` out of an encoded request body, for source
-    /// gating. Nil for anything unexpectedly shaped — the pool then
-    /// handles it as before.
-    private static func decodeRequest(_ body: Data) -> (method: String, params: [Any])? {
-        guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let method = obj["method"] as? String else { return nil }
-        return (method, obj["params"] as? [Any] ?? [])
+        return try? RPCSession.decoder.decode(R.self, from: data)
     }
 
     // MARK: - Typed methods
@@ -325,27 +197,7 @@ struct WalletRPC {
     /// type, so params + return are `Any` / `[Any]` and we encode via
     /// `JSONSerialization` instead of `Encodable`.
     func callJSON(method: String, params: [Any], on chain: Chain) async throws -> Any {
-        let body = try JSONSerialization.data(withJSONObject: [
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": params,
-        ])
-        return try await fanOutBody(body, on: chain) { data -> ParseResult<Any> in
-            guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return .malformed(Error.invalidResponse)
-            }
-            if let errObj = envelope["error"] as? [String: Any] {
-                let code = errObj["code"] as? Int ?? 0
-                let message = errObj["message"] as? String ?? "unknown error"
-                let hasRevertData = errObj["data"] is String
-                return .rpcError(code: code, message: message, hasRevertData: hasRevertData)
-            }
-            if let result = envelope["result"] {
-                return .success(result)
-            }
-            return .malformed(Error.invalidResponse)
-        }
+        try await router.request(chainID: chain.id, method: method, params: params).result
     }
 
     struct TransactionInfo: Decodable {
@@ -358,12 +210,5 @@ struct WalletRPC {
     /// malformed envelope.
     func getTransaction(hash: String, on chain: Chain) async throws -> TransactionInfo? {
         try await callOptional("eth_getTransactionByHash", params: [hash], on: chain)
-    }
-
-    private struct Request<P: Encodable>: Encodable {
-        let jsonrpc: String = "2.0"
-        let id: Int = 1
-        let method: String
-        let params: P
     }
 }

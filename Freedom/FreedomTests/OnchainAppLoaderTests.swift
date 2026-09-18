@@ -13,6 +13,7 @@ final class OnchainAppLoaderTests: XCTestCase {
 
     private final class FakeSource: ChainDataSource {
         let sourceName: String
+        let kind: ChainSource = .myotis
         var available = true
         var result: Result<Any, Error>?
         var calls = 0
