@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 import SwiftData
 import SwarmKit
 import IPFSKit
@@ -287,6 +288,7 @@ struct FreedomApp: App {
                 .task { await startNodeIfNeeded() }
                 .task { startIpfsIfNeeded() }
                 .task { startMyotisIfNeeded() }
+                .task { await debugResolveIfRequested() }
                 .task { await startRadicleIfNeeded() }
                 .task { beeReadiness.start() }
                 .task { stampService.start() }
@@ -340,6 +342,37 @@ struct FreedomApp: App {
         guard ipfs.status == .idle else { return }
         let config = settings.ipfsConfig(dataDir: IPFSNode.defaultDataDir())
         ipfs.start(config)
+    }
+
+    /// Smoke-test hook (DEBUG builds only): `FREEDOM_DEBUG_RESOLVE=<name>`
+    /// in the launch environment resolves that name once the mainnet
+    /// light client reports ready (or after 90 s regardless) and logs the
+    /// serving tier, so a simulator run can prove which tier answered
+    /// without anyone typing into the URL bar
+    /// (`log stream --predicate 'category == "DebugResolve"'`).
+    private func debugResolveIfRequested() async {
+        #if DEBUG
+        guard let name = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_RESOLVE"], !name.isEmpty else { return }
+        let log = Logger(subsystem: "com.browser.Freedom", category: "DebugResolve")
+        let deadline = Date().addingTimeInterval(90)
+        while !myotis.isReady(chainId: MyotisNetwork.mainnet.chainId), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        // Six attempts, 30 s apart, caches swept between them: shows
+        // whether a tier failure is a warm-up transient or persistent.
+        for attempt in 1...6 {
+            ensResolver.sweepResultCaches()
+            let chain = myotis.chainStatus[1]
+            log.notice("[debug-resolve] attempt \(attempt) \(name, privacy: .public) myotisReady=\(myotis.isReady(chainId: 1), privacy: .public) snapPeers=\(chain?.snapPeers ?? -1) head=\(chain?.executionBlockNumber ?? 0) finalized=\(chain?.finalizedBlockNumber ?? 0)")
+            do {
+                let content = try await ensResolver.resolveContent(name)
+                log.notice("[debug-resolve] attempt \(attempt) → \(content.uri.absoluteString, privacy: .public) method=\(content.trust.method.rawValue, privacy: .public) level=\(String(describing: content.trust.level), privacy: .public)")
+            } catch {
+                log.notice("[debug-resolve] attempt \(attempt) failed: \(String(describing: error), privacy: .public)")
+            }
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+        }
+        #endif
     }
 
     /// Brings the Myotis light client up alongside the other embedded
