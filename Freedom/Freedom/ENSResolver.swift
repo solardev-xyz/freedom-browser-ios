@@ -114,6 +114,39 @@ final class ENSResolver {
         reverseCache.removeAll()
     }
 
+    // MARK: - Myotis takeover
+
+    /// Cache life of an answer a LOWER tier minted while the Myotis node
+    /// reported itself available but its read fell through. Right after
+    /// SYNCED the engine's snap pool can lag the verified tip for a
+    /// minute or two ("peer returned 0 headers") and every P2P read
+    /// fails; pinning the Colibri/quorum answer for the verified 15 min
+    /// would keep showing the lower tier long after the node can serve.
+    /// Observed on the simulator: attempts 1–3 fell through, 4+ were
+    /// P2P-verified.
+    static let takeoverTTL: TimeInterval = 60
+
+    /// True after a Myotis read fell through while the node was
+    /// available; the first P2P-verified answer afterwards drops the
+    /// result caches so other names cached from lower tiers in the
+    /// meantime get their P2P attempt immediately.
+    private var myotisFellThrough = false
+
+    private func noteMyotisFallthrough() {
+        myotisFellThrough = true
+    }
+
+    private func noteMyotisServed() {
+        guard myotisFellThrough else { return }
+        myotisFellThrough = false
+        // Drop cached results only — in-flight resolutions (including
+        // the one calling this) finish and cache normally.
+        cache.removeAll()
+        addressCache.removeAll()
+        reverseCache.removeAll()
+        log.info("[ens] myotis serving again — dropped lower-tier cached results for takeover")
+    }
+
     /// Resolve an ENS name to a navigable content URL. Normalizes via
     /// ENSIP-15 (adraffy/ENSNormalize), computes the namehash, runs the
     /// consensus pipeline, decodes the contenthash. Concurrent calls for
@@ -155,11 +188,20 @@ final class ENSResolver {
         if outcome.isCacheable {
             cache[normalized] = CacheEntry(
                 outcome: outcome,
-                expiresAt: clock().addingTimeInterval(outcome.ttl)
+                expiresAt: clock().addingTimeInterval(effectiveTTL(outcome))
             )
             capCache()
         }
         inFlight.removeValue(forKey: normalized)
+    }
+
+    /// The outcome's own TTL, capped at `takeoverTTL` when a lower tier
+    /// answered although Myotis was available (its read fell through).
+    private func effectiveTTL(_ outcome: CachedOutcome) -> TimeInterval {
+        guard let myotis, myotis.isAvailable else { return outcome.ttl }
+        if case .success(let content) = outcome, content.trust.method == .myotis { return outcome.ttl }
+        if case .failure(.notFound(_, let trust)) = outcome, trust.method == .myotis { return outcome.ttl }
+        return min(outcome.ttl, Self.takeoverTTL)
     }
 
     // Desktop's policy: when over the cap, drop expired entries first;
@@ -331,14 +373,17 @@ final class ENSResolver {
         // pipeline).
         if let myotis, myotis.isAvailable {
             do {
-                return try await tryMyotis(
+                let result = try await tryMyotis(
                     dnsEncodedName: dnsEncodedName, callData: callData,
                     client: myotis, system: system
                 )
+                noteMyotisServed()
+                return result
             } catch let err as ColibriENSError {
                 log.info(
                     "[ens] myotis-fallthrough error=\(String(describing: err), privacy: .public)"
                 )
+                noteMyotisFallthrough()
                 // fall through to Colibri / quorum
             }
         }
@@ -939,11 +984,14 @@ final class ENSResolver {
         // resolution.
         if let myotis, myotis.isAvailable {
             do {
-                return try await myotisReverse(address: address, client: myotis)
+                let result = try await myotisReverse(address: address, client: myotis)
+                noteMyotisServed()
+                return result
             } catch let err as ColibriENSError {
                 log.info(
                     "[ens] myotis-fallthrough reverse address=\(address.asString(), privacy: .public) error=\(String(describing: err), privacy: .public)"
                 )
+                noteMyotisFallthrough()
             }
         }
 

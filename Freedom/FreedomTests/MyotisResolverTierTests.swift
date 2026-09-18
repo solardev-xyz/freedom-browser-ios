@@ -169,6 +169,59 @@ final class MyotisResolverTierTests: XCTestCase {
         )
     }
 
+    /// Right after SYNCED the engine's reads can fail for a minute or
+    /// two (snap peers lag the verified tip) while the node reports
+    /// available. The lower-tier answer minted meanwhile must not pin
+    /// for the verified 15 min: it expires after `takeoverTTL`, and the
+    /// first P2P-verified answer drops other cached lower-tier results.
+    func testLowerTierAnswerWhileMyotisFallsThroughExpiresQuickly() async throws {
+        let sampleHashHex = "c0b683a3be2593bc7e22d252a371bac921bf47d11c3f3c1680ee60e6b8ccfcc8"
+        let bzzContenthash = Data([0xe4, 0x01, 0x01, 0xfa, 0x01, 0x1b, 0x20])
+            + Data(hex: "0x\(sampleHashHex)")!
+        let encoded = abiEncodeBytes(bzzContenthash)
+        var engineServes = false
+        let myotis = MyotisENSClient(
+            availability: { true },
+            ethCall: { _, _ in
+                engineServes
+                    ? .ok(resultHex: encoded.web3.hexString)
+                    : .unavailable(reason: "all 2 snap peer(s) failed to serve a verifiable block")
+            }
+        )
+        settings.ensResolutionMethod = .quorum
+        settings.enableEnsQuorum = false
+        settings.ensPublicRpcProviders = [alpha.absoluteString]
+        let resolver = ENSResolver(
+            pool: pool, settings: settings, anchor: makeAnchor(),
+            legRunner: makeLegRunner([
+                alpha: .data(resolvedData: encoded, resolverAddress: sampleResolver),
+            ]),
+            clock: { [unowned self] in self.clock.now },
+            myotis: myotis
+        )
+
+        // Engine read fails → lower tier answers, cached with the short TTL.
+        let first = try await resolver.resolveContent("swarmit.wei")
+        XCTAssertNotEqual(first.trust.method, .myotis)
+        let other = try await resolver.resolveContent("other.wei")
+        XCTAssertNotEqual(other.trust.method, .myotis)
+
+        engineServes = true
+        clock.now = clock.now.addingTimeInterval(30)
+        let cached = try await resolver.resolveContent("swarmit.wei")
+        XCTAssertNotEqual(cached.trust.method, .myotis, "still inside the takeover window")
+
+        clock.now = clock.now.addingTimeInterval(ENSResolver.takeoverTTL)
+        let takenOver = try await resolver.resolveContent("swarmit.wei")
+        XCTAssertEqual(takenOver.trust.method, .myotis, "expired after takeoverTTL, not 15 min")
+        XCTAssertEqual(takenOver.contentRef, sampleHashHex)
+
+        // The first P2P answer also dropped the other name's cached
+        // lower-tier result (its own TTL was still running).
+        let otherAgain = try await resolver.resolveContent("other.wei")
+        XCTAssertEqual(otherAgain.trust.method, .myotis)
+    }
+
     func testSweepResultCachesEnablesImmediateTakeover() async throws {
         // Prime the content cache through the fallback tier while the
         // client is not ready, flip it ready, and prove: (a) without a
