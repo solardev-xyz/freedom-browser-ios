@@ -55,7 +55,7 @@ enum QuorumLeg {
                 let reason: ENSNotFoundReason = enableCcipRead ? .noContenthash : .ccipDisabled
                 return .init(url: url, kind: .notFound(reason: reason))
             }
-            let isNoResolver = selector.map(resolverNotFoundSelectors.contains) ?? false
+            let isNoResolver = selector.map(UniversalResolverABI.resolverNotFoundSelectors.contains) ?? false
             return .init(url: url, kind: .notFound(reason: isNoResolver ? .noResolver : .noContenthash))
         } catch let err as CCIPResolver.CCIPError {
             // Every CCIP-transport failure (gateways unreachable, 4xx,
@@ -148,13 +148,6 @@ enum QuorumLeg {
             }
         }
     }
-
-    // UR custom-error selectors (first 4 bytes of keccak256(signature)).
-    // https://docs.ens.domains/resolvers/universal/
-    private static let resolverNotFoundSelectors: Set<String> = [
-        "0x77209fe8",  // ResolverNotFound(bytes)
-        "0x1e9535f2",  // ResolverNotContract(bytes,address)
-    ]
 
     // MARK: JSON-RPC transport
 

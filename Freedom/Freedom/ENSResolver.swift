@@ -573,11 +573,16 @@ final class ENSResolver {
                 throw ColibriENSError.proofFailed(
                     message: "verified revert without return data — falling back to quorum"
                 )
-            case .verifiedNotFound:
-                // Verified revert with a real (non-CCIP) payload — a genuine
-                // "no contenthash" outcome, same as desktop's NO_CONTENTHASH
-                // bucket.
-                return .notFound(reason: .noContenthash, trust: trust)
+            case .resolverNotFound:
+                // The UR proved no resolver is registered — desktop's
+                // NO_RESOLVER bucket.
+                return .notFound(reason: .noResolver, trust: trust)
+            case .executionError:
+                // A proved resolver failure is not proof of an absent
+                // record; let the next configured method try.
+                throw ColibriENSError.proofFailed(
+                    message: "resolver execution error \(CCIPResolver.selectorOf(revertHex) ?? "") — falling back"
+                )
             }
         }
     }
@@ -623,8 +628,12 @@ final class ENSResolver {
                 throw ColibriENSError.proofFailed(
                     message: "verified revert without return data — falling through"
                 )
-            case .verifiedNotFound:
-                return .notFound(reason: .noContenthash, trust: trust)
+            case .resolverNotFound:
+                return .notFound(reason: .noResolver, trust: trust)
+            case .executionError:
+                throw ColibriENSError.proofFailed(
+                    message: "resolver execution error \(CCIPResolver.selectorOf(revertHex) ?? "") — falling through"
+                )
             }
         }
     }
@@ -674,21 +683,33 @@ final class ENSResolver {
         }
     }
 
-    /// How a verified Colibri revert should be handled. Pure so the
-    /// decision table is unit-testable without a live prover.
+    /// How a verified revert from a proven tier should be handled. Pure
+    /// so the decision table is unit-testable without a live prover.
     enum ColibriRevertClass: Equatable {
+        /// EIP-3668: the record lives behind a gateway.
         case offchainLookup
+        /// No return data — a degraded prover hop can surface this shape.
         case dataless
-        case verifiedNotFound
+        /// The UR's own "no resolver" errors: a verified negative.
+        case resolverNotFound
+        /// Any other revert. The resolver *ran and failed* (a DNSSEC
+        /// `SignatureNotValidYet`, an unsupported profile, a custom
+        /// error) — proof that execution failed, not proof that the
+        /// record is absent. Desktop PR #352: let the next method try.
+        case executionError
     }
 
     static func classifyColibriRevert(_ revertHex: String) -> ColibriRevertClass {
-        if CCIPResolver.selectorOf(revertHex) == CCIPResolver.offchainLookupSelector {
+        let selector = CCIPResolver.selectorOf(revertHex)
+        if selector == CCIPResolver.offchainLookupSelector {
             return .offchainLookup
+        }
+        if let selector, UniversalResolverABI.resolverNotFoundSelectors.contains(selector) {
+            return .resolverNotFound
         }
         let stripped = revertHex.lowercased().hasPrefix("0x")
             ? revertHex.dropFirst(2) : revertHex[...]
-        return stripped.isEmpty ? .dataless : .verifiedNotFound
+        return stripped.isEmpty ? .dataless : .executionError
     }
 
     private func buildColibriTrust(
@@ -1247,8 +1268,9 @@ final class ENSResolver {
     /// Shared revert handling for `UR.reverse()` on the proven tiers:
     /// `ReverseAddressMismatch` is the spoof signal; `OffchainLookup`
     /// means the primary name lives behind a CCIP gateway (Namestone
-    /// et al.) and is driven through the same verifier; any other
-    /// revert means no primary is set.
+    /// et al.) and is driven through the same verifier; the UR's
+    /// not-found errors mean no primary is set; anything else is a
+    /// proved execution failure and falls through to the next tier.
     private func provenReverseRevert(
         _ revertHex: String,
         call: @escaping CCIPResolver.EthCallExecutor
@@ -1258,13 +1280,17 @@ final class ENSResolver {
                 claimedName: UniversalResolverABI.decodeReverseMismatchClaimedName(revertHex: revertHex)
             )
         }
-        if CCIPResolver.selectorOf(revertHex) == CCIPResolver.offchainLookupSelector {
+        switch Self.classifyColibriRevert(revertHex) {
+        case .offchainLookup:
             guard settings.enableCcipRead else { return .none }
             let hex = try await provenCCIP(revertHex: revertHex, call: call)
             let primary = UniversalResolverABI.decodeReverseResponse(hex) ?? ""
             return primary.isEmpty ? .none : .verified(name: primary)
+        case .resolverNotFound:
+            return .none
+        case .dataless, .executionError:
+            throw ColibriENSError.proofFailed(message: "reverse resolver execution error — falling through")
         }
-        return .none
     }
 
     /// nil for any shape other than a CCIP-Read-eligible OffchainLookup

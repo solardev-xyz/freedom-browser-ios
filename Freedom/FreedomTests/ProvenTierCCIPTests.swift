@@ -204,6 +204,66 @@ final class ProvenTierCCIPTests: XCTestCase {
         XCTAssertEqual(trust.method, .myotis)
     }
 
+    // MARK: - Revert classification on the tier
+
+    /// `ResolverNotFound` is the UR proving no resolver serves the name:
+    /// a verified `.noResolver` under the tier's trust.
+    func testResolverNotFoundIsAProvenNegative() async throws {
+        let client = MyotisENSClient(
+            availability: { true },
+            ethCall: { _, _ in .revert(dataHex: "0x77209fe8" + String(repeating: "0", count: 64)) }
+        )
+        let result = try await resolver(myotis: client, http: gatewayHTTP()).consensusResolve(
+            dnsEncodedName: Data([0x01]), callData: Data([0x02])
+        )
+        guard case .notFound(let reason, let trust) = result else {
+            return XCTFail("expected .notFound, got \(result)")
+        }
+        XCTAssertEqual(reason, .noResolver)
+        XCTAssertEqual(trust.method, .myotis)
+    }
+
+    /// Any other revert is a proved execution failure (DNSSEC
+    /// `SignatureNotValidYet`, a custom resolver error) and must let the
+    /// next method try rather than be cached as "no record".
+    func testResolverExecutionErrorFallsThrough() async throws {
+        let client = MyotisENSClient(
+            availability: { true },
+            ethCall: { _, _ in .revert(dataHex: "0x08c379a0" + String(repeating: "ab", count: 64)) }
+        )
+        let result = try await resolver(myotis: client, http: gatewayHTTP()).consensusResolve(
+            dnsEncodedName: Data([0x01]), callData: Data([0x02])
+        )
+        guard case .data(let bytes, _, let trust) = result else {
+            return XCTFail("expected quorum fallback .data, got \(result)")
+        }
+        XCTAssertEqual(bytes, Data([0xFB]))
+        XCTAssertNotEqual(trust.method, .myotis)
+    }
+
+    func testReverseExecutionErrorFallsThroughToNextTier() async throws {
+        // The Myotis tier fails with an execution error; the quorum
+        // reverse transport then answers. A `.none` from Myotis would
+        // have been cached instead.
+        let client = MyotisENSClient(
+            availability: { true },
+            ethCall: { _, _ in .revert(dataHex: "0x08c379a0" + String(repeating: "ab", count: 64)) }
+        )
+        let encoder = ABIFunctionEncoder("_")
+        try encoder.encode("fallback.eth")
+        try encoder.encode(resolverAddress)
+        try encoder.encode(resolverAddress)
+        let tuple = Data(try encoder.encoded().dropFirst(4)).web3.hexString
+        let envelope = try rpcResult(tuple)
+        let resolver = ENSResolver(
+            pool: pool, settings: settings, anchor: makeAnchor(),
+            reverseTransport: { _, _, _ in envelope },
+            myotis: client
+        )
+        let result = try await resolver.reverseResolve(address: "0xd8da6bf26964af9d7eed9e03e53415d37aa96045")
+        XCTAssertEqual(result, .verified(name: "fallback.eth"))
+    }
+
     // MARK: - Reverse
 
     func testReversePrimaryBehindGatewayResolvesOnTheProvenTier() async throws {

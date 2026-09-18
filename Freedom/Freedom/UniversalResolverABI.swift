@@ -23,6 +23,15 @@ enum UniversalResolverABI {
     /// primary name vs. other-chain primary names.
     static let ethereumCoinType: BigUInt = 60
 
+    /// UR custom errors that prove no resolver serves the name. Every
+    /// other revert is a resolver *execution* failure and must not be
+    /// read as an absent record (desktop `UR_NOT_FOUND_SELECTORS`).
+    /// Selectors are bytes4(keccak256(signature)), lowercase `0x` hex.
+    static let resolverNotFoundSelectors: Set<String> = [
+        "0x77209fe8",  // ResolverNotFound(bytes)
+        "0x1e9535f2",  // ResolverNotContract(bytes,address)
+    ]
+
     /// UR custom-error selector for `ReverseAddressMismatch(string,bytes)`.
     /// The contract reverts with this when an address's reverse record
     /// claims a primary name that doesn't forward-resolve back to the

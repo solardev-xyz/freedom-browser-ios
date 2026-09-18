@@ -210,18 +210,18 @@ final class ENSResolverTests: XCTestCase {
 
     // MARK: - Colibri revert classification (freedom-browser #116 parity)
 
-    /// A verified revert only counts as "no contenthash" when it carries
-    /// return data. A dataless revert can be a degraded prover hop and
-    /// must fall back to the quorum path instead of minting a verified
-    /// negative.
+    /// Only the UR's own not-found errors are a verified negative. A
+    /// dataless revert can be a degraded prover hop, and any other
+    /// payload is a proved resolver *execution* failure (e.g. DNSSEC
+    /// `SignatureNotValidYet`); both must fall through instead of
+    /// minting a verified "no record" (desktop PR #352).
     func testColibriRevertClassification() {
         XCTAssertEqual(ENSResolver.classifyColibriRevert("0x"), .dataless)
         XCTAssertEqual(ENSResolver.classifyColibriRevert(""), .dataless)
-        // Any real payload (e.g. an unknown UR custom error selector) is a
-        // verified negative.
-        XCTAssertEqual(ENSResolver.classifyColibriRevert("0x77209fe8"), .verifiedNotFound)
+        XCTAssertEqual(ENSResolver.classifyColibriRevert("0x77209fe8"), .resolverNotFound)
+        XCTAssertEqual(ENSResolver.classifyColibriRevert("0x1E9535F2" + String(repeating: "0", count: 64)), .resolverNotFound)
         XCTAssertEqual(
-            ENSResolver.classifyColibriRevert("0xdeadbeef00000000"), .verifiedNotFound
+            ENSResolver.classifyColibriRevert("0xdeadbeef00000000"), .executionError
         )
         // OffchainLookup (EIP-3668) routes to the CCIP-capable quorum path.
         let lookup = encodeOffchainLookupRevert(
