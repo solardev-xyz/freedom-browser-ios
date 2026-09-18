@@ -123,9 +123,20 @@ Plus one advanced flag not mirrored from desktop:
 
 `SettingsView.swift` is the UI — a Form reached from the ⋯ menu with sections for Custom RPC, Quorum (K/M/timeout/anchor), Public RPC Providers (editable list), Safety, and Advanced. Tapping Done calls `ENSResolver.invalidate()` which clears the name cache, cancels in-flight Tasks, and resets both the anchor cache and provider pool — so the next navigation runs against the new config.
 
+## ENSv2 readiness (2026-09)
+
+Mirrors desktop PR #352 against the [ENSv2 readiness guide](https://docs.ens.domains/web/ensv2-readiness/). Live verification and the remaining limits are in `docs/audits/ensv2-readiness.md`.
+
+- **Universal Resolver everywhere.** Every tier — Myotis (generic proven `eth_call`), Colibri, quorum, direct — enters the canonical UR proxy. There is no legacy-registry path.
+- **CCIP-Read on the proven tiers.** `tryMyotis` / `tryColibri` drive an `OffchainLookup` through `CCIPResolver` with the callback re-executed by the same verifier (`ENSResolver.provenCCIP`), so gateway-backed names keep proven trust. The sender check, a 4 MiB gateway cap and a 15 s per-gateway budget apply; gateway outages and callback reverts fall through rather than minting a proven negative. Same for `UR.reverse`.
+- **Revert classification** (`ENSResolver.classifyColibriRevert`): `OffchainLookup` → CCIP; `ResolverNotFound` / `ResolverNotContract` (`UniversalResolverABI.resolverNotFoundSelectors`) → verified `.noResolver`; dataless → fall through; anything else is a proved *execution* failure (e.g. DNSSEC `SignatureNotValidYet`) → fall through to the next method.
+- **Chain-scoped addresses.** `resolveAddress(_:chainID:)` uses `addr(bytes32)` on mainnet and `addr(bytes32,uint256)` with the ENSIP-11 coin type (`0x80000000 | chainId`) elsewhere; address and reverse caches are keyed `"<chainId>:<name>"` off mainnet; an absent L2 record is `.emptyAddress`, never the L1 address; WNS/GNS throw `.notSupportedOnChain` off mainnet. `reverseResolve(address:chainID:)` passes the coin type to `UR.reverse` (ENSIP-19).
+- **Candidates.** `NameSystem.isPotentialEnsName` — any dot-separated string without whitespace, `/ : @ ? # % \` or control characters and no empty label. Applied where the user asked for a name: the wallet recipient field, `ens://`, and `bzz://` / `ipfs://` name hosts (`URL.ensName` is scheme-aware). Bare DNS in the address bar stays HTTPS; `ipns://<dns>` stays DNSLink; `NameSystem.isKnownIpfsGatewayHost` keeps gateway-form `ipfs://ipfs.io/ipfs/<cid>` out of the name path. A DNS ENS name with an IPNS contenthash loads by content key.
+- **Direct tier** (`ENSResolver.resolveDirect`) walks the non-quarantined pool instead of trusting the first shuffled provider.
+
 ## UI surface (M4.8 → M4.11)
 
-- **Address bar input**: `BrowserURL.parse` detects bare `name.eth`, `ens://name.eth` literal, and `https://name.eth` (no DNS `.eth` TLD exists, so routing to ENS is unambiguous).
+- **Address bar input**: `BrowserURL.parse` detects bare `name.eth`, `ens://<any candidate>` literal, and `https://name.eth` (no DNS `.eth` TLD exists, so routing to ENS is unambiguous). Bare Unicode names with a path tail (`🦇.eth/blog`) are parsed by hand rather than through `URL`.
 - **Resolve banner**: "Resolving `name.eth`…" above the progress bar while the consensus pass is in flight.
 - **Trust shield** (`TrustShield.swift`): small colored shield icon to the left of the address-bar text field, bound to `tab.currentTrust`. Tap opens a sheet listing agreed / dissented / silent providers + the pinned block.
 - **Interstitials** (`ENSInterstitial.swift`): replace the webview area (not overlay) when `tab.pendingGate` is set.
@@ -149,7 +160,7 @@ CCIP failures (all gateways unreachable, 4xx, too many redirects, parse error) s
 
 ## What's deliberately not in M4
 
-- **Reverse resolution** (`addr` → `name`). Lands with the wallet.
+- **Reverse resolution** (`addr` → `name`) landed with the wallet: `ENSResolver.reverseResolve(address:chainID:)`, display-only, single-shot per provider with the same tier order.
 - **Speculative gateway prefetch**. Desktop does it; it's a latency optimization, not a trust property. Skipped.
 - **Persistent resolution cache**. Desktop is in-memory only; we match.
 - **Operator diversity indicator**. The default 9 providers are distinct URLs but some may proxy the same backend (Alchemy, Infura). Users concerned about this edit the list manually or set their own RPC.
@@ -167,7 +178,11 @@ Freedom/Freedom/
 ├── QuorumLeg.swift                — single UR.resolve at a pinned blockHash, JSON-RPC transport
 ├── ContenthashDecoder.swift       — ABI unwrap + codec dispatch (bzz/ipfs/ipns)
 ├── Base58.swift                   — encoder for multihash → CIDv0
-├── CCIPResolver.swift             — EIP-3668 gateway hop + callback eth_call
+├── CCIPResolver.swift             — EIP-3668 gateway hop + callback eth_call, sender check, 4 MiB cap
+├── UniversalResolverABI.swift     — UR address, selectors, ENSIP-11 coin types, addr/reverse encode+decode
+├── NameSystem.swift               — ENS/WNS/GNS routing, isPotentialEnsName, known IPFS gateway hosts
+├── MyotisENSClient.swift          — proven tier (embedded light client), CCIP callback executor
+├── ColibriENSClient.swift         — proven tier (remote prover), CCIP callback executor
 ├── RPCSession.swift               — shared URLSession, generic Response<R>, withTimeout
 ├── EthereumRPCPool.swift          — shuffle + quarantine
 ├── SettingsStore.swift            — the 10 ENS keys, UserDefaults-backed
@@ -181,8 +196,12 @@ Freedom/FreedomTests/
 ├── EthereumRPCPoolTests.swift     — shuffle + quarantine + orphan cleanup
 ├── ContenthashDecoderTests.swift  — codec coverage + Base58 vector
 ├── CCIPResolverTests.swift        — OffchainLookup round-trip, gateway fallback, redirect cap
-├── ENSResolverTests.swift         — resolveContent end-to-end, cache, dedup, error mapping
+├── ENSResolverTests.swift         — resolveContent end-to-end, cache, dedup, error mapping, revert classes
+├── ProvenTierCCIPTests.swift      — CCIP on the proven tiers: sender, gateway failure, callback revert, reverse
+├── ENSChainScopedResolveTests.swift — ENSIP-11 coin types, per-chain caches, no L1 fallback, ENSIP-19 reverse
+├── ENSNameCandidateTests.swift    — isPotentialEnsName vectors, scheme-aware URL.ensName, DNS+IPNS content key
+├── ENSv2ReadinessLiveTests.swift  — opt-in live run of the guide's fixtures (see docs/audits/ensv2-readiness.md)
 └── BrowserURLTests.swift          — parse rules (bare .eth, ens://, .eth redirect, case)
 ```
 
-92 tests. Every security-critical invariant has a test.
+Every security-critical invariant has a test.
