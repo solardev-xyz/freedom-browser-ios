@@ -272,6 +272,7 @@ final class MyotisCheckpointTests: XCTestCase {
     /// Scripted corroborator: asks `trust` for the given slots, then
     /// either returns the observations or fails like Colibri would.
     nonisolated struct StubCorroborator: MyotisCheckpointCorroborator {
+        var proofVersion: Int = 3 * 65536
         var slots: [UInt64]
         var failure: MyotisCheckpointError?
         var proofSeen: (@Sendable (Data) -> Void)?
@@ -312,7 +313,8 @@ final class MyotisCheckpointTests: XCTestCase {
         // The prover request pins the proof format and asks for a zk proof.
         let body = try JSONSerialization.jsonObject(with: XCTUnwrap(fetcher.lastPostBody)) as? [String: Any]
         XCTAssertEqual(body?["method"] as? String, "eth_getBlockByNumber")
-        XCTAssertEqual(body?["version"] as? Int, MyotisCheckpointAcquirer.proofVersion)
+        XCTAssertEqual(body?["version"] as? Int, 3 * 65536)
+        XCTAssertEqual(ColibriDiskStorage.proofRequestVersion, 3 * 65536, "tracks the pinned package version")
         XCTAssertEqual(body?["zk_proof"] as? Bool, true)
     }
 
@@ -419,8 +421,18 @@ final class MyotisCheckpointTests: XCTestCase {
     func testColibriInterceptorAcceptsOnlyTheBlockRootPath() {
         let source = "https://mainnet.checkpoint.sigp.io"
         let accept = { (url: String, method: String) in
-            ColibriCheckpointCorroborator.acceptedSlot(url: url, method: method, source: source)
+            ColibriCheckpointCorroborator.acceptedSlot(url: url, method: method, type: nil, source: source)
         }
+        let checkpointz = { (url: String, method: String) in
+            ColibriCheckpointCorroborator.acceptedSlot(url: url, method: method, type: "checkpointz", source: source)
+        }
+        // 3.x binding shape: bare uri, typed checkpointz, lowercase method.
+        XCTAssertEqual(checkpointz("eth/v1/beacon/blocks/30145344/root", "get"), 30_145_344)
+        XCTAssertEqual(checkpointz("/eth/v1/beacon/blocks/1/root", "GET"), 1)
+        XCTAssertNil(accept("eth/v1/beacon/blocks/1/root", "GET"), "untyped relative uri is refused")
+        XCTAssertNil(checkpointz("https://evil.example/eth/v1/beacon/blocks/1/root", "GET"))
+        XCTAssertNil(checkpointz("eth/v1/beacon/blocks/1/root?x", "GET"))
+        XCTAssertNil(checkpointz("eth/v1/beacon/states/head/finality_checkpoints", "GET"))
         XCTAssertEqual(accept("\(source)/eth/v1/beacon/blocks/123/root", "GET"), 123)
         XCTAssertEqual(accept("\(source)/eth/v1/beacon/blocks/123/root", "get"), 123)
         XCTAssertNil(accept("\(source)/eth/v1/beacon/blocks/123/root", "POST"))

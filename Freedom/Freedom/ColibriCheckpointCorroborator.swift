@@ -32,6 +32,8 @@ nonisolated final class ColibriCheckpointCorroborator: MyotisCheckpointCorrobora
     /// verifier state.
     private static let gate = Gate()
 
+    var proofVersion: Int { ColibriDiskStorage.proofRequestVersion }
+
     func corroborate(
         network: MyotisCheckpointNetwork,
         proof: Data,
@@ -79,14 +81,24 @@ nonisolated final class ColibriCheckpointCorroborator: MyotisCheckpointCorrobora
     }
 
     /// Request policy (desktop `fetch` interceptor): only
-    /// `GET {source}/eth/v1/beacon/blocks/{slot}/root`, no query, no
-    /// fragment, at most `maxRequests` — answered from the quorum.
-    static func acceptedSlot(url: String, method: String, source: String) -> UInt64? {
+    /// `GET eth/v1/beacon/blocks/{slot}/root` on the checkpointz origin,
+    /// no query, no fragment, at most `maxRequests` — answered from the
+    /// quorum. Two request shapes exist: the 2.x binding handed the
+    /// handler `"<server>/<uri>"` (server = our single configured
+    /// `source`), the 3.x binding hands the bare `uri` plus
+    /// `type == "checkpointz"` (the binding itself routes that type to
+    /// our configured `[source]`, so the origin is fixed by config).
+    static func acceptedSlot(url: String, method: String, type: String?, source: String) -> UInt64? {
         guard method.uppercased() == "GET" else { return nil }
-        guard url.hasPrefix(source + "/") else { return nil }
-        var path = Substring(url.dropFirst(source.count))
-        // The binding joins "<server>/<uri>"; a uri that already starts
-        // with "/" yields "//eth/…". Collapse that one join seam only.
+        var path: Substring
+        if url.hasPrefix(source + "/") {
+            path = Substring(url.dropFirst(source.count))
+        } else if type == "checkpointz", !url.contains("://") {
+            path = url.hasPrefix("/") ? Substring(url) : Substring("/" + url)
+        } else {
+            return nil
+        }
+        // Collapse a doubled join seam ("//eth/…") only.
         while path.hasPrefix("//") { path = path.dropFirst() }
         guard !path.contains("?"), !path.contains("#"), !path.contains("@") else { return nil }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
@@ -116,9 +128,9 @@ nonisolated final class ColibriCheckpointCorroborator: MyotisCheckpointCorrobora
         func handleRequest(_ request: DataRequest) async throws -> Data {
             do {
                 guard let slot = ColibriCheckpointCorroborator.acceptedSlot(
-                    url: request.url, method: request.method, source: source
+                    url: request.url, method: request.method, type: request.type, source: source
                 ) else {
-                    log.notice("[checkpoint] refused verifier request \(request.method, privacy: .public) \(request.url, privacy: .public)")
+                    log.notice("[checkpoint] refused verifier request \(request.method, privacy: .public) \(request.type ?? "-", privacy: .public) \(request.url, privacy: .public)")
                     throw MyotisCheckpointError.mismatch
                 }
                 let over: Bool = lock.withLock {

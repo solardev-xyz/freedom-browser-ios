@@ -258,6 +258,11 @@ public struct MyotisCheckpointQuorum: Sendable {
 ///    the verifier reports the latest proof too old, `.mismatch` on any
 ///    other verification failure; rethrow the `trust` error unchanged.
 public protocol MyotisCheckpointCorroborator: Sendable {
+    /// The encoded client version (`major * 65536 + minor * 256 + patch`)
+    /// of the installed verifier, advertised in the prover request so the
+    /// prover returns a proof format this verifier can decode.
+    var proofVersion: Int { get }
+
     func corroborate(
         network: MyotisCheckpointNetwork,
         proof: Data,
@@ -319,9 +324,6 @@ public struct MyotisCheckpointAcquirer: Sendable {
     public static let deadlineSeconds: UInt64 = 90
     public static let maxProofBytes = 4 * 1024 * 1024
     public static let maxTrustRequests = 8
-    /// Colibri proof-format version the prover request pins (desktop
-    /// parity; the verifier refuses other formats).
-    public static let proofVersion = 131_078
 
     public let fetcher: MyotisCheckpointFetcher
     public let corroborator: MyotisCheckpointCorroborator
@@ -364,10 +366,11 @@ public struct MyotisCheckpointAcquirer: Sendable {
         var request = URLRequest(url: proverURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
+        guard corroborator.proofVersion > 0 else { throw MyotisCheckpointError.incompatible }
         let body: [String: Any] = [
             "method": "eth_getBlockByNumber",
             "params": ["latest", false],
-            "version": Self.proofVersion,
+            "version": corroborator.proofVersion,
             "zk_proof": true,
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
