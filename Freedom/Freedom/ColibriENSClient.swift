@@ -205,7 +205,19 @@ enum ColibriDiskStorage {
     /// Colibri resolution to the quorum fallback. Wiping on mismatch
     /// costs one fresh checkpointz bootstrap (~seconds); keeping stale
     /// state costs verified resolution entirely.
-    private static let storageFormatVersion = "2.0.2"
+    /// The pinned colibri-stateless-swift version. Also drives the
+    /// proof-request `version` field for checkpoint recovery (below).
+    static let packageVersion = "3.0.0"
+    private static let storageFormatVersion = packageVersion
+
+    /// The encoded client version a remote prover routes proof formats
+    /// by: `major * 65536 + minor * 256 + patch` of the installed package
+    /// (desktop `colibri-runtime.js` `clientVersion` parity — a v3
+    /// verifier cannot decode a v2 proof, so manual proof requests must
+    /// advertise the installed verifier's version).
+    nonisolated static var proofRequestVersion: Int {
+        packageVersion.split(separator: ".").reduce(0) { $0 * 256 + (Int($1) ?? 0) }
+    }
     private static let storageFormatMarker = "freedom-colibri-storage-version"
 
     /// One-shot registration. Safe to call multiple times; the underlying

@@ -541,7 +541,7 @@
 			repositoryURL = "https://github.com/corpus-core/colibri-stateless-swift.git";
 			requirement = {
 				kind = exactVersion;
-				version = 2.0.2;
+				version = 3.0.0;
 			};
 		};
 		17CFC0852F9EAD0B00A6E66C /* XCRemoteSwiftPackageReference "CryptoSwift" */ = {
