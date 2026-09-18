@@ -60,7 +60,8 @@ final class OnchainAppLoader {
         // Verified sources: a proven revert is a deterministic answer
         // ("not an app"); anything else falls through to the next source.
         for source in registry.verifiedSources
-        where source.isAvailable(chainID: chain.id)
+        where !Self.debugForceDirect
+            && source.isAvailable(chainID: chain.id)
             && source.serves(method: "eth_call", params: params, chainID: chain.id)
         {
             try Task.checkCancellation()
@@ -122,6 +123,18 @@ final class OnchainAppLoader {
             return document(html: html, app: app, chain: chain, trust: Self.directTrust(endpoint: url))
         }
         throw OnchainAppError.unreachable
+    }
+
+    /// Smoke-test hook (DEBUG builds only): `FREEDOM_DEBUG_ONCHAIN_DIRECT=1`
+    /// skips the verified sources so the unverified path and its
+    /// interstitial can be exercised on a simulator whose Colibri or
+    /// Myotis would otherwise verify every mainnet read.
+    private static var debugForceDirect: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["FREEDOM_DEBUG_ONCHAIN_DIRECT"] == "1"
+        #else
+        return false
+        #endif
     }
 
     private func document(html: String, app: OnchainAppRef, chain: Chain, trust: ENSTrust) -> OnchainAppDocument {

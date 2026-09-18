@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 import OSLog
 import SwiftData
 import SwarmKit
@@ -289,6 +290,7 @@ struct FreedomApp: App {
                 .task { startIpfsIfNeeded() }
                 .task { startMyotisIfNeeded() }
                 .task { await debugResolveIfRequested() }
+                .task { await debugOpenURLIfRequested() }
                 .task { await startRadicleIfNeeded() }
                 .task { beeReadiness.start() }
                 .task { stampService.start() }
@@ -371,6 +373,45 @@ struct FreedomApp: App {
                 log.notice("[debug-resolve] attempt \(attempt) failed: \(String(describing: error), privacy: .public)")
             }
             try? await Task.sleep(nanoseconds: 30_000_000_000)
+        }
+        #endif
+    }
+
+    /// Smoke-test hook (DEBUG builds only): `FREEDOM_DEBUG_OPEN_URL=<url>`
+    /// navigates the active tab to the URL at launch and logs what the
+    /// tab does with it for a minute — fetch, gate, trust, page title —
+    /// so a simulator run can prove an onchain app (or any URL) loads
+    /// end to end without anyone typing. If the navigation lands on an
+    /// unverified-onchain gate, the hook continues past it once, which
+    /// is exactly the tap a smoke tester would make
+    /// (`log stream --predicate 'category == "DebugOpen"'`).
+    private func debugOpenURLIfRequested() async {
+        #if DEBUG
+        guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_OPEN_URL"],
+              let target = BrowserURL.parse(raw) else { return }
+        let log = Logger(subsystem: "com.browser.Freedom", category: "DebugOpen")
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        log.notice("[debug-open] navigating to \(target.url.absoluteString, privacy: .public)")
+        tabStore.navigateActive(to: target)
+        var continued = false
+        for tick in 1...30 {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let tab = tabStore.activeTab else { continue }
+            let gate: String
+            switch tab.pendingGate {
+            case .unverifiedOnchain(let document, _):
+                gate = "unverifiedOnchain source=\(document.provenance.source) hash=\(document.provenance.htmlHash)"
+            case .some(let other): gate = String(describing: other).prefix(60).description
+            case nil: gate = "none"
+            }
+            let title = (try? await tab.webView.evaluateJavaScript("document.title") as? String) ?? ""
+            let length = (try? await tab.webView.evaluateJavaScript("document.documentElement.outerHTML.length") as? Int) ?? 0
+            log.notice("[debug-open] t=\(tick * 2)s status=\(String(describing: tab.ensStatus).prefix(80), privacy: .public) gate=\(gate, privacy: .public) url=\(tab.displayURL?.absoluteString ?? "-", privacy: .public) trust=\(tab.currentTrust.map { "\($0.method.rawValue)/\($0.level)" } ?? "-", privacy: .public) onchainHash=\(tab.currentOnchain?.htmlHash ?? "-", privacy: .public) title=\(title, privacy: .public) domLength=\(length)")
+            if case .unverifiedOnchain = tab.pendingGate, !continued {
+                continued = true
+                log.notice("[debug-open] continuing past the unverified-onchain gate once")
+                tab.continuePastGate()
+            }
         }
         #endif
     }
