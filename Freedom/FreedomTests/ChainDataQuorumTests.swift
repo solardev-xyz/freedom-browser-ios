@@ -159,7 +159,10 @@ final class ChainDataQuorumTests: XCTestCase {
         let first = try await router.request(chainID: 1, method: "eth_call", params: call, context: page)
         XCTAssertEqual(first.result as? String, "0xrpc")
         XCTAssertEqual(first.source, .direct)
-        XCTAssertEqual(transport.hits, ["a.example", "b.example", "c.example", "d.example"])
+        // The three legs start concurrently (any order); d is asked last.
+        XCTAssertEqual(Set(transport.hits.prefix(3)), ["a.example", "b.example", "c.example"])
+        XCTAssertEqual(transport.hits.count, 4)
+        XCTAssertEqual(transport.hits.last, "d.example")
         // Verification stopped at 50 ms, but the three legs stayed alive
         // under the direct tier's 300 ms budget before d was asked.
         let dAsked = transport.hitTimes["d.example"]!

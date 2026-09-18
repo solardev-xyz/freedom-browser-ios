@@ -54,6 +54,9 @@ final class WeiGweiNameTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "WeiGweiNameTests-\(UUID().uuidString)")!
         settings = SettingsStore(defaults: defaults)
         settings.ensPublicRpcProviders = [alpha].map(\.absoluteString)
+        // One provider: the quorum method is infeasible, so these tests
+        // resolve through Direct RPC (off by default in the order).
+        settings.setResolutionMethod(.userConfigured, enabled: true)
         clock = MutableClock(now: Date(timeIntervalSince1970: 1_700_000_000))
         pool = mainnetPool(settings: settings, clock: { [unowned self] in self.clock.now })
     }
