@@ -12,6 +12,9 @@ enum BrowserURL: Hashable {
     /// bookmark of `bzz://vitalik.eth/blog/post1?q=1#anchor` reaches
     /// `/blog/post1?q=1#anchor` on the resolved transport, not root.
     case ens(name: String, path: String = "")
+    /// Contract-hosted app (ERC-8244). `path` is the same percent-encoded
+    /// tail shape as `.ens`; the app's client-side router sees it.
+    case onchain(app: OnchainAppRef, path: String = "")
 
     /// URL for display / storage / sharing. ENS names encode as the
     /// `ens://` pseudo-scheme so revisits (from history/bookmarks) route
@@ -19,6 +22,7 @@ enum BrowserURL: Hashable {
     var url: URL {
         switch self {
         case .bzz(let u), .ipfs(let u), .ipns(let u), .web(let u): return u
+        case .onchain(let app, let path): return app.displayURL(tail: path)
         case .ens(let name, let path):
             // Empty path emits `ens://name` to preserve the historical
             // display form. Non-empty path is normalized to start with
@@ -47,6 +51,10 @@ enum BrowserURL: Hashable {
             return .ens(name: name, path: extractTail(url))
         }
         switch url.scheme?.lowercased() {
+        case OnchainAppRef.scheme:
+            // Friendly or canonical form; both collapse to the app.
+            guard let (app, tail) = OnchainAppRef.parse(url) else { return nil }
+            return .onchain(app: app, path: tail)
         case "bzz": return .bzz(url)
         case "ipfs": return .ipfs(url)
         case "ipns": return .ipns(url)

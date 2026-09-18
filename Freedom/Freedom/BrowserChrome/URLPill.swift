@@ -11,6 +11,7 @@ struct URLPill: View {
     @Binding var text: String
     @FocusState.Binding var isFocused: Bool
     let trust: ENSTrust?
+    var onchain: OnchainAppProvenance? = nil
     let isLoading: Bool
     let progress: Double
     let displayURL: URL?
@@ -29,7 +30,7 @@ struct URLPill: View {
         HStack(spacing: 8) {
             Group {
                 if let trust {
-                    TrustShield(trust: trust)
+                    TrustShield(trust: trust, onchain: onchain)
                 } else {
                     Color.clear
                 }

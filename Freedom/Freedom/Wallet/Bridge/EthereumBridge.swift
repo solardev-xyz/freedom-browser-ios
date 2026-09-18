@@ -421,6 +421,14 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         if current.id == requestedID {
             return reply(id: id, result: NSNull())
         }
+        // An onchain app lives on the chain in its origin; it can't be
+        // moved to another one (desktop parity).
+        if let pinned = router.pinnedChain() {
+            return reply(id: id, error: .init(
+                code: RPCRouter.ErrorPayload.Code.unsupportedMethod,
+                message: "This onchain app is pinned to \(pinned.displayName) (chain \(pinned.id)); it can't switch chains."
+            ))
+        }
 
         guard let target = services.chainStore.chain(id: requestedID) else {
             return reply(id: id, error: .init(code: RPCRouter.ErrorPayload.Code.unrecognizedChain, message: "Unrecognized chain ID. Add it first."))
@@ -462,6 +470,9 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func emitChainChangedIfConnected(_ note: Notification) {
+        // A pinned app's chain never changes with the wallet's global
+        // one; a contradictory `chainChanged` would only confuse it.
+        guard router.pinnedChain() == nil else { return }
         guard let origin = OriginIdentity.from(displayURL: tab?.displayURL),
               permissionStore.isConnected(origin.key),
               let chainID = note.userInfo?["chainID"] as? Int else { return }

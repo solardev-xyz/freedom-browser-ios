@@ -6,6 +6,8 @@ import Foundation
 struct OriginIdentity: Equatable, Hashable, Sendable {
     enum Scheme: String, Sendable {
         case ens, bzz, ipfs, ipns, rad, https, http, other
+        /// Contract-hosted app (ERC-8244), keyed `web3://<addr>[:<chainId>]`.
+        case web3
         /// A remote browser connected over an openlv session (QR scan /
         /// pasted link). Constructed directly by `OpenLVWalletSession`
         /// for its approval sheets — never parsed from a tab URL and
@@ -23,7 +25,7 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
     /// as desktop's name-host carve-out.
     var isEligibleForWallet: Bool {
         switch scheme {
-        case .https, .ens, .bzz: return true
+        case .https, .ens, .bzz, .web3: return true
         case .http:
             #if DEBUG
             // Dev harnesses (swarm-kit test centers, wallet test pages)
@@ -70,6 +72,7 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
         case .ipfs: return "IPFS content-address"
         case .ipns: return "IPNS name"
         case .rad: return "Radicle"
+        case .web3: return "Onchain app (contract-hosted)"
         case .other: return "Unknown origin"
         case .openlv: return "Remote signing session (OpenLV)"
         }
@@ -101,6 +104,14 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
         ) != nil {
             let host = trimmed.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
             return .init(key: host.lowercased(), scheme: .ens)
+        }
+
+        // Contract-hosted apps: friendly or canonical form, either way
+        // the key is chain-scoped so a different chain is a different
+        // app and never inherits grants (desktop origin-utils parity).
+        if trimmed.lowercased().hasPrefix("\(OnchainAppRef.scheme)://") {
+            guard let url = URL(string: trimmed), let (app, _) = OnchainAppRef.parse(url) else { return nil }
+            return .init(key: app.permissionKey, scheme: .web3)
         }
 
         let ensPrefix = "ens://"

@@ -2,6 +2,9 @@ import SwiftUI
 
 struct TrustShield: View {
     let trust: ENSTrust
+    /// Set when the page is a contract-hosted app; adds the app's
+    /// network, contract, document hash and source to the sheet.
+    var onchain: OnchainAppProvenance? = nil
     @State private var showingDetails = false
 
     var body: some View {
@@ -12,19 +15,35 @@ struct TrustShield: View {
                 .frame(width: 28, height: 28)
         }
         .sheet(isPresented: $showingDetails) {
-            TrustDetailsSheet(trust: trust)
+            TrustDetailsSheet(trust: trust, onchain: onchain)
         }
     }
 }
 
 private struct TrustDetailsSheet: View {
     let trust: ENSTrust
+    var onchain: OnchainAppProvenance? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
                 Section { levelHeader }
+
+                if let onchain {
+                    Section("Onchain app") {
+                        LabeledContent("Network", value: "\(onchain.networkName) (chain \(onchain.app.chainID))")
+                        LabeledContent("Contract") {
+                            Text(onchain.app.address).font(.caption).monospaced()
+                                .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                        }
+                        LabeledContent("Loaded from", value: onchain.source)
+                        LabeledContent("HTML hash") {
+                            Text(onchain.htmlHash).font(.caption).monospaced()
+                                .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                }
 
                 if isMyotis {
                     Section("Light Client") {
@@ -116,6 +135,18 @@ private struct TrustDetailsSheet: View {
     }
 
     private var summary: String {
+        if onchain != nil {
+            switch trust.level {
+            case .verified where isMyotis:
+                return "The app's code was read from contract storage by this device's embedded light client — Merkle-proven against beacon-chain finality."
+            case .verified:
+                return "The app's code was read from contract storage under a sync-committee proof, not trusted from an RPC's word."
+            case .unverified:
+                return "The app's code came from one public RPC endpoint and was not cross-checked. You chose to run these exact bytes for this session."
+            case .userConfigured, .conflict:
+                break
+            }
+        }
         if isMyotis, trust.level == .verified {
             // Like Colibri, the Myotis tier only ever mints `.verified`.
             return "Resolved by this device's embedded Ethereum light client — Merkle-proven state anchored to beacon-chain finality, with no RPC provider or prover in the loop."

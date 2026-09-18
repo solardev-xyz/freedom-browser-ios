@@ -4,13 +4,14 @@ import SwiftUI
 struct CompactURLPill: View {
     let trust: ENSTrust?
     let displayURL: URL?
+    var onchain: OnchainAppProvenance? = nil
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 6) {
                 if let trust {
-                    TrustShield(trust: trust)
+                    TrustShield(trust: trust, onchain: onchain)
                         .frame(width: 22, height: 22)
                 }
                 Text(displayURL?.hostOrAbsolute ?? URLPill.placeholder)

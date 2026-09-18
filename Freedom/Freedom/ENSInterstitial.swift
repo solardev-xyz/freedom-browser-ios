@@ -48,12 +48,21 @@ struct ENSInterstitial: View {
             ConflictGroups(groups: groups, trust: trust)
         case .anchorDisagreement(let largest, let total, let threshold):
             AnchorDetails(largest: largest, total: total, threshold: threshold)
+        case .unverifiedOnchain(let document, _):
+            OnchainSummary(provenance: document.provenance)
+        }
+    }
+
+    private var canContinue: Bool {
+        switch gate {
+        case .unverifiedUntrusted, .unverifiedOnchain: true
+        case .conflict, .anchorDisagreement: false
         }
     }
 
     private var actions: some View {
         VStack(spacing: 12) {
-            if case .unverifiedUntrusted = gate {
+            if canContinue {
                 Button { tab.continuePastGate() } label: {
                     Label("Continue once", systemImage: "arrow.forward")
                         .frame(maxWidth: .infinity)
@@ -72,14 +81,14 @@ struct ENSInterstitial: View {
 
     private var headerSymbol: String {
         switch gate {
-        case .unverifiedUntrusted: "exclamationmark.shield.fill"
+        case .unverifiedUntrusted, .unverifiedOnchain: "exclamationmark.shield.fill"
         case .conflict, .anchorDisagreement: "xmark.shield.fill"
         }
     }
 
     private var headerColor: Color {
         switch gate {
-        case .unverifiedUntrusted: .orange
+        case .unverifiedUntrusted, .unverifiedOnchain: .orange
         case .conflict, .anchorDisagreement: .red
         }
     }
@@ -89,6 +98,7 @@ struct ENSInterstitial: View {
         case .unverifiedUntrusted: "Unverified resolution"
         case .conflict: "Providers disagreed"
         case .anchorDisagreement: "Block-hash disagreement"
+        case .unverifiedOnchain: "Onchain app not independently verified"
         }
     }
 
@@ -100,6 +110,32 @@ struct ENSInterstitial: View {
             "Providers returned different contenthashes for this name. One or more of them is lying — or an honest chain fork is in progress. Do not continue."
         case .anchorDisagreement:
             "Providers returned different block hashes at the corroboration anchor. A provider is serving a stale or forged chain state. Do not continue."
+        case .unverifiedOnchain:
+            "Freedom fetched this app's code through one public RPC endpoint, but could not verify the answer against chain consensus. The app has not run yet. Continue once runs exactly these bytes for this session; if the contract returns different code later, Freedom will warn you again."
+        }
+    }
+}
+
+private struct OnchainSummary: View {
+    let provenance: OnchainAppProvenance
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            detailsHeader
+            LabeledContent("Network", value: "\(provenance.networkName) (chain \(provenance.app.chainID))")
+                .font(.caption)
+            LabeledContent("Contract") {
+                Text(provenance.app.address).font(.caption.monospaced()).textSelection(.enabled)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            .font(.caption)
+            LabeledContent("Fetched from", value: provenance.source)
+                .font(.caption)
+            LabeledContent("HTML hash") {
+                Text(provenance.htmlHash).font(.caption.monospaced()).textSelection(.enabled)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            .font(.caption)
         }
     }
 }

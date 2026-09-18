@@ -211,4 +211,33 @@ final class RPCRouterTests: XCTestCase {
             XCTAssertEqual(payload.message, "execution reverted")
         }
     }
+
+    // MARK: - Onchain app chain pinning
+
+    /// A contract-hosted app's pinned chain wins over the wallet's
+    /// global active chain for every read the router serves.
+    func testPinnedChainOverridesActiveChain() async throws {
+        let stub = StubRPC()
+        let registry = chainStack.registry
+        registry.walletRPC = WalletRPC(registry: registry, transport: stub.transport)
+        let pin = OnchainChainPin()
+        let router = RPCRouter(
+            registry: registry,
+            permissionStore: permissionStore,
+            activeChain: { .gnosis },
+            pinnedChain: { pin.chainID.flatMap { Chain.find(id: $0) } }
+        )
+        let origin = OriginIdentity.from(string: "web3://0x00000095643CFfA7D9fae407a84dfCB6406456c6/")!
+        XCTAssertTrue(origin.isEligibleForWallet)
+        let onGnosis = try await router.handle(method: "eth_chainId", params: [], origin: origin) as? String
+        XCTAssertEqual(onGnosis, Chain.gnosis.hexChainID)
+        pin.chainID = 1
+        let pinned = try await router.handle(method: "eth_chainId", params: [], origin: origin) as? String
+        XCTAssertEqual(pinned, Chain.mainnet.hexChainID)
+        XCTAssertEqual(router.currentChain().id, 1)
+        XCTAssertEqual(router.pinnedChain()?.id, 1)
+        pin.chainID = nil
+        XCTAssertEqual(router.currentChain().id, Chain.gnosis.id)
+        XCTAssertNil(router.pinnedChain())
+    }
 }

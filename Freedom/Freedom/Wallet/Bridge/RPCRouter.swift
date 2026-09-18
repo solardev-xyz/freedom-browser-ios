@@ -34,27 +34,36 @@ final class RPCRouter {
     @ObservationIgnored private let registry: ChainRegistry
     @ObservationIgnored private let permissionStore: PermissionStore
     private let activeChain: @MainActor () -> Chain
+    private let pinnedChainSource: @MainActor () -> Chain?
 
     init(
         registry: ChainRegistry,
         permissionStore: PermissionStore,
-        activeChain: @escaping @MainActor () -> Chain
+        activeChain: @escaping @MainActor () -> Chain,
+        pinnedChain: @escaping @MainActor () -> Chain? = { nil }
     ) {
         self.registry = registry
         self.permissionStore = permissionStore
         self.activeChain = activeChain
+        self.pinnedChainSource = pinnedChain
     }
 
     /// Bridge helper — feeds gas estimation, broadcast, and the `connect`
-    /// event payload (`.hexChainID`).
-    func currentChain() -> Chain { activeChain() }
+    /// event payload (`.hexChainID`). A contract-hosted app's pinned
+    /// chain (the one in its origin) wins over the wallet's global
+    /// active chain, so the app never sees reads or signatures for a
+    /// chain it wasn't deployed on.
+    func currentChain() -> Chain { pinnedChainSource() ?? activeChain() }
+
+    /// Non-nil while the tab is on an onchain app.
+    func pinnedChain() -> Chain? { pinnedChainSource() }
 
     func handle(method: String, params: [Any], origin: OriginIdentity) async throws -> Any {
         guard origin.isEligibleForWallet else {
             throw RouterError.unauthorized(method: method)
         }
 
-        let chain = activeChain()
+        let chain = currentChain()
 
         switch method {
         case "eth_chainId":

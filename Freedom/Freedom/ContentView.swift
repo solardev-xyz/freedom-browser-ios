@@ -274,7 +274,7 @@ struct ContentView: View {
             // .resolving no longer drives a banner — the unified
             // LoadingPill above the URL pill surfaces it instead.
             switch new {
-            case .idle, .resolving: banner = nil
+            case .idle, .resolving, .fetchingOnchain: banner = nil
             case .failed(let message): banner = .error(message: message)
             }
         }
@@ -393,6 +393,7 @@ struct ContentView: View {
                     CompactURLPill(
                         trust: active?.currentTrust,
                         displayURL: active?.displayURL,
+                        onchain: active?.currentOnchain,
                         onTap: expandFromCompact
                     )
                     .transition(.opacity)
@@ -403,6 +404,7 @@ struct ContentView: View {
                         text: $addressText,
                         isFocused: $addressFocused,
                         trust: active?.currentTrust,
+                        onchain: active?.currentOnchain,
                         isLoading: active?.isLoading == true,
                         progress: active?.progress ?? 0,
                         displayURL: active?.displayURL,

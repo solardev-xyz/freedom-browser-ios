@@ -15,6 +15,9 @@ final class BrowserTab {
         /// stays the source of truth for `displayURL` while `url` is
         /// still the prior page's address (or nil on a cold tab).
         case resolving(name: String, url: URL)
+        /// In-flight `html()` fetch for a contract-hosted app; `url` is
+        /// the friendly `web3://…` form for the address bar.
+        case fetchingOnchain(app: OnchainAppRef, url: URL)
         case failed(message: String)
     }
 
@@ -38,6 +41,10 @@ final class BrowserTab {
         case unverifiedUntrusted(url: URL, trust: ENSTrust)
         case conflict(groups: [ENSConflictGroup], trust: ENSTrust)
         case anchorDisagreement(largestBucketSize: Int, total: Int, threshold: Int)
+        /// Contract-hosted app whose `html()` only a public RPC vouched
+        /// for. Holds the exact fetched bytes: "Continue once" runs
+        /// these, never a fresh fetch (desktop PR #232).
+        case unverifiedOnchain(document: OnchainAppDocument, url: URL)
     }
 
     let recordID: UUID
@@ -77,10 +84,15 @@ final class BrowserTab {
 
     var ensStatus: ENSStatus = .idle
 
-    /// Trust metadata from the last ENS resolution. The address-bar
-    /// shield (M4.10) reads this; nil means the current page wasn't
-    /// reached through ENS.
+    /// Trust metadata from the last ENS resolution or onchain-app
+    /// fetch. The address-bar shield (M4.10) reads this; nil means the
+    /// current page wasn't reached through either.
     var currentTrust: ENSTrust?
+
+    /// Set while the page is a contract-hosted app: what the shield
+    /// shows next to the trust (network, contract, document hash,
+    /// source). Cleared when the webview leaves the `web3:` origin.
+    var currentOnchain: OnchainAppProvenance?
 
     /// Non-nil when a navigation is blocked by an interstitial. The UI
     /// renders an ENSInterstitial in place of the webview; the gate is
@@ -94,8 +106,20 @@ final class BrowserTab {
     /// address bar shows, matching desktop Freedom's resolved-transport
     /// display.
     var displayURL: URL? {
-        if case .resolving(_, let resolvingURL) = ensStatus { return resolvingURL }
-        return url
+        switch ensStatus {
+        case .resolving(_, let pending), .fetchingOnchain(_, let pending): return pending
+        case .idle, .failed: return url.map(Self.presented)
+        }
+    }
+
+    /// The user-facing form of a URL WebKit reports: a canonical
+    /// `web3://<addr>.eip155-<n>/` origin reads as `web3://<addr>[:<n>]/`
+    /// in the address bar, history and bookmarks; everything else is
+    /// itself.
+    static func presented(_ url: URL) -> URL {
+        guard url.scheme?.lowercased() == OnchainAppRef.scheme,
+              let (app, tail) = OnchainAppRef.parse(url) else { return url }
+        return app.displayURL(tail: tail)
     }
 
     /// Parked approval. The bridge awaits `ApprovalResolver`; the sheet
@@ -160,6 +184,14 @@ final class BrowserTab {
     @ObservationIgnored private var lastScrollY: CGFloat = 0
     @ObservationIgnored private var bottomChromeProbeTask: Task<Void, Never>?
     @ObservationIgnored private let navDelegate = NavDelegate()
+    /// Serves staged contract-hosted documents under their `web3:`
+    /// origin. Nil for popup tabs, whose configuration inherits the
+    /// opener's handlers and can't register another.
+    @ObservationIgnored private let web3Handler: Web3SchemeHandler?
+    @ObservationIgnored private let onchainLoader: OnchainAppLoader
+    /// The chain the current onchain app is pinned to; read by the
+    /// tab's `RPCRouter` ahead of the wallet's global active chain.
+    @ObservationIgnored let chainPin = OnchainChainPin()
     @ObservationIgnored private let uiDelegate = UIDelegate()
     /// TabStore's seam for adopting `window.open` / `target="_blank"`
     /// popups: given the configuration WebKit provides, create + activate
@@ -194,6 +226,7 @@ final class BrowserTab {
         self.settings = settings
         self.adblock = adblock
         self.ipfs = ipfs
+        self.onchainLoader = OnchainAppLoader(registry: wallet.chainRegistry, chainStore: wallet.chainStore)
         let config: WKWebViewConfiguration
         if let popupConfiguration {
             // WebKit-initiated popup (window.open / target=_blank): the
@@ -206,9 +239,15 @@ final class BrowserTab {
             // nav context — correlation-only, and bzz popups (the actual
             // window.open users today) are unaffected.
             config = popupConfiguration
+            self.web3Handler = nil
         } else {
             config = WKWebViewConfiguration()
             config.setURLSchemeHandler(BzzSchemeHandler(ensResolver: ensResolver), forURLScheme: "bzz")
+            // Contract-hosted apps (ERC-8244). The handler only serves
+            // what this tab staged after fetching + gating.
+            let web3 = Web3SchemeHandler()
+            config.setURLSchemeHandler(web3, forURLScheme: OnchainAppRef.scheme)
+            self.web3Handler = web3
             // One handler instance per scheme — WKWebKit requires distinct
             // objects per scheme registration even when the implementation
             // is the same. Both schemes resolve through the same Rust
@@ -277,12 +316,15 @@ final class BrowserTab {
         }
 
         // Active chain read live so a wallet-UI chain switch is picked up
-        // by dapp reads without rebuilding the router.
+        // by dapp reads without rebuilding the router. An onchain app's
+        // pinned chain wins over it (`chainPin`).
         let chainStore = wallet.chainStore
+        let pin = chainPin
         let router = RPCRouter(
             registry: wallet.chainRegistry,
             permissionStore: wallet.permissionStore,
-            activeChain: { WalletDefaults.activeChain(in: chainStore) }
+            activeChain: { WalletDefaults.activeChain(in: chainStore) },
+            pinnedChain: { pin.chainID.flatMap { chainStore.chain(id: $0) } }
         )
         self.walletBridge = EthereumBridge(
             tab: self,
@@ -402,7 +444,65 @@ final class BrowserTab {
         case .ens(let name, let path):
             ensStatus = .resolving(name: name, url: browserURL.url)
             activeResolveTask = Task { await resolveAndLoad(name: name, path: path) }
+        case .onchain(let app, let path):
+            ensStatus = .fetchingOnchain(app: app, url: browserURL.url)
+            activeResolveTask = Task { await fetchAndLoadOnchain(app: app, path: path) }
         }
+    }
+
+    // MARK: - Contract-hosted apps
+
+    /// Fetch `html()` with provenance, gate an unverified answer, and
+    /// hand the exact bytes to the scheme handler before WebKit loads
+    /// the app's canonical origin. Mirrors `resolveAndLoad`.
+    private func fetchAndLoadOnchain(app: OnchainAppRef, path: String) async {
+        var handedToWebView = false
+        defer { if !handedToWebView { endRefreshing() } }
+
+        guard web3Handler != nil else {
+            ensStatus = .failed(message: "Onchain apps can't open in a popup tab. Open the link in a new tab.")
+            return
+        }
+        let document: OnchainAppDocument
+        do {
+            document = try await onchainLoader.load(app)
+        } catch {
+            if Task.isCancelled { return }
+            ensStatus = .failed(message: ENSErrorFormatting.describe(error))
+            return
+        }
+        if Task.isCancelled { return }
+        let target = app.canonicalURL(tail: path)
+        if !document.provenance.isTrusted, !OnchainApprovals.shared.isApproved(document.provenance) {
+            // Withhold the load — and the shield — until the user opts
+            // in to exactly these bytes.
+            ensStatus = .idle
+            pendingGate = .unverifiedOnchain(document: document, url: target)
+            return
+        }
+        ensStatus = .idle
+        handedToWebView = true
+        loadOnchain(document, url: target)
+    }
+
+    private func loadOnchain(_ document: OnchainAppDocument, url: URL) {
+        web3Handler?.stage(document)
+        chainPin.chainID = document.app.chainID
+        currentTrust = document.provenance.trust
+        currentOnchain = document.provenance
+        loadInWebView(url)
+    }
+
+    /// Whether the scheme handler can serve `url` right now. The
+    /// navigation delegate lets such loads through (our own load,
+    /// back/forward, in-app links) and routes everything else through
+    /// `navigate(to:)` so it is fetched and gated first.
+    fileprivate func hasStagedOnchainDocument(for url: URL) -> Bool {
+        web3Handler?.hasStagedDocument(for: url) ?? false
+    }
+
+    var isOnchainApp: Bool {
+        url?.scheme?.lowercased() == OnchainAppRef.scheme
     }
 
     /// Single chokepoint for `webView.load`. Syncs adblock state to the
@@ -494,10 +594,14 @@ final class BrowserTab {
     /// gateway's reported phase. Returns `nil` when the page is
     /// idle / fully rendered, hiding the pill entirely.
     var loadingState: String? {
-        if case .resolving(let name, _) = ensStatus {
+        switch ensStatus {
+        case .resolving(let name, _):
             return "Resolving \(name)…"
+        case .fetchingOnchain(let app, _):
+            return "Fetching app \(app.shortLabel) from chain…"
+        case .idle, .failed:
+            return ipfsLoadingLabel
         }
-        return ipfsLoadingLabel
     }
 
     fileprivate func cancelActivePreload() {
@@ -518,17 +622,30 @@ final class BrowserTab {
     private func resetENSState() {
         ensStatus = .idle
         currentTrust = nil
+        currentOnchain = nil
         pendingGate = nil
+        chainPin.chainID = nil
     }
 
     /// One-shot bypass of the current unverified gate. Conflict and
     /// anchorDisagreement gates deliberately don't expose this.
     func continuePastGate() {
-        guard case .unverifiedUntrusted(let url, let trust) = pendingGate else { return }
-        pendingGate = nil
-        ensStatus = .idle
-        currentTrust = trust
-        loadInWebView(url)
+        switch pendingGate {
+        case .unverifiedUntrusted(let url, let trust):
+            pendingGate = nil
+            ensStatus = .idle
+            currentTrust = trust
+            loadInWebView(url)
+        case .unverifiedOnchain(let document, let url):
+            // Remembered for this chain + contract + exact hash for the
+            // rest of the process; different bytes warn again.
+            OnchainApprovals.shared.approve(document.provenance)
+            pendingGate = nil
+            ensStatus = .idle
+            loadOnchain(document, url: url)
+        case .conflict, .anchorDisagreement, nil:
+            return
+        }
     }
 
     func dismissGate() {
@@ -559,9 +676,12 @@ final class BrowserTab {
         // scheme — to `.ens(name:, path:)` so the path survives the
         // re-resolve. Without `classify`, `bzz://vitalik.eth/blog`
         // would lose `/blog` on pull-to-refresh.
-        if let url, let browserURL = BrowserURL.classify(url), case .ens = browserURL {
-            navigate(to: browserURL)
-        } else {
+        switch url.flatMap(BrowserURL.classify) {
+        case .ens(_, _)?, .onchain(_, _)?:
+            // Onchain apps re-fetch `html()` too, so a redeployed
+            // contract (or changed bytes) is picked up and re-gated.
+            navigate(to: BrowserURL.classify(url!)!)
+        default:
             webView.reload()
         }
     }
@@ -709,6 +829,14 @@ final class BrowserTab {
                 // matches and updateURL early-returns); required for
                 // redirects, anchor clicks, and pushState.
                 self.adblock.updateURL(wv.url, for: self.contentController)
+                // Leaving a `web3:` origin (link out to https, etc.)
+                // ends the app: no pinned chain, no app provenance, no
+                // shield claiming the new page was fetched from chain.
+                if wv.url?.scheme?.lowercased() != OnchainAppRef.scheme, self.currentOnchain != nil {
+                    self.currentOnchain = nil
+                    self.currentTrust = nil
+                    self.chainPin.chainID = nil
+                }
             }
         })
         observations.append(webView.observe(\.title, options: .new) { [weak self] wv, _ in
@@ -948,7 +1076,13 @@ private final class UIDelegate: NSObject, WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        MainActor.assumeIsolated { owner?.onCreatePopup?(configuration) }
+        MainActor.assumeIsolated {
+            // Contract-hosted apps get no page-created windows (desktop
+            // parity; the CSP sandbox already denies popups, this is
+            // the belt to its braces).
+            if owner?.isOnchainApp == true { return nil }
+            return owner?.onCreatePopup?(configuration)
+        }
     }
 
     /// Only fires for pages WebKit itself opened via `createWebViewWith`
@@ -991,6 +1125,27 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
             decisionHandler(.cancel)
             MainActor.assumeIsolated { owner?.navigate(to: browserURL) }
             return
+        }
+        // Contract-hosted apps: any main-frame `web3:` load the tab
+        // hasn't fetched and staged goes through `navigate(to:)` so it
+        // is fetched with provenance and gated first — a link from a
+        // web page, a typed friendly URL, a restored history entry, or
+        // a script on another origin setting `location`. Loads the tab
+        // staged (its own `loadInWebView`, back/forward, in-app links
+        // under the same origin) pass straight to the handler.
+        if let url = navigationAction.request.url,
+           url.scheme?.lowercased() == OnchainAppRef.scheme,
+           navigationAction.targetFrame?.isMainFrame == true,
+           !Self.isSameDocumentFragmentNav(target: url, current: webView.url),
+           let browserURL = BrowserURL.classify(url),
+           case .onchain = browserURL
+        {
+            let staged = MainActor.assumeIsolated { owner?.hasStagedOnchainDocument(for: url) ?? false }
+            if !staged {
+                decisionHandler(.cancel)
+                MainActor.assumeIsolated { owner?.navigate(to: browserURL) }
+                return
+            }
         }
         if let url = navigationAction.request.url,
            let scheme = url.scheme?.lowercased(),
@@ -1058,7 +1213,8 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // pattern as the KVO observers in BrowserTab.
         MainActor.assumeIsolated {
             owner?.tearDownActiveIpfsNavigation()
-            owner?.onNavigationFinish?(url, title)
+            // History / favicons see the friendly `web3://…` form.
+            owner?.onNavigationFinish?(BrowserTab.presented(url), title)
             owner?.extractThemeColor()
             owner?.detectBottomChromeMode()
         }
@@ -1117,6 +1273,16 @@ enum ENSErrorFormatting {
             return "Your custom Ethereum RPC is unreachable or invalid. Check Settings → Custom RPC."
         case ENSResolutionError.notImplemented:
             return "ENS resolution not implemented."
+        case OnchainAppError.unknownChain(let chainID):
+            return "Chain \(chainID) isn't in your wallet's chain list. Add it in Wallet → Networks, then try again."
+        case OnchainAppError.unreachable:
+            return "Couldn't reach any RPC endpoint for this chain to fetch the app."
+        case OnchainAppError.notAnApp(let detail):
+            return "The contract did not return a valid ERC-8244 html() document on this chain (\(detail))."
+        case OnchainAppError.tooLarge:
+            return "The app's html() document exceeds Freedom's 8 MiB limit."
+        case OnchainAppError.timedOut:
+            return "Fetching the app from the chain timed out."
         default:
             return "ENS resolution failed: \(error.localizedDescription)"
         }
