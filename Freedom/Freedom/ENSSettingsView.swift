@@ -1,84 +1,30 @@
+import MyotisKit
 import SwiftUI
 
-/// Resolution-behavior settings: how ENS names get resolved (method,
-/// quorum tuning, safety interstitial, off-chain CCIP). The infrastructure
-/// layer (which public RPC URLs we hit) lives on the RPC page.
+/// Name resolution — how `.eth`, `.box`, `.wei` and `.gwei` names get
+/// resolved (desktop's "Name Resolution" page): the resolution order
+/// with a switch and its own settings per method, "prefer verified",
+/// the unverified-answer safety gate and off-chain CCIP. The mainnet
+/// endpoints those methods use live under Chains → Ethereum.
 struct ENSSettingsView: View {
     @Environment(SettingsStore.self) private var settings
+    @Environment(ChainStore.self) private var chainStore
+    @Environment(MyotisNode.self) private var myotis
+
+    private var mainnetEndpoints: Int { chainStore.rpcURLs(forChainID: Chain.mainnetID).count }
 
     var body: some View {
         @Bindable var settings = settings
         Form {
             Section {
-                // `.myotis` is deliberately absent: the embedded P2P
-                // light client is an always-first tier (toggled on its
-                // own settings page), and this picker chooses what it
-                // falls back to.
-                Picker("Method", selection: $settings.ensResolutionMethod) {
-                    ForEach(ENSResolutionMethod.selectableCases, id: \.self) { method in
-                        Text(method.displayName).tag(method)
-                    }
+                ForEach(settings.ensResolutionOrder, id: \.self) { method in
+                    methodRow(method)
                 }
+                Toggle("Prefer verified answers", isOn: $settings.ensPreferVerified)
             } header: {
-                Text("Resolution Method")
+                Text("Resolution order")
             } footer: {
-                Text(methodFooter)
-            }
-
-            if settings.ensResolutionMethod == .colibri {
-                Section {
-                    LabeledContent("Prover") {
-                        TextField(ColibriENSClient.defaultProverURL, text: $settings.ensColibriProverUrl)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .font(.caption).monospaced()
-                            .multilineTextAlignment(.trailing)
-                    }
-                    Toggle("ZK consensus proof", isOn: $settings.ensColibriZkProof)
-                    Toggle("Fall back to quorum", isOn: $settings.ensFallbackToQuorum)
-                } header: {
-                    Text("Colibri")
-                } footer: {
-                    Text("Each lookup is verified against the Ethereum sync committee via the prover. ZK proof bootstraps the committee from a succinct proof instead of trusted checkpoints. On a prover error, \"Fall back to quorum\" reuses the public-RPC path below rather than failing the navigation.")
-                }
-            }
-
-            if settings.ensResolutionMethod == .userConfigured {
-                Section {
-                    TextField("https://your-node.example", text: $settings.ensRpcUrl)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .font(.caption).monospaced()
-                } header: {
-                    Text("Custom RPC")
-                } footer: {
-                    Text("Freedom uses your own Ethereum node for ENS resolution. Trust label becomes \"user-configured\" — single-source, not cross-checked.")
-                }
-            }
-
-            Section {
-                Toggle("Enable quorum", isOn: $settings.enableEnsQuorum)
-                Stepper("Providers per wave: \(settings.ensQuorumK)",
-                        value: $settings.ensQuorumK, in: 2...9)
-                Stepper("Required agreement: \(settings.ensQuorumM)",
-                        value: $settings.ensQuorumM, in: 1...settings.ensQuorumK)
-                LabeledContent("Timeout") {
-                    numericField($settings.ensQuorumTimeoutMs, suffix: "ms")
-                }
-                Picker("Block anchor", selection: $settings.ensBlockAnchor) {
-                    Text("latest").tag(BlockAnchor.latest)
-                    Text("latest-32").tag(BlockAnchor.latestMinus32)
-                    Text("finalized").tag(BlockAnchor.finalized)
-                }
-                LabeledContent("Anchor TTL") {
-                    numericField($settings.ensBlockAnchorTtlMs, suffix: "ms")
-                }
-            } header: {
-                Text(settings.ensResolutionMethod == .quorum ? "Quorum" : "Quorum (fallback)")
-            } footer: {
-                Text("M-of-K public RPCs must return byte-identical responses at a corroborated block. K<3 or M<2 falls through to single-source unverified.")
+                Text("Freedom tries enabled methods from top to bottom. With \"Prefer verified answers\" on, an unverified Direct RPC answer is kept as a fallback while later methods try to produce a verified one. These records live on Ethereum — manage endpoints under Chains → Ethereum.")
             }
 
             Section {
@@ -86,7 +32,7 @@ struct ENSSettingsView: View {
             } header: {
                 Text("Safety")
             } footer: {
-                Text("When on, a resolution that came from only one provider shows an interstitial and requires tapping \"Continue once\" before loading.")
+                Text("When on, a resolution that came from only one endpoint shows an interstitial and requires tapping \"Continue once\" before loading. Unverified answers always keep the amber shield.")
             }
 
             Section {
@@ -106,31 +52,152 @@ struct ENSSettingsView: View {
                 }
             }
         }
-        .navigationTitle("ENS")
+        .navigationTitle("Name Resolution")
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private var methodFooter: String {
-        switch settings.ensResolutionMethod {
-        case .myotis, .direct:
-            // Not selectable; kept for switch exhaustiveness.
-            return ""
-        case .colibri:
-            return "Cryptographic verification — every lookup is proven against Ethereum consensus, not just cross-checked between RPCs. When the embedded P2P light client is enabled and synced, it answers first and this method is the fallback."
-        case .quorum:
-            return "M-of-K public RPCs must agree byte-for-byte at a corroborated block."
-        case .userConfigured:
-            return "Resolution goes through a single Ethereum node you configure."
+    // MARK: - Rows
+
+    @ViewBuilder
+    private func methodRow(_ method: ENSResolutionMethod) -> some View {
+        @Bindable var settings = settings
+        let enabled = settings.ensResolutionEnabled.contains(method)
+        HStack(alignment: .top, spacing: 8) {
+            orderButtons(for: method)
+            ChainSourceRows.Row(
+                title: title(method),
+                help: help(method),
+                badge: badge(method),
+                isOn: Binding(
+                    get: { enabled },
+                    set: { on in
+                        if on || settings.ensResolutionEnabled.count > 1 {
+                            settings.setResolutionMethod(method, enabled: on)
+                        }
+                    }
+                ),
+                canDisable: settings.ensResolutionEnabled.count > 1
+            ) {
+                switch method {
+                case .myotis:
+                    NavigationLink(value: SettingsPath.myotis) {
+                        Text("Node settings").font(.caption)
+                    }
+                case .colibri:
+                    VStack(alignment: .leading, spacing: 6) {
+                        LabeledContent("Prover") {
+                            TextField(ColibriENSClient.defaultProverURL, text: $settings.ensColibriProverUrl)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.URL)
+                                .font(.caption).monospaced()
+                                .multilineTextAlignment(.trailing)
+                        }
+                        Toggle("ZK consensus proof", isOn: $settings.ensColibriZkProof)
+                        Text("Leave the prover empty for the corpus.core default. ZK proof bootstraps the sync committee from a succinct proof instead of trusted checkpoints.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .font(.callout)
+                case .quorum:
+                    VStack(alignment: .leading, spacing: 6) {
+                        Stepper("Require \(settings.ensQuorumM) of \(settings.ensQuorumK)",
+                                value: $settings.ensQuorumM, in: 1...max(1, settings.ensQuorumK))
+                        Stepper("Endpoints per wave: \(settings.ensQuorumK)",
+                                value: $settings.ensQuorumK, in: 2...9)
+                            .onChange(of: settings.ensQuorumK) { _, k in
+                                if settings.ensQuorumM > k { settings.ensQuorumM = k }
+                            }
+                        LabeledContent("Timeout") {
+                            ChainSourceRows.NumericField(value: $settings.ensQuorumTimeoutMs, suffix: "ms")
+                        }
+                        Picker("Block anchor", selection: $settings.ensBlockAnchor) {
+                            Text("latest").tag(BlockAnchor.latest)
+                            Text("latest-32").tag(BlockAnchor.latestMinus32)
+                            Text("finalized").tag(BlockAnchor.finalized)
+                        }
+                        LabeledContent("Anchor TTL") {
+                            ChainSourceRows.NumericField(value: $settings.ensBlockAnchorTtlMs, suffix: "ms")
+                        }
+                        Text("Byte-identical answers at one corroborated block. \(mainnetEndpoints) endpoint\(mainnetEndpoints == 1 ? "" : "s") currently available; verified quorum needs at least \(AnchorCorroboration.minQuorumProviders). These are Ethereum's chain settings — the wallet's reads share them.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        NavigationLink(value: SettingsPath.chainEditor(Chain.mainnetID)) {
+                            Text("Manage endpoints").font(.caption)
+                        }
+                    }
+                    .font(.callout)
+                case .userConfigured:
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("https://your-node.example (optional)", text: $settings.ensRpcUrl)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .font(.caption).monospaced()
+                        Text("With your own endpoint set, answers are labelled \"user-configured\". Without one, the first public endpoint that answers is used and the answer is unverified.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .font(.callout)
+                case .direct:
+                    EmptyView()
+                }
+            }
         }
     }
 
-    private func numericField(_ binding: Binding<Int>, suffix: String) -> some View {
-        HStack(spacing: 2) {
-            TextField("", value: binding, format: .number)
-                .keyboardType(.numberPad)
-                .multilineTextAlignment(.trailing)
-                .frame(minWidth: 60)
-            Text(suffix).font(.caption).foregroundStyle(.secondary)
+    private func orderButtons(for method: ENSResolutionMethod) -> some View {
+        let order = settings.ensResolutionOrder
+        let index = order.firstIndex(of: method) ?? 0
+        return VStack(spacing: 6) {
+            Button { move(method, by: -1) } label: {
+                Image(systemName: "chevron.up").font(.caption2)
+            }
+            .disabled(index == 0)
+            Text("\(index + 1)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            Button { move(method, by: 1) } label: {
+                Image(systemName: "chevron.down").font(.caption2)
+            }
+            .disabled(index == order.count - 1)
+        }
+        .buttonStyle(.borderless)
+        .frame(width: 24)
+    }
+
+    private func move(_ method: ENSResolutionMethod, by delta: Int) {
+        var order = settings.ensResolutionOrder
+        guard let index = order.firstIndex(of: method), order.indices.contains(index + delta) else { return }
+        order.swapAt(index, index + delta)
+        settings.setResolutionOrder(order)
+    }
+
+    private func title(_ method: ENSResolutionMethod) -> String {
+        switch method {
+        case .myotis: "Myotis light client"
+        case .colibri: "Colibri"
+        case .quorum: "RPC quorum"
+        case .userConfigured, .direct: "Direct RPC"
+        }
+    }
+
+    private func help(_ method: ENSResolutionMethod) -> String {
+        switch method {
+        case .myotis: "Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head."
+        case .colibri: "A remote prover produces the witness; Freedom verifies the cryptographic proof locally."
+        case .quorum: "Multiple independent RPC endpoints must return byte-identical answers at one anchored block."
+        case .userConfigured, .direct: "Uses one endpoint — your own if configured. This is not cryptographic verification and is off by default."
+        }
+    }
+
+    private func badge(_ method: ENSResolutionMethod) -> ChainSourceRows.Badge {
+        switch method {
+        case .myotis:
+            return ChainSourceRows.myotisBadge(chainID: Chain.mainnetID, node: myotis, enabled: settings.myotisNodeEnabled)
+        case .colibri:
+            return ChainSourceRows.Badge(text: "Verified", kind: .ready)
+        case .quorum:
+            return ChainSourceRows.quorumBadge(m: settings.ensQuorumM, k: settings.ensQuorumK, available: mainnetEndpoints)
+        case .userConfigured, .direct:
+            return settings.ensRpcUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? ChainSourceRows.Badge(text: "Public endpoint", kind: .neutral)
+                : ChainSourceRows.Badge(text: "Your endpoint", kind: .ready)
         }
     }
 }

@@ -14,7 +14,11 @@ struct SettingsView: View {
     /// Going entirely value-based avoids the SwiftUI mixed-model
     /// bounce where a value-push from inside a destination-pushed
     /// view forces the visible stack to re-sync.
-    @State private var path: [SettingsPath] = []
+    @State private var path: [SettingsPath]
+
+    init(initialPath: [SettingsPath] = []) {
+        _path = State(initialValue: initialPath)
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -23,7 +27,7 @@ struct SettingsView: View {
                     Label("Wallet", systemImage: "wallet.bifold.fill")
                 }
                 NavigationLink(value: SettingsPath.ens) {
-                    Label("ENS", systemImage: "globe")
+                    Label("Name Resolution", systemImage: "globe")
                 }
                 NavigationLink(value: SettingsPath.swarm) {
                     Label("Swarm", systemImage: "circle.hexagongrid.fill")
@@ -35,7 +39,7 @@ struct SettingsView: View {
                     Label("Light Client", systemImage: "bolt.shield.fill")
                 }
                 NavigationLink(value: SettingsPath.rpc) {
-                    Label("RPC", systemImage: "antenna.radiowaves.left.and.right")
+                    Label("Chains", systemImage: "antenna.radiowaves.left.and.right")
                 }
                 NavigationLink(value: SettingsPath.adblock) {
                     Label("Ad Blocking", systemImage: "shield.lefthalf.filled")
@@ -74,7 +78,7 @@ struct SettingsView: View {
             AdblockSettingsView()
         case .chainEditor(let id):
             if let chain = chainStore.chain(id: id) {
-                ChainRPCDetailView(chain: chain)
+                ChainDetailView(chain: chain, chainStore: chainStore)
             }
         case .chainlistSearch:
             ChainlistSearchView()

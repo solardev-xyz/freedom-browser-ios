@@ -1,7 +1,7 @@
 # Roadmap: generic chain-data router with adaptive latency and per-chain policy settings
 
-**Status:** researched, not started
-**Branch:** `feat/chain-data-router` (to be created off `main` at `b2b4568`)
+**Status:** implemented on `feat/chain-data-router` (2026-09-18); the design doc is `chain-data-router.md`, this file is the plan it followed. Deviations: Ethereum's quorum / prover values stay in the ENS settings keys and the chain policy reads them (no one-time copy into the record); the Name Resolution page got the same ordered-policy UI (desktop "Resolution order") instead of a cross-link only; custom-RPC name resolution stays fail-closed.
+**Branch:** `feat/chain-data-router` off `main` at `d021563`
 **Last updated:** 2026-09-18
 **Desktop reference:** `src/main/networks/chain-data-router.js` (1,122 lines, 49 unit tests), `network-registry.js`, `src/shared/chains.json`, `endpoint-sources.json`, the per-chain detail page in `src/renderer/pages/settings.html` (≈ lines 3826–4110), commits `3e0caa5b` / `01dd4862` (adaptive read fallback), issue #221 (zSwap read lab).
 

@@ -98,30 +98,29 @@ Capped at 500 entries (matches desktop); on overflow, expired entries evict firs
 
 ## Settings ↔ resolver
 
-All runtime configuration lives in `SettingsStore`, persisted to `UserDefaults`. Keys mirror desktop's `settings-store.js` one-to-one:
+All runtime configuration lives in `SettingsStore`, persisted to `UserDefaults`. Since the chain-data router landed (`docs/chain-data-router.md`) the resolver walks an **ordered policy** rather than a single method picker — desktop's "Resolution order":
 
-| Key                       | Default | Purpose |
-|---------------------------|---------|---------|
-| `enableEnsCustomRpc`      | false   | Use `ensRpcUrl` as single-source (user-configured trust) |
-| `ensRpcUrl`               | ""      | User's own RPC endpoint |
-| `enableEnsQuorum`         | true    | Master toggle; off ⇒ single-source unverified |
-| `ensQuorumK`              | 3       | Target providers per wave (clamped [2, 9]) |
-| `ensQuorumM`              | 2       | Required agreement count |
-| `ensQuorumTimeoutMs`      | 5000    | Per-leg timeout |
-| `ensBlockAnchor`          | `latest`| `latest` / `latest-32` / `finalized` |
-| `ensBlockAnchorTtlMs`     | 30000   | Pinned block cache TTL |
-| `ensPublicRpcProviders`   | 9 URLs  | Editable public-RPC pool |
-| `blockUnverifiedEns`      | true    | Route unverified outcomes through the interstitial |
+| Key                        | Default | Purpose |
+|----------------------------|---------|---------|
+| `ensResolutionOrder`       | `myotis, colibri, quorum, user-configured` | Every method once, in priority order |
+| `ensResolutionEnabled`     | `myotis, colibri, quorum` | Which of them run; Direct RPC is off by default |
+| `ensPreferVerified`        | true    | Hold an unverified Direct RPC answer while later methods try to verify |
+| `ensRpcUrl`                | ""      | Direct RPC's endpoint; empty means the first public endpoint that answers |
+| `ensColibriProverUrl`      | ""      | Colibri prover override (empty = corpus.core default) — also Ethereum's chain policy |
+| `ensColibriZkProof`        | true    | ZK sync-committee bootstrap — also Ethereum's chain policy |
+| `ensQuorumK`               | 3       | Endpoints per wave (clamped [2, 9]) — also Ethereum's chain policy |
+| `ensQuorumM`               | 2       | Required agreement count — also Ethereum's chain policy |
+| `ensQuorumTimeoutMs`       | 5000    | Per-leg / per-source timeout — also Ethereum's chain policy |
+| `ensBlockAnchor`           | `latest`| `latest` / `latest-32` / `finalized` |
+| `ensBlockAnchorTtlMs`      | 30000   | Pinned block cache TTL |
+| `blockUnverifiedEns`       | true    | Route unverified outcomes through the interstitial |
+| `enableCcipRead`           | true    | Follow EIP-3668 OffchainLookup reverts |
 
-Sub-minimum `ensQuorumK` or `ensQuorumM` values route through the single-source unverified path instead of producing a `.verified` badge we can't defend.
+The walk (`ENSResolver.consensusResolve`, and the same order for reverse lookups): for each enabled method — Myotis (when the embedded client is ready), Colibri, RPC quorum (`resolveQuorumTier`: anchor → wave → second wave), Direct RPC (`resolveDirectTier`: the user's endpoint if set, else the pool's first answer) — a method's own failure (prover error, P2P warm-up, an infeasible quorum, an unreachable custom node) falls through to the next; a deterministic answer (data, a verified negative, a conflict, an anchor disagreement) ends the walk. An underpowered quorum (K < 3, M < 2, fewer than 3 endpoints, no corroborated anchor) no longer degrades to a single source on its own: it falls through, and only an enabled Direct RPC row produces an unverified answer. When nothing answers, an unreachable custom node surfaces as `customRpcFailed` over generic failures.
 
-Plus one advanced flag not mirrored from desktop:
+**Migration.** Installs predating the order derive it once from the legacy keys (`ensResolutionMethod`, `ensFallbackToQuorum`, `enableEnsQuorum`, marker `ensResolutionOrderMigrated`): Colibri primary → Myotis, Colibri, quorum (quorum only if the fallback switch was on); quorum primary → Myotis, quorum, or Myotis, Direct RPC if the quorum switch was off (the old single-source degrade); custom RPC → Myotis, Direct RPC and nothing public after it (fail-closed, as before). The legacy properties remain as shims that rewrite the order.
 
-| Key                | Default | Purpose |
-|--------------------|---------|---------|
-| `enableCcipRead`   | false   | Follow EIP-3668 OffchainLookup reverts (CCIP-Read). Off by default because it silently relays queries to third-party gateways. |
-
-`SettingsView.swift` is the UI — a Form reached from the ⋯ menu with sections for Custom RPC, Quorum (K/M/timeout/anchor), Public RPC Providers (editable list), Safety, and Advanced. Tapping Done calls `ENSResolver.invalidate()` which clears the name cache, cancels in-flight Tasks, and resets both the anchor cache and provider pool — so the next navigation runs against the new config.
+The RPC pool itself (the Ethereum endpoints) is the mainnet `ChainRecord`, edited under Settings → Chains → Ethereum; the Name Resolution page shows the quorum numbers and prover and links there. `SettingsView`'s Done calls `ENSResolver.invalidate()` (name cache, in-flight tasks, anchor cache) and resets every pool so the next navigation runs against the new config.
 
 ## ENSv2 readiness (2026-09)
 
