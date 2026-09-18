@@ -151,8 +151,17 @@ struct OnchainAppProvenance: Equatable, Sendable {
     /// Which source served the document, for the interstitial.
     var source: String { trust.agreed.first ?? trust.queried.first ?? "unknown" }
 
-    /// Verified (Myotis / Colibri) documents load directly.
+    /// Endpoints answered but disagreed and no verified tier settled it:
+    /// the bytes cannot be trusted, and "continue once" is not offered
+    /// (desktop PR #232's hard block).
+    var hasConflict: Bool {
+        !trust.dissented.isEmpty && trust.level != .verified
+    }
+
+    /// Verified (Myotis / Colibri / quorum) documents and the user's own
+    /// endpoint load directly.
     var isTrusted: Bool {
+        guard !hasConflict else { return false }
         switch trust.level {
         case .verified, .userConfigured: return true
         case .unverified, .conflict: return false

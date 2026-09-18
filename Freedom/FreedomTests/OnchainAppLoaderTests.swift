@@ -2,10 +2,11 @@ import XCTest
 import web3
 @testable import Freedom
 
-/// The `html()` ladder keeps provenance: verified sources win and label
-/// the document verified; the direct pool answers unverified with the
-/// endpoint named; reverts are the contract's answer; dead endpoints
-/// are quarantined; oversized or malformed documents are refused.
+/// The `html()` fetch rides the chain-data router and keeps provenance:
+/// verified sources win and label the document verified; the direct
+/// pool answers unverified with the endpoint named; disagreement is a
+/// conflict; reverts are the contract's answer; dead endpoints are
+/// quarantined; oversized or malformed documents are refused.
 @MainActor
 final class OnchainAppLoaderTests: XCTestCase {
     private var bundle: ChainStackBundle!
@@ -32,7 +33,7 @@ final class OnchainAppLoaderTests: XCTestCase {
         private let lock = NSLock()
         var answers: [String: Result<Data, Error>] = [:]
         private(set) var hits: [String] = []
-        var closure: OnchainAppLoader.Transport {
+        var closure: ChainDataRouter.Transport {
             { [self] url, _, _ in
                 let host = url.host ?? ""
                 lock.withLock { hits.append(host) }
@@ -54,8 +55,12 @@ final class OnchainAppLoaderTests: XCTestCase {
         bundle.chainStore.updateRPCURLs(forChainID: 1, ["https://a.example", "https://b.example"])
     }
 
+    /// The loader reads through the registry's router; the test router
+    /// carries the scripted transport. The bundle's mainnet policy is the
+    /// single-shot ladder (no quorum) unless a test overrides it.
     private func loader(_ transport: Transport) -> OnchainAppLoader {
-        OnchainAppLoader(registry: bundle.registry, chainStore: bundle.chainStore, transport: transport.closure)
+        bundle.registry.walletRPC = WalletRPC(router: ChainDataRouter(registry: bundle.registry, transport: transport.closure))
+        return OnchainAppLoader(registry: bundle.registry, chainStore: bundle.chainStore)
     }
 
     func testVerifiedSourceAnswersWithProvenanceAndSkipsDirect() async throws {
@@ -81,10 +86,55 @@ final class OnchainAppLoaderTests: XCTestCase {
         transport.answers["a.example"] = .success(try rpcResult(Self.abiString("<p>direct</p>")))
         let document = try await loader(transport).load(zswap)
         XCTAssertEqual(document.html, "<p>direct</p>")
-        XCTAssertEqual(document.provenance.trust.level, .unverified)
+        // a.example is a URL the test added to the mainnet list, so it is
+        // the user's own endpoint: single-source trust, by their choice.
+        XCTAssertEqual(document.provenance.trust.level, .userConfigured)
+        XCTAssertEqual(document.provenance.trust.method, .direct)
         XCTAssertEqual(document.provenance.source, "a.example")
-        XCTAssertFalse(document.provenance.isTrusted)
+        XCTAssertTrue(document.provenance.isTrusted, "the user's own endpoint loads without the gate")
         XCTAssertEqual(myotis.calls, 1)
+    }
+
+    func testPublicEndpointAnswerIsUnverifiedAndGated() async throws {
+        let shipped = SettingsStore.defaultPublicRpcProviders[0]
+        bundle.chainStore.updateRPCURLs(forChainID: 1, [shipped])
+        let transport = Transport()
+        transport.answers[URL(string: shipped)!.host!] = .success(try rpcResult(Self.abiString("<p>public</p>")))
+        let document = try await loader(transport).load(zswap)
+        XCTAssertEqual(document.provenance.trust.level, .unverified)
+        XCTAssertFalse(document.provenance.isTrusted)
+        XCTAssertFalse(document.provenance.hasConflict)
+    }
+
+    func testEndpointDisagreementIsAConflict() async throws {
+        // Quorum over three shipped endpoints that all answer differently:
+        // direct reuses the first member, and the dissent travels with it.
+        let shipped = Array(SettingsStore.defaultPublicRpcProviders.prefix(3))
+        bundle.chainStore.updateRPCURLs(forChainID: 1, shipped)
+        bundle.registry.policyOverrides[1] = ChainAccessPolicy(readOrder: [.quorum, .direct], broadcastOrder: [.direct])
+        let transport = Transport()
+        for (i, url) in shipped.enumerated() {
+            transport.answers[URL(string: url)!.host!] = .success(try rpcResult(Self.abiString("<p>v\(i)</p>")))
+        }
+        let document = try await loader(transport).load(zswap)
+        XCTAssertTrue(document.provenance.hasConflict)
+        XCTAssertFalse(document.provenance.isTrusted)
+        XCTAssertEqual(document.provenance.trust.dissented.count, 2)
+        XCTAssertEqual(document.html, "<p>v0</p>", "the highest-priority member's bytes are what the gate shows")
+    }
+
+    func testQuorumAgreementIsVerified() async throws {
+        let shipped = Array(SettingsStore.defaultPublicRpcProviders.prefix(3))
+        bundle.chainStore.updateRPCURLs(forChainID: 1, shipped)
+        bundle.registry.policyOverrides[1] = ChainAccessPolicy(readOrder: [.quorum, .direct], broadcastOrder: [.direct])
+        let transport = Transport()
+        for url in shipped {
+            transport.answers[URL(string: url)!.host!] = .success(try rpcResult(Self.abiString("<p>same</p>")))
+        }
+        let document = try await loader(transport).load(zswap)
+        XCTAssertEqual(document.provenance.trust.level, .verified)
+        XCTAssertEqual(document.provenance.trust.method, .quorum)
+        XCTAssertTrue(document.provenance.isTrusted)
     }
 
     func testDeadEndpointIsQuarantinedAndNextOneAnswers() async throws {
@@ -159,7 +209,7 @@ final class OnchainAppLoaderTests: XCTestCase {
     /// path releases it on the actor.
     func testApprovalsAreKeyedByExactBytesAndBounded() async {
         let approvals = OnchainApprovals()
-        let trust = OnchainAppLoader.directTrust(endpoint: URL(string: "https://a.example")!)
+        let trust = TestTrust.direct()
         let a = OnchainAppProvenance(app: zswap, networkName: "Ethereum", htmlHash: OnchainAppRef.htmlHash("a"), trust: trust)
         let b = OnchainAppProvenance(app: zswap, networkName: "Ethereum", htmlHash: OnchainAppRef.htmlHash("b"), trust: trust)
         XCTAssertFalse(approvals.isApproved(a))

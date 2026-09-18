@@ -4,34 +4,21 @@ import OSLog
 private let log = Logger(subsystem: "com.browser.Freedom", category: "OnchainApp")
 
 /// Fetches an ERC-8244 document: one `eth_call` of `html()` at `latest`
-/// through the same ladder the wallet's reads use — the verified sources
-/// (Myotis, Colibri) first, then the chain's direct RPC pool — but
-/// keeping *who answered*. Desktop's chain-data router returns that
-/// provenance on every read; the wallet path on iOS strips it, and the
-/// gate below needs it: a document only a public RPC vouched for must
-/// not run until the user says so.
+/// through the chain-data router with the app's permission key as the
+/// routing context — the same ladder every read uses (Myotis, Colibri,
+/// quorum, direct), with the interactive budget a page-driven read
+/// gets, and *who answered* on the result. The gate below needs that
+/// provenance: a document only a public RPC vouched for must not run
+/// until the user says so, and one that endpoints disagreed about must
+/// not run at all.
 @MainActor
 final class OnchainAppLoader {
-    typealias Transport = @Sendable (URL, Data, TimeInterval) async throws -> Data
-
     private let registry: ChainRegistry
     private let chainStore: ChainStore
-    private let transport: Transport
 
-    /// Per-endpoint budget on the direct tier; the whole load is bounded
-    /// by `OnchainAppRef.requestTimeout`.
-    static let directTimeout: TimeInterval = 10
-
-    init(
-        registry: ChainRegistry,
-        chainStore: ChainStore,
-        transport: @escaping Transport = { url, body, timeout in
-            try await RPCSession.postBytes(url: url, body: body, timeout: timeout)
-        }
-    ) {
+    init(registry: ChainRegistry, chainStore: ChainStore) {
         self.registry = registry
         self.chainStore = chainStore
-        self.transport = transport
     }
 
     func load(_ app: OnchainAppRef) async throws -> OnchainAppDocument {
@@ -56,77 +43,41 @@ final class OnchainAppLoader {
     private func fetch(_ app: OnchainAppRef, chain: Chain) async throws -> OnchainAppDocument {
         let call: [String: Any] = ["to": app.address, "data": OnchainAppRef.htmlSelector]
         let params: [Any] = [call, "latest"]
-
-        // Verified sources: a proven revert is a deterministic answer
-        // ("not an app"); anything else falls through to the next source.
-        for source in registry.verifiedSources
-        where !Self.debugForceDirect
-            && source.isAvailable(chainID: chain.id)
-            && source.serves(method: "eth_call", params: params, chainID: chain.id)
-        {
-            try Task.checkCancellation()
-            do {
-                let result = try await source.result(method: "eth_call", params: params, chainID: chain.id)
-                guard let hex = result as? String else { continue }
-                let html = try OnchainAppRef.decodeHTML(hex)
-                log.info("[onchain] html() chain=\(chain.id) via \(source.sourceName, privacy: .public)")
-                return document(html: html, app: app, chain: chain, trust: Self.verifiedTrust(source: source.sourceName))
-            } catch let error as WalletRPC.Error {
-                throw OnchainAppError.notAnApp(detail: error.errorDescription ?? "execution reverted")
-            } catch let error as OnchainAppError {
-                throw error
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                log.info("[onchain] \(source.sourceName, privacy: .public) unavailable: \(String(describing: error), privacy: .public) — falling through")
-                continue
-            }
+        let result: ChainDataResult
+        do {
+            result = try await registry.chainData.request(
+                chainID: chain.id,
+                method: "eth_call",
+                params: params,
+                context: RoutingContext(origin: app.permissionKey),
+                options: .init(rejectNull: true, directOnly: Self.debugForceDirect)
+            )
+        } catch WalletRPC.Error.rpc(_, let message) {
+            // A revert (verified or from an endpoint) is the contract's
+            // answer: not an app.
+            throw OnchainAppError.notAnApp(detail: message)
+        } catch let error as WalletRPC.Error {
+            log.info("[onchain] html() chain=\(chain.id) failed: \(error.errorDescription ?? "", privacy: .public)")
+            throw OnchainAppError.unreachable
         }
-
-        // Direct tier: the first public endpoint that answers, labelled
-        // unverified. Transport / malformed failures quarantine the
-        // endpoint; a revert is the contract's answer and ends the walk.
-        let body = try JSONSerialization.data(withJSONObject: [
-            "jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": params,
-        ])
-        let urls = registry.rpcURLs(for: chain)
-        for url in urls {
-            try Task.checkCancellation()
-            let data: Data
-            do {
-                data = try await transport(url, body, Self.directTimeout)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                registry.markFailure(url: url, on: chain)
-                continue
-            }
-            guard let envelope = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                registry.markFailure(url: url, on: chain)
-                continue
-            }
-            if let error = envelope["error"] as? [String: Any] {
-                if error["data"] != nil {
-                    throw OnchainAppError.notAnApp(detail: (error["message"] as? String) ?? "execution reverted")
-                }
-                // Endpoint-level refusal (rate limit, method unsupported):
-                // not the contract's answer, try the next endpoint.
-                continue
-            }
-            guard let hex = envelope["result"] as? String else {
-                registry.markFailure(url: url, on: chain)
-                continue
-            }
-            registry.markSuccess(url: url, on: chain)
-            let html = try OnchainAppRef.decodeHTML(hex)
-            log.info("[onchain] html() chain=\(chain.id) via direct \(url.hostOrAbsolute, privacy: .public) (unverified)")
-            return document(html: html, app: app, chain: chain, trust: Self.directTrust(endpoint: url))
-        }
-        throw OnchainAppError.unreachable
+        guard let hex = result.result as? String else { throw OnchainAppError.unreachable }
+        let html = try OnchainAppRef.decodeHTML(hex)
+        log.info(
+            "[onchain] html() chain=\(chain.id) via \(result.source.rawValue, privacy: .public) \(result.trust.level.displayName, privacy: .public) dissent=\(result.trust.dissented.count)"
+        )
+        return OnchainAppDocument(
+            html: html,
+            provenance: OnchainAppProvenance(
+                app: app,
+                networkName: chain.displayName,
+                htmlHash: OnchainAppRef.htmlHash(html),
+                trust: result.trust
+            )
+        )
     }
 
     /// Smoke-test hook (DEBUG builds only): `FREEDOM_DEBUG_ONCHAIN_DIRECT=1`
-    /// skips the verified sources so the unverified path and its
+    /// skips the verified tiers so the unverified path and its
     /// interstitial can be exercised on a simulator whose Colibri or
     /// Myotis would otherwise verify every mainnet read.
     private static var debugForceDirect: Bool {
@@ -135,37 +86,6 @@ final class OnchainAppLoader {
         #else
         return false
         #endif
-    }
-
-    private func document(html: String, app: OnchainAppRef, chain: Chain, trust: ENSTrust) -> OnchainAppDocument {
-        OnchainAppDocument(
-            html: html,
-            provenance: OnchainAppProvenance(
-                app: app,
-                networkName: chain.displayName,
-                htmlHash: OnchainAppRef.htmlHash(html),
-                trust: trust
-            )
-        )
-    }
-
-    static func verifiedTrust(source: String) -> ENSTrust {
-        let method: ENSResolutionMethod = source == "myotis" ? .myotis : .colibri
-        let label = source == "myotis" ? ENSResolver.myotisProviderLabel : source
-        return ENSTrust(
-            level: .verified, method: method,
-            block: ENSBlock(number: 0, hash: ""),
-            agreed: [label], dissented: [], queried: [label], k: 1, m: 1
-        )
-    }
-
-    static func directTrust(endpoint: URL) -> ENSTrust {
-        let host = endpoint.hostOrAbsolute
-        return ENSTrust(
-            level: .unverified, method: .quorum,
-            block: ENSBlock(number: 0, hash: ""),
-            agreed: [host], dissented: [], queried: [host], k: 1, m: 1
-        )
     }
 }
 

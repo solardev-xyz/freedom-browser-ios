@@ -19,6 +19,10 @@ struct WalletRPC {
         case invalidResponse
         /// The chain has no URLs configured.
         case noProviders
+        /// The embedded light client accepted the signed transaction for
+        /// devp2p broadcast but could not confirm the outcome. It may
+        /// still land: never re-sign or re-broadcast blindly.
+        case broadcastUncertain(message: String)
 
         var errorDescription: String? {
             switch self {
@@ -33,6 +37,8 @@ struct WalletRPC {
                 return "Invalid response from all providers."
             case .noProviders:
                 return "No RPC providers configured for this chain."
+            case .broadcastUncertain(let message):
+                return "Broadcast outcome uncertain (\(message)). The transaction may still land — check the explorer before sending again."
             }
         }
     }
@@ -189,7 +195,7 @@ struct WalletRPC {
     }
 
     func sendRawTransaction(rawHex: String, on chain: Chain) async throws -> String {
-        try await call("eth_sendRawTransaction", params: [rawHex], on: chain)
+        try await router.broadcast(chainID: chain.id, rawTransaction: rawHex).hash
     }
 
     /// Untyped JSON pass-through for the EIP-1193 bridge. Dapp-supplied
