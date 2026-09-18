@@ -221,4 +221,62 @@ final class IpfsSchemeHandlerTests: XCTestCase {
         XCTAssertNil(meta.status)
         XCTAssertNil(meta.headers)
     }
+
+    // MARK: - Plain-text probe decision table
+
+    private func documentRequest(accept: String? = "text/html,*/*;q=0.8", mainDocument: Bool = true) -> URLRequest {
+        let url = URL(string: "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        if mainDocument { req.mainDocumentURL = url }
+        if let accept { req.setValue(accept, forHTTPHeaderField: "Accept") }
+        return req
+    }
+
+    private let octet = ["content-type": "application/octet-stream", "content-length": "32"]
+
+    func testPlainTextProbeAppliesToSmallOctetStreamDocumentLoads() {
+        XCTAssertEqual(IpfsSchemeHandler.plainTextProbeLength(method: "GET", status: 200, headers: octet, request: documentRequest()), 32)
+        // Header names arrive in whatever case the gateway used.
+        XCTAssertEqual(IpfsSchemeHandler.plainTextProbeLength(
+            method: "get", status: 200,
+            headers: ["Content-Type": "APPLICATION/OCTET-STREAM; x=y", "Content-Length": " 7 "],
+            request: documentRequest()), 7)
+        // No Accept header at all: the main-document check alone decides.
+        XCTAssertEqual(IpfsSchemeHandler.plainTextProbeLength(method: "GET", status: 200, headers: octet, request: documentRequest(accept: nil)), 32)
+    }
+
+    func testPlainTextProbeDeclinesEverythingElse() {
+        let doc = documentRequest()
+        XCTAssertNil(IpfsSchemeHandler.plainTextProbeLength(method: "HEAD", status: 200, headers: octet, request: doc))
+        XCTAssertNil(IpfsSchemeHandler.plainTextProbeLength(method: "GET", status: 206, headers: octet, request: doc))
+        XCTAssertNil(IpfsSchemeHandler.plainTextProbeLength(method: "GET", status: 200, headers: octet, request: documentRequest(mainDocument: false)))
+        XCTAssertNil(IpfsSchemeHandler.plainTextProbeLength(method: "GET", status: 200, headers: octet, request: documentRequest(accept: "*/*")))
+        XCTAssertNil(IpfsSchemeHandler.plainTextProbeLength(method: "GET", status: 200, headers: ["content-type": "text/html", "content-length": "32"], request: doc))
+        XCTAssertNil(IpfsSchemeHandler.plainTextProbeLength(method: "GET", status: 200, headers: ["content-type": "application/octet-stream"], request: doc))
+        XCTAssertNil(IpfsSchemeHandler.plainTextProbeLength(method: "GET", status: 200, headers: ["content-type": "application/octet-stream", "content-length": "0"], request: doc))
+        XCTAssertNil(IpfsSchemeHandler.plainTextProbeLength(method: "GET", status: 200, headers: ["content-type": "application/octet-stream", "content-length": "4097"], request: doc))
+        for blocker in ["content-disposition", "x-content-type-options", "content-range"] {
+            var headers = octet
+            headers[blocker] = "x"
+            XCTAssertNil(IpfsSchemeHandler.plainTextProbeLength(method: "GET", status: 200, headers: headers, request: doc), blocker)
+        }
+    }
+
+    func testRenderablePlainTextAcceptsUTF8AndRejectsBinary() {
+        XCTAssertTrue(IpfsSchemeHandler.isRenderablePlainText(Data("Hello from IPFS Gateway Checker\n".utf8)))
+        XCTAssertTrue(IpfsSchemeHandler.isRenderablePlainText(Data("tab\tcr\rff\u{0C}ü🦇".utf8)))
+        XCTAssertFalse(IpfsSchemeHandler.isRenderablePlainText(Data()))
+        XCTAssertFalse(IpfsSchemeHandler.isRenderablePlainText(Data([0x89, 0x50, 0x4e, 0x47])))
+        XCTAssertFalse(IpfsSchemeHandler.isRenderablePlainText(Data("a\u{0}b".utf8)))
+        XCTAssertFalse(IpfsSchemeHandler.isRenderablePlainText(Data("a\u{7F}b".utf8)))
+    }
+
+    func testPlainTextHeadersRelabelWithoutPromotingToHTML() {
+        let out = IpfsSchemeHandler.plainTextHeaders(["content-type": "application/octet-stream", "content-length": "5", "etag": "x"])
+        XCTAssertEqual(out["Content-Type"], "text/plain; charset=utf-8")
+        XCTAssertEqual(out["X-Content-Type-Options"], "nosniff")
+        XCTAssertNil(out["content-type"])
+        XCTAssertEqual(out["etag"], "x")
+    }
 }

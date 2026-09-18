@@ -637,6 +637,81 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated static func decodeNativeResponseMetadata(_ json: String) throws -> NativeResponseMetadata {
         try nativeDecoder.decode(NativeResponseMetadata.self, from: Data(json.utf8))
     }
+
+    // MARK: - Plain-text rendering of bare UnixFS files (ENSv2 readiness)
+
+    /// A bare UnixFS file has no filename the gateway could infer a MIME
+    /// type from, so it arrives as `application/octet-stream` — and
+    /// WebKit refuses to render that at the top level (the ENS gateway
+    /// checker fixture behind `ur.integration-tests.eth` is a 32-byte
+    /// text file). Cap for the probe: responses up to this many bytes
+    /// are buffered and, if they are complete, valid UTF-8 text, served
+    /// as `text/plain`. Never promoted to HTML; never applied to
+    /// subresources (a page loading a bare-CID script would break on
+    /// `nosniff`). Desktop `renderSmallTextResponse` parity.
+    nonisolated static let plainTextProbeMaxBytes = 4096
+
+    /// Declared body length when this response should be probed for
+    /// plain text, nil otherwise. Navigation-only: the request must be
+    /// the document load (`mainDocumentURL` is the request itself) and,
+    /// when WebKit sent one, its `Accept` must lead with `text/html`
+    /// — every subresource sends its own type-specific Accept.
+    nonisolated static func plainTextProbeLength(
+        method: String,
+        status: Int,
+        headers: [String: String],
+        request: URLRequest
+    ) -> Int? {
+        guard method.uppercased() == "GET", status == 200 else { return nil }
+        guard let url = request.url, isDocumentRequest(request, url: url) else { return nil }
+        let lower = Dictionary(headers.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { _, new in new })
+        let type = lower["content-type"]?.split(separator: ";").first?
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        guard type == "application/octet-stream" else { return nil }
+        guard lower["content-disposition"] == nil,
+              lower["x-content-type-options"] == nil,
+              lower["content-range"] == nil else { return nil }
+        guard let length = lower["content-length"].flatMap({ Int($0.trimmingCharacters(in: .whitespaces)) }),
+              length > 0, length <= plainTextProbeMaxBytes else { return nil }
+        return length
+    }
+
+    nonisolated private static func isDocumentRequest(_ request: URLRequest, url: URL) -> Bool {
+        guard let main = request.mainDocumentURL else { return false }
+        guard stripFragment(main) == stripFragment(url) else { return false }
+        if let accept = request.value(forHTTPHeaderField: "Accept") {
+            let first = accept.split(separator: ",").first?.trimmingCharacters(in: .whitespaces).lowercased()
+            return first == "text/html"
+        }
+        return true
+    }
+
+    nonisolated private static func stripFragment(_ url: URL) -> String {
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.fragment = nil
+        return components?.string ?? url.absoluteString
+    }
+
+    /// True when `data` is UTF-8 text a human would read as text: valid
+    /// UTF-8 with no control bytes other than tab, LF, FF and CR.
+    nonisolated static func isRenderablePlainText(_ data: Data) -> Bool {
+        guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return false }
+        for scalar in text.unicodeScalars {
+            let v = scalar.value
+            if v == 127 { return false }
+            if v < 32, ![9, 10, 12, 13].contains(v) { return false }
+        }
+        return true
+    }
+
+    /// Headers for the relabelled response: `text/plain; charset=utf-8`
+    /// plus `nosniff` so WebKit can't second-guess the type upward.
+    nonisolated static func plainTextHeaders(_ headers: [String: String]) -> [String: String] {
+        var out = headers.filter { $0.key.lowercased() != "content-type" }
+        out["Content-Type"] = "text/plain; charset=utf-8"
+        out["X-Content-Type-Options"] = "nosniff"
+        return out
+    }
 }
 
 /// Protocol seam for `NativePending`'s back-pointer to the scheme
@@ -674,8 +749,22 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
     weak var owner: (any NativePendingOwner)?
 
     private let stateLock = NSLock()
+    /// WebKit has been sent `didReceive(response:)`.
     private var responseDelivered = false
     private var terminated = false
+    /// Non-nil while a small octet-stream document is being buffered
+    /// to decide whether it renders as plain text. The response is
+    /// withheld from WebKit until the body completes (or overflows the
+    /// cap, which flushes the original response).
+    private var probe: PlainTextProbe?
+
+    private struct PlainTextProbe {
+        let response: HTTPURLResponse
+        let headers: [String: String]
+        let status: Int
+        let expected: Int
+        var buffer = Data()
+    }
 
     init(
         schemeTask: WKURLSchemeTask,
@@ -774,6 +863,19 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
             stateLock.unlock()
             return
         }
+        if let expected = IpfsSchemeHandler.plainTextProbeLength(
+            method: schemeTask.request.httpMethod ?? "GET",
+            status: status, headers: headers, request: schemeTask.request
+        ) {
+            // Hold the response back; `drainBody` buffers the body and
+            // `terminate(with: nil)` decides the final content type.
+            probe = PlainTextProbe(response: response, headers: headers, status: status, expected: expected)
+            stateLock.unlock()
+            nativeLogger.info(
+                "response handle=\(self.handle.id, privacy: .public) status=\(status, privacy: .public) probing octet-stream document (\(expected, privacy: .public) B)"
+            )
+            return
+        }
         responseDelivered = true
         stateLock.unlock()
 
@@ -783,9 +885,37 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
         deliverOnMain { $0.didReceive(response) }
     }
 
+    /// Route a body chunk to WebKit, or into the plain-text probe buffer
+    /// while one is open. Overflowing the declared length (or the cap)
+    /// ends the probe: the original response and everything buffered so
+    /// far are flushed in order, and later chunks stream as usual.
+    private func emitChunk(_ chunk: Data) {
+        stateLock.lock()
+        guard var open = probe else {
+            stateLock.unlock()
+            deliverOnMain { $0.didReceive(chunk) }
+            return
+        }
+        open.buffer.append(chunk)
+        if open.buffer.count > open.expected || open.buffer.count > IpfsSchemeHandler.plainTextProbeMaxBytes {
+            probe = nil
+            responseDelivered = true
+            stateLock.unlock()
+            let response = open.response
+            let buffered = open.buffer
+            deliverOnMain {
+                $0.didReceive(response)
+                $0.didReceive(buffered)
+            }
+            return
+        }
+        probe = open
+        stateLock.unlock()
+    }
+
     private func drainBody() {
         stateLock.lock()
-        if !responseDelivered || terminated {
+        if (!responseDelivered && probe == nil) || terminated {
             stateLock.unlock()
             return
         }
@@ -816,7 +946,7 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
                     nativeLogger.debug(
                         "chunk handle=\(self.handle.id, privacy: .public) bytes=\(result.bytesRead, privacy: .public)"
                     )
-                    deliverOnMain { $0.didReceive(chunk) }
+                    emitChunk(chunk)
                 }
             case .pending:
                 return
@@ -855,6 +985,22 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
         terminated = true
         // Snapshot under the lock; main hop must see the pre-terminate value.
         let responseAlreadyDelivered = responseDelivered
+        // A probe that reached the end with the complete declared body
+        // is settled here: text renders as text, anything else is served
+        // exactly as the gateway labelled it. On error the probe is
+        // dropped — WebKit never saw a response, so the error page path
+        // below is still available.
+        var settled: (HTTPURLResponse, Data)?
+        if error == nil, let open = probe {
+            let headers = open.buffer.count == open.expected && IpfsSchemeHandler.isRenderablePlainText(open.buffer)
+                ? IpfsSchemeHandler.plainTextHeaders(open.headers)
+                : open.headers
+            let response = IpfsSchemeHandler.sameOriginResponse(
+                url: originalURL, status: open.status, headers: headers
+            ) ?? open.response
+            settled = (response, open.buffer)
+        }
+        probe = nil
         stateLock.unlock()
 
         _ = handle.free()
@@ -873,6 +1019,10 @@ final class NativePending: NativeRequestSink, @unchecked Sendable {
                 guard let self, let owner else { return }
                 guard owner.nativePendingRemove(handleID: id) else { return }
                 guard let error else {
+                    if let (response, body) = settled {
+                        self.schemeTask.didReceive(response)
+                        self.schemeTask.didReceive(body)
+                    }
                     self.schemeTask.didFinish()
                     return
                 }

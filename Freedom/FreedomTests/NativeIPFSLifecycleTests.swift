@@ -245,10 +245,118 @@ final class NativeIPFSLifecycleTests: XCTestCase {
         XCTAssertTrue(task.failErrors.isEmpty)
     }
 
+    // MARK: - Plain-text probe (ENSv2 readiness: bare UnixFS text documents)
+
+    private static func octetStreamJSON(length: Int) -> String {
+        """
+        {"state":"streaming","status":200,"headers":[{"name":"content-type","value":"application/octet-stream"},{"name":"content-length","value":"\(length)"}]}
+        """
+    }
+
+    private func contentType(_ task: FakeURLSchemeTask) -> String? {
+        (task.responses.first as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")
+    }
+
+    /// The ENS gateway-checker fixture: a 32-byte text file served as
+    /// octet-stream. A top-level load renders it as text instead of
+    /// triggering a download.
+    func testSmallOctetStreamTextDocumentRendersAsPlainText() {
+        let text = "Hello from IPFS Gateway Checker\n"
+        let (task, handle, _, pending) = makePending(isDocument: true)
+        handle.enqueueResponseJSON(Self.octetStreamJSON(length: text.utf8.count))
+        handle.enqueueRead(.bytes(Data(text.utf8)))
+        handle.enqueueRead(.status(.end))
+
+        pending.nativeRequestReceivedEvent(makeEvent([.responseReady]))
+        waitForMain(briefly: 0.05)
+        XCTAssertEqual(task.responses.count, 0, "response is withheld while the probe buffers")
+        pending.nativeRequestReceivedEvent(makeEvent([.bodyReady, .end]))
+        waitForMain(until: { task.finishCount == 1 })
+
+        XCTAssertEqual(task.responses.count, 1)
+        XCTAssertEqual(contentType(task), "text/plain; charset=utf-8")
+        XCTAssertEqual((task.responses.first as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Content-Type-Options"), "nosniff")
+        XCTAssertEqual(String(decoding: task.dataChunks.reduce(Data(), +), as: UTF8.self), text)
+        XCTAssertTrue(task.failErrors.isEmpty)
+        XCTAssertEqual(handle.freeCount, 1)
+    }
+
+    func testSmallOctetStreamBinaryDocumentKeepsItsType() {
+        let bytes = Data([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03])
+        let (task, handle, _, pending) = makePending(isDocument: true)
+        handle.enqueueResponseJSON(Self.octetStreamJSON(length: bytes.count))
+        handle.enqueueRead(.bytes(bytes))
+        handle.enqueueRead(.status(.end))
+
+        pending.nativeRequestReceivedEvent(makeEvent([.responseReady]))
+        pending.nativeRequestReceivedEvent(makeEvent([.bodyReady, .end]))
+        waitForMain(until: { task.finishCount == 1 })
+
+        XCTAssertEqual(task.responses.count, 1)
+        XCTAssertEqual(contentType(task), "application/octet-stream")
+        XCTAssertNil((task.responses.first as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Content-Type-Options"))
+        XCTAssertEqual(task.dataChunks.reduce(Data(), +), bytes)
+    }
+
+    /// Subresources stream untouched: relabelling a bare-CID script as
+    /// `text/plain` + `nosniff` would make WebKit refuse to run it.
+    func testOctetStreamSubresourceIsNotProbed() {
+        let (task, handle, _, pending) = makePending(isDocument: false)
+        handle.enqueueResponseJSON(Self.octetStreamJSON(length: 5))
+        handle.enqueueRead(.bytes(Data("hello".utf8)))
+        handle.enqueueRead(.status(.end))
+
+        pending.nativeRequestReceivedEvent(makeEvent([.responseReady]))
+        waitForMain(until: { task.responses.count == 1 })
+        XCTAssertEqual(contentType(task), "application/octet-stream")
+        pending.nativeRequestReceivedEvent(makeEvent([.bodyReady, .end]))
+        waitForMain(until: { task.finishCount == 1 })
+        XCTAssertEqual(task.responses.count, 1)
+    }
+
+    /// A body longer than the declared length ends the probe: the
+    /// original response and every buffered byte flush in order and the
+    /// rest streams normally.
+    func testProbeOverflowFlushesOriginalResponseInOrder() {
+        let (task, handle, _, pending) = makePending(isDocument: true)
+        handle.enqueueResponseJSON(Self.octetStreamJSON(length: 4))
+        handle.enqueueRead(.bytes(Data("ab".utf8)))
+        handle.enqueueRead(.bytes(Data("cde".utf8)))
+        handle.enqueueRead(.bytes(Data("f".utf8)))
+        handle.enqueueRead(.status(.end))
+
+        pending.nativeRequestReceivedEvent(makeEvent([.responseReady]))
+        pending.nativeRequestReceivedEvent(makeEvent([.bodyReady, .end]))
+        waitForMain(until: { task.finishCount == 1 })
+
+        XCTAssertEqual(task.responses.count, 1)
+        XCTAssertEqual(contentType(task), "application/octet-stream")
+        XCTAssertEqual(String(decoding: task.dataChunks.reduce(Data(), +), as: UTF8.self), "abcdef")
+    }
+
+    /// Failure while probing: WebKit never saw a response, so the
+    /// error-page path is still available and no partial body leaks.
+    func testFailureDuringProbeRendersErrorPage() {
+        let (task, handle, _, pending) = makePending(isDocument: true)
+        handle.enqueueResponseJSON(Self.octetStreamJSON(length: 10))
+        handle.enqueueRead(.bytes(Data("abc".utf8)))
+        handle.enqueueRead(.status(.pending))
+
+        pending.nativeRequestReceivedEvent(makeEvent([.responseReady]))
+        pending.nativeRequestReceivedEvent(makeEvent([.bodyReady]))
+        waitForMain(briefly: 0.05)
+        pending.nativeRequestReceivedEvent(makeEvent([.failed]))
+        waitForMain(until: { task.finishCount == 1 || !task.failErrors.isEmpty })
+
+        XCTAssertEqual(task.responses.count, 1)
+        XCTAssertNotEqual((task.responses.first as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertFalse(task.dataChunks.contains(Data("abc".utf8)), "partial probe body must not leak")
+    }
+
     // MARK: - Helpers
 
-    private func makePending() -> (FakeURLSchemeTask, FakeNativeGatewayHandle, StubNativePendingOwner, NativePending) {
-        let task = FakeURLSchemeTask(url: url)
+    private func makePending(isDocument: Bool = false) -> (FakeURLSchemeTask, FakeNativeGatewayHandle, StubNativePendingOwner, NativePending) {
+        let task = FakeURLSchemeTask(url: url, isDocument: isDocument)
         let handle = FakeNativeGatewayHandle(id: 42)
         let owner = StubNativePendingOwner()
         owner.activeHandles.insert(handle.id)
@@ -307,9 +415,14 @@ private final class FakeURLSchemeTask: NSObject, WKURLSchemeTask {
     var finishCount = 0
     var failErrors: [any Error] = []
 
-    init(url: URL) {
+    init(url: URL, isDocument: Bool = false) {
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
+        if isDocument {
+            // What WebKit hands a scheme handler for a top-level load.
+            req.mainDocumentURL = url
+            req.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        }
         self.request = req
         super.init()
     }
