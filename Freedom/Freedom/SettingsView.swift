@@ -14,10 +14,13 @@ struct SettingsView: View {
     /// Going entirely value-based avoids the SwiftUI mixed-model
     /// bounce where a value-push from inside a destination-pushed
     /// view forces the visible stack to re-sync.
-    @State private var path: [SettingsPath]
+    @State private var path: [SettingsPath] = []
+    /// Applied one tick after the stack appears: a multi-level path set
+    /// before the destinations are registered is dropped by SwiftUI.
+    private let initialPath: [SettingsPath]
 
     init(initialPath: [SettingsPath] = []) {
-        _path = State(initialValue: initialPath)
+        self.initialPath = initialPath
     }
 
     var body: some View {
@@ -57,6 +60,11 @@ struct SettingsView: View {
             }
         }
         .environment(\.settingsPath, $path)
+        .task {
+            guard !initialPath.isEmpty, path.isEmpty else { return }
+            await Task.yield()
+            path = initialPath
+        }
     }
 
     @ViewBuilder
@@ -80,6 +88,12 @@ struct SettingsView: View {
             if let chain = chainStore.chain(id: id) {
                 ChainDetailView(chain: chain, chainStore: chainStore)
             }
+        case .chainSource(let id, let source):
+            if let chain = chainStore.chain(id: id) {
+                ChainSourceDetailView(chain: chain, source: source)
+            }
+        case .ensMethod(let method):
+            ENSMethodDetailView(method: method)
         case .chainlistSearch:
             ChainlistSearchView()
         case .addChainForm(let prefill):

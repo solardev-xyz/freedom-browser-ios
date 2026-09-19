@@ -64,7 +64,7 @@ ChainDataRouter.request(chainID:method:params:context:options:)
 
 ## Settings
 
-Settings → **Chains** lists the chains; each chain's page has the read and verification order (a switch per source, up/down to reorder, status badges — Myotis readiness, "2 of 3" for quorum, "Your endpoint" for direct — with the Colibri prover + ZK and the M-of-K + timeout under their rows), the transaction broadcast order, "Your RPCs" above "Public RPCs" with reset, and removal for custom chains. Settings → **Name Resolution** is the same pattern for ENS (`docs/ens-resolution.md`), sharing Ethereum's quorum and prover values.
+Settings → **Chains** lists the chains; each chain's page has the read and verification order (a native drag-to-reorder list with a switch and status badge per source — Myotis readiness, "2 of 3" for quorum, "Your endpoint" for direct; tapping a source opens its options: the Colibri prover + ZK, the quorum M-of-K + timeout, Direct RPC's endpoint list), the transaction broadcast order, "Your RPCs" above "Public RPCs" with reset, and removal for custom chains. Settings → **Name Resolution** is the same pattern for ENS (`docs/ens-resolution.md`), sharing Ethereum's quorum and prover values.
 
 ## Observability
 
@@ -75,7 +75,6 @@ Category `ChainData`, prefix `[chain-data]`: one line per tier attempt with the 
 - Quorum agreement on a revert is a verified revert (desktop loses it when every member reverts).
 - Custom-RPC name resolution stays fail-closed: the user's node is the only RPC method after migration (desktop's legacy order adds quorum).
 - Keyed commercial providers (Alchemy / Infura / DRPC pages) are not ported; the model leaves room (a URL list is a URL list).
-- Reordering is by up/down buttons, not drag.
 
 ## File map
 

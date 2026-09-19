@@ -1,11 +1,11 @@
 import MyotisKit
 import SwiftUI
 
-/// Shared building blocks for the two "order" pages — Settings → ENS
-/// (name resolution order) and Settings → Chains → chain (read and
-/// broadcast order). Desktop parity: a reorderable row per source with
-/// a status badge and an on/off switch, and the source's own settings
-/// nested under it.
+/// Shared building blocks for the two "order" pages — Settings → Name
+/// Resolution and Settings → Chains → chain — and their per-source
+/// option pages. Desktop parity: a reorderable row per source with a
+/// status badge and an on/off switch; the source's own settings live
+/// one level down.
 enum ChainSourceRows {
     /// The badge next to a source name (desktop `sourceStatus`).
     struct Badge: View {
@@ -59,38 +59,25 @@ enum ChainSourceRows {
             : Badge(text: "Needs \(AnchorCorroboration.minQuorumProviders) endpoints", kind: .warning)
     }
 
-    /// One source row: name, help, badge, switch. `canDisable` is false
-    /// for the last enabled source so a chain never ends up with no way
-    /// to read.
-    struct Row<Nested: View>: View {
+    /// One row of an order list: name, badge, switch. Tapping the row
+    /// (outside the switch) opens the source's option page; the list it
+    /// sits in provides drag-to-reorder.
+    struct Row: View {
         let title: String
-        let help: String
         let badge: Badge
         @Binding var isOn: Bool
+        /// False for the last enabled source: a chain must keep a way to read.
         var canDisable = true
-        @ViewBuilder var nested: () -> Nested
 
         var body: some View {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 8) {
-                            Text(title).font(.body)
-                            badge
-                        }
-                        Text(help).font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 0)
-                    Toggle("", isOn: $isOn)
-                        .labelsHidden()
-                        .disabled(isOn && !canDisable)
-                }
-                if isOn {
-                    nested()
-                }
+            HStack(spacing: 10) {
+                Text(title)
+                badge
+                Spacer(minLength: 8)
+                Toggle("", isOn: $isOn)
+                    .labelsHidden()
+                    .disabled(isOn && !canDisable)
             }
-            .padding(.vertical, 2)
         }
     }
 
@@ -101,7 +88,7 @@ enum ChainSourceRows {
 
         var body: some View {
             HStack(spacing: 2) {
-                TextField("", value: $value, format: .number)
+                TextField("", value: $value, format: .number.grouping(.never))
                     .keyboardType(.numberPad)
                     .multilineTextAlignment(.trailing)
                     .frame(minWidth: 60)
@@ -116,19 +103,14 @@ enum ChainSourceRows {
         let available: Int
 
         var body: some View {
-            VStack(alignment: .leading, spacing: 6) {
-                Stepper("Require \(policy.quorumM) of \(policy.quorumK)", value: $policy.quorumM, in: 1...max(1, policy.quorumK))
-                Stepper("Endpoints per wave: \(policy.quorumK)", value: $policy.quorumK, in: 2...9)
-                    .onChange(of: policy.quorumK) { _, k in
-                        if policy.quorumM > k { policy.quorumM = k }
-                    }
-                LabeledContent("Timeout") {
-                    NumericField(value: $policy.quorumTimeoutMs, suffix: "ms")
+            Stepper("Require \(policy.quorumM) of \(policy.quorumK)", value: $policy.quorumM, in: 1...max(1, policy.quorumK))
+            Stepper("Endpoints per wave: \(policy.quorumK)", value: $policy.quorumK, in: 2...9)
+                .onChange(of: policy.quorumK) { _, k in
+                    if policy.quorumM > k { policy.quorumM = k }
                 }
-                Text("\(available) endpoint\(available == 1 ? "" : "s") currently available. Verified quorum needs at least \(AnchorCorroboration.minQuorumProviders).")
-                    .font(.caption2).foregroundStyle(.secondary)
+            LabeledContent("Timeout") {
+                NumericField(value: $policy.quorumTimeoutMs, suffix: "ms")
             }
-            .font(.callout)
         }
     }
 
@@ -138,23 +120,38 @@ enum ChainSourceRows {
         let placeholder: String
 
         var body: some View {
-            VStack(alignment: .leading, spacing: 6) {
-                LabeledContent("Prover") {
-                    TextField(placeholder, text: Binding(
-                        get: { policy.proverURL ?? "" },
-                        set: { policy.proverURL = $0 }
-                    ))
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .font(.caption).monospaced()
-                    .multilineTextAlignment(.trailing)
-                }
-                Toggle("ZK consensus proof", isOn: $policy.zkProof)
-                Text("Leave the prover empty for the corpus.core default.")
-                    .font(.caption2).foregroundStyle(.secondary)
+            LabeledContent("Prover") {
+                TextField(placeholder, text: Binding(
+                    get: { policy.proverURL ?? "" },
+                    set: { policy.proverURL = $0 }
+                ))
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .font(.caption).monospaced()
+                .multilineTextAlignment(.trailing)
             }
-            .font(.callout)
+            Toggle("ZK consensus proof", isOn: $policy.zkProof)
+        }
+    }
+
+    // MARK: - Copy
+
+    static func readTitle(_ source: ChainSource) -> String {
+        switch source {
+        case .myotis: "Myotis P2P light client"
+        case .colibri: "Colibri verification"
+        case .quorum: "RPC quorum"
+        case .direct: "Direct RPC"
+        }
+    }
+
+    static func readHelp(_ source: ChainSource) -> String {
+        switch source {
+        case .myotis: "Verified locally against the chain by the embedded light client; no RPC endpoint involved."
+        case .colibri: "A remote prover produces the witness; Freedom verifies the cryptographic proof locally against the chain consensus."
+        case .quorum: "Several independently configured RPC endpoints must return byte-identical answers."
+        case .direct: "Compatibility fallback using the first working configured endpoint. Not cryptographic verification."
         }
     }
 }

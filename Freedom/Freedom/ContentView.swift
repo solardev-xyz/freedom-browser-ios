@@ -1,5 +1,6 @@
 import Network
 import SwiftData
+import OSLog
 import SwiftUI
 import SwarmKit
 import IPFSKit
@@ -124,15 +125,25 @@ struct ContentView: View {
     private func openDebugSettingsIfRequested() {
         #if DEBUG
         guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SETTINGS"], !raw.isEmpty else { return }
-        switch raw {
-        case "ens": debugSettingsPath = [.ens]
-        case "chains": debugSettingsPath = [.rpc]
-        default:
-            if raw.hasPrefix("chain:"), let id = Int(raw.dropFirst("chain:".count)) {
-                debugSettingsPath = [.rpc, .chainEditor(id)]
-            } else {
-                return
+        Logger(subsystem: "com.browser.Freedom", category: "DebugOpen").notice("[debug-settings] opening \(raw, privacy: .public)")
+        // ens | ens:<method> | chains | chain:<id> | chain:<id>:<source>
+        let parts = raw.split(separator: ":").map(String.init)
+        switch parts.first {
+        case "ens":
+            debugSettingsPath = [.ens]
+            if parts.count > 1, let method = ENSResolutionMethod(rawValue: parts[1]) {
+                debugSettingsPath.append(.ensMethod(method))
             }
+        case "chains":
+            debugSettingsPath = [.rpc]
+        case "chain":
+            guard parts.count > 1, let id = Int(parts[1]) else { return }
+            debugSettingsPath = [.rpc, .chainEditor(id)]
+            if parts.count > 2, let source = ChainSource(rawValue: parts[2]) {
+                debugSettingsPath.append(.chainSource(id, source))
+            }
+        default:
+            return
         }
         isShowingSettings = true
         #endif

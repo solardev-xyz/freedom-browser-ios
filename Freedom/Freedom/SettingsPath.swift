@@ -21,6 +21,10 @@ enum SettingsPath: Hashable {
     case adblock
 
     case chainEditor(Int) // chain ID — resolved against ChainStore at destination time
+    /// One source of a chain's read order: its switch and options.
+    case chainSource(Int, ChainSource)
+    /// One method of the name-resolution order: its switch and options.
+    case ensMethod(ENSResolutionMethod)
 
     case chainlistSearch
     case addChainForm(AddChainForm.Prefill?)
@@ -32,7 +36,7 @@ enum SettingsPath: Hashable {
     var isAddChainStep: Bool {
         switch self {
         case .chainlistSearch, .addChainForm: return true
-        case .wallet, .ens, .swarm, .ipfs, .myotis, .rpc, .adblock, .chainEditor: return false
+        case .wallet, .ens, .swarm, .ipfs, .myotis, .rpc, .adblock, .chainEditor, .chainSource, .ensMethod: return false
         }
     }
 }
