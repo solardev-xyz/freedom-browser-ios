@@ -50,17 +50,16 @@ struct ChainDetailView: View {
         Form {
             Section {
                 ForEach(readSources) { source in
-                    NavigationLink(value: SettingsPath.chainSource(chain.id, source)) {
-                        ChainSourceRows.Row(
-                            title: ChainSourceRows.readTitle(source),
-                            badge: readBadge(source),
-                            isOn: Binding(
-                                get: { policy.readOrder.contains(source) },
-                                set: { setRead(source, enabled: $0) }
-                            ),
-                            canDisable: policy.readOrder.count > 1
-                        )
-                    }
+                    ChainSourceRows.Row(
+                        title: ChainSourceRows.readTitle(source),
+                        badge: readBadge(source),
+                        isOn: Binding(
+                            get: { policy.readOrder.contains(source) },
+                            set: { setRead(source, enabled: $0) }
+                        ),
+                        canDisable: policy.readOrder.count > 1,
+                        open: { settingsPath.wrappedValue.append(.chainSource(chain.id, source)) }
+                    )
                 }
                 .onMove { from, to in
                     readSources.move(fromOffsets: from, toOffset: to)
@@ -71,20 +70,22 @@ struct ChainDetailView: View {
             } header: {
                 Text("Read and verification order")
             } footer: {
-                Text("Freedom routes wallet, transaction and dapp reads through the sources above, top to bottom. A source that cannot serve a request falls through to the next one. Drag to reorder; tap a source for its options.")
+                Text("Freedom routes wallet, transaction and dapp reads through the sources above, top to bottom. A source that cannot serve a request falls through to the next one. Drag the handles to reorder; tap a source for its options.")
             }
 
             Section {
                 ForEach(broadcastSources) { source in
-                    ChainSourceRows.Row(
-                        title: source == .myotis ? "Myotis P2P broadcast" : "Direct RPC",
-                        badge: broadcastBadge(source),
-                        isOn: Binding(
+                    HStack(spacing: 10) {
+                        Text(source == .myotis ? "Myotis P2P broadcast" : "Direct RPC")
+                        broadcastBadge(source)
+                        Spacer(minLength: 8)
+                        Toggle("", isOn: Binding(
                             get: { policy.broadcastOrder.contains(source) },
                             set: { setBroadcast(source, enabled: $0) }
-                        ),
-                        canDisable: policy.broadcastOrder.count > 1
-                    )
+                        ))
+                        .labelsHidden()
+                        .disabled(policy.broadcastOrder == [source])
+                    }
                 }
                 .onMove { from, to in
                     broadcastSources.move(fromOffsets: from, toOffset: to)
@@ -105,9 +106,8 @@ struct ChainDetailView: View {
                     Text("No custom RPCs yet").foregroundStyle(.secondary).font(.caption)
                 }
                 ForEach(mine, id: \.self) { url in
-                    endpointRow(url)
+                    ChainSourceRows.EndpointRow(url: url, canRemove: urls.count > 1) { remove(url) }
                 }
-                .onDelete { remove(at: $0, from: mine) }
                 HStack {
                     TextField("https://your-node.example", text: $newProviderText)
                         .textInputAutocapitalization(.never)
@@ -127,9 +127,8 @@ struct ChainDetailView: View {
 
             Section {
                 ForEach(publicURLs, id: \.self) { url in
-                    endpointRow(url)
+                    ChainSourceRows.EndpointRow(url: url, canRemove: urls.count > 1) { remove(url) }
                 }
-                .onDelete { remove(at: $0, from: publicURLs) }
                 if !defaults.isEmpty, urls != defaults {
                     Button("Reset to defaults", role: .destructive) {
                         chainStore.resetRPCURLs(forChainID: chain.id)
@@ -149,7 +148,8 @@ struct ChainDetailView: View {
         }
         .navigationTitle(chain.displayName)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { EditButton() }
+        // Permanent edit mode: the reorder handles are always visible.
+        .environment(\.editMode, .constant(.active))
         .confirmationDialog("Remove \(chain.displayName)?", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) { removeChain() }
         } message: {
@@ -201,15 +201,10 @@ struct ChainDetailView: View {
 
     // MARK: - Endpoints
 
-    private func endpointRow(_ url: String) -> some View {
-        Text(url).font(.caption).monospaced().lineLimit(1).truncationMode(.middle)
-    }
-
     /// Refuse-to-save-empty: a chain with no endpoints would throw
-    /// `noProviders` on every read. The last row cannot be deleted.
-    private func remove(at offsets: IndexSet, from list: [String]) {
-        let removed = Set(offsets.compactMap { list.indices.contains($0) ? list[$0] : nil })
-        let next = urls.filter { !removed.contains($0) }
+    /// `noProviders` on every read. The last endpoint cannot be removed.
+    private func remove(_ url: String) {
+        let next = urls.filter { $0 != url }
         guard !next.isEmpty else { return }
         chainStore.updateRPCURLs(forChainID: chain.id, next)
     }

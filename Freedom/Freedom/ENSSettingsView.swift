@@ -11,6 +11,7 @@ struct ENSSettingsView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(ChainStore.self) private var chainStore
     @Environment(MyotisNode.self) private var myotis
+    @Environment(\.settingsPath) private var settingsPath
 
     private var mainnetEndpoints: Int { chainStore.rpcURLs(forChainID: Chain.mainnetID).count }
 
@@ -19,32 +20,36 @@ struct ENSSettingsView: View {
         Form {
             Section {
                 ForEach(settings.ensResolutionOrder, id: \.self) { method in
-                    NavigationLink(value: SettingsPath.ensMethod(method)) {
-                        ChainSourceRows.Row(
-                            title: ENSMethodDetailView.title(method),
-                            badge: ENSMethodDetailView.badge(method, settings: settings, myotis: myotis, endpoints: mainnetEndpoints),
-                            isOn: Binding(
-                                get: { settings.ensResolutionEnabled.contains(method) },
-                                set: { on in
-                                    if on || settings.ensResolutionEnabled.count > 1 {
-                                        settings.setResolutionMethod(method, enabled: on)
-                                    }
+                    ChainSourceRows.Row(
+                        title: ENSMethodDetailView.title(method),
+                        badge: ENSMethodDetailView.badge(method, settings: settings, myotis: myotis, endpoints: mainnetEndpoints),
+                        isOn: Binding(
+                            get: { settings.ensResolutionEnabled.contains(method) },
+                            set: { on in
+                                if on || settings.ensResolutionEnabled.count > 1 {
+                                    settings.setResolutionMethod(method, enabled: on)
                                 }
-                            ),
-                            canDisable: settings.ensResolutionEnabled.count > 1
-                        )
-                    }
+                            }
+                        ),
+                        canDisable: settings.ensResolutionEnabled.count > 1,
+                        open: { settingsPath.wrappedValue.append(.ensMethod(method)) }
+                    )
                 }
                 .onMove { from, to in
                     var order = settings.ensResolutionOrder
                     order.move(fromOffsets: from, toOffset: to)
                     settings.setResolutionOrder(order)
                 }
-                Toggle("Prefer verified answers", isOn: $settings.ensPreferVerified)
             } header: {
                 Text("Resolution order")
             } footer: {
-                Text("Freedom tries enabled methods from top to bottom. Drag to reorder; tap a method for its options. With \"Prefer verified answers\" on, an unverified Direct RPC answer is kept as a fallback while later methods try to produce a verified one.")
+                Text("Freedom tries enabled methods from top to bottom. Drag the handles to reorder; tap a method for its options.")
+            }
+
+            Section {
+                Toggle("Prefer verified answers", isOn: $settings.ensPreferVerified)
+            } footer: {
+                Text("Keep an unverified Direct RPC answer as a fallback while later enabled methods try to produce a verified one.")
             }
 
             Section {
@@ -74,7 +79,8 @@ struct ENSSettingsView: View {
         }
         .navigationTitle("Name Resolution")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { EditButton() }
+        // Permanent edit mode: the reorder handles are always visible.
+        .environment(\.editMode, .constant(.active))
     }
 }
 

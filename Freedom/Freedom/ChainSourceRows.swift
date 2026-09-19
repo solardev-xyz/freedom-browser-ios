@@ -59,24 +59,61 @@ enum ChainSourceRows {
             : Badge(text: "Needs \(AnchorCorroboration.minQuorumProviders) endpoints", kind: .warning)
     }
 
-    /// One row of an order list: name, badge, switch. Tapping the row
-    /// (outside the switch) opens the source's option page; the list it
-    /// sits in provides drag-to-reorder.
+    /// One row of an order list: name, badge, switch, chevron. The list
+    /// lives in permanent edit mode so the reorder handle is always
+    /// shown; a `NavigationLink` would be inert there, so the row is a
+    /// button that pushes the source's option page itself.
     struct Row: View {
         let title: String
         let badge: Badge
         @Binding var isOn: Bool
         /// False for the last enabled source: a chain must keep a way to read.
         var canDisable = true
+        let open: () -> Void
 
         var body: some View {
             HStack(spacing: 10) {
-                Text(title)
-                badge
-                Spacer(minLength: 8)
+                Button(action: open) {
+                    HStack(spacing: 10) {
+                        Text(title).foregroundStyle(.primary)
+                        badge
+                        Spacer(minLength: 8)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
                 Toggle("", isOn: $isOn)
                     .labelsHidden()
                     .disabled(isOn && !canDisable)
+                Button(action: open) {
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// An endpoint row with its own remove button — the endpoint lists
+    /// sit in the same permanently-editing form as the order lists, so
+    /// swipe-to-delete is not available to them.
+    struct EndpointRow: View {
+        let url: String
+        var badge: Badge? = nil
+        var canRemove = true
+        let remove: () -> Void
+
+        var body: some View {
+            HStack(spacing: 8) {
+                Text(url).font(.caption).monospaced().lineLimit(1).truncationMode(.middle)
+                if let badge { badge }
+                Spacer(minLength: 4)
+                Button(role: .destructive, action: remove) {
+                    Image(systemName: "minus.circle.fill").foregroundStyle(canRemove ? .red : .secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canRemove)
             }
         }
     }
