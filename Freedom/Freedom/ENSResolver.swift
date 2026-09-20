@@ -141,12 +141,15 @@ final class ENSResolver {
     /// meantime get their P2P attempt immediately.
     private var myotisFellThrough = false
 
-    /// A page-driven name lookup gives Myotis this long when a later
-    /// method is enabled (the router's interactive budget): a healthy
-    /// read answers in milliseconds, while a tip-lagging engine walks
-    /// its snap peers into a 15 s request timeout before giving up.
-    /// Tests shorten it.
-    var myotisDeadline: TimeInterval = 2
+    /// Optional cap on how long a lookup waits for Myotis when a later
+    /// method is enabled; nil means the configured timeout (desktop
+    /// parity). Measured on the simulator (2026-09-20): a serving
+    /// engine answers a name in 3.7–19 s on this build because it asks
+    /// peers one after another and one hung peer costs its 15 s request
+    /// timeout, so a tight cap would starve Myotis rather than protect
+    /// the user. A late answer is not wasted either — see
+    /// `noteLateMyotisAnswer`. Tests shorten it.
+    var myotisDeadline: TimeInterval?
     /// Escalating skip after Myotis timed out on a lookup, so the next
     /// navigations do not each pay the budget again while the engine
     /// catches up. Cleared when Myotis serves again or its availability
@@ -165,6 +168,36 @@ final class ENSResolver {
 
     private func noteMyotisFallthrough() {
         myotisFellThrough = true
+    }
+
+    /// A Myotis read that finished after the lookup had already moved
+    /// on to a later method still tells us the engine serves: drop the
+    /// lower-tier results cached meanwhile so the next lookups go back
+    /// to Myotis, and forget the timeout escalation.
+    private func noteLateMyotisAnswer() {
+        log.info("[ens] myotis answered after the budget — adopting it for the next lookups")
+        myotisFellThrough = true
+        noteMyotisServed()
+    }
+
+    /// Run a Myotis read with a bounded wait. The read itself keeps
+    /// running past the deadline (engine calls are not cancellable) and
+    /// its outcome is observed: a late success is adopted via
+    /// `noteLateMyotisAnswer`.
+    private func boundedMyotis<T: Sendable>(
+        wait: TimeInterval,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let work = Task { try await operation() }
+        do {
+            return try await withSourceDeadline(wait, source: .myotis) { try await work.value }
+        } catch is ChainSourceDeadline {
+            Task { @MainActor [weak self] in
+                guard (try? await work.value) != nil else { return }
+                self?.noteLateMyotisAnswer()
+            }
+            throw ChainSourceDeadline(source: .myotis, seconds: wait)
+        }
     }
 
     private func noteMyotisServed() {
@@ -428,9 +461,9 @@ final class ENSResolver {
                         continue
                     }
                     let hasLater = index + 1 < enabled.count
-                    let wait = hasLater ? min(timeout, myotisDeadline) : timeout
+                    let wait = hasLater ? min(timeout, myotisDeadline ?? timeout) : timeout
                     do {
-                        result = try await withSourceDeadline(wait, source: .myotis) {
+                        result = try await boundedMyotis(wait: wait) {
                             try await self.tryMyotis(
                                 dnsEncodedName: dnsEncodedName, callData: callData,
                                 client: myotis, system: system
@@ -1244,9 +1277,9 @@ final class ENSResolver {
             case .myotis:
                 guard let myotis, myotis.isAvailable, !myotisCoolingDown else { continue }
                 let hasLater = enabled.last != .myotis
-                let wait = hasLater ? min(timeout, myotisDeadline) : timeout
+                let wait = hasLater ? min(timeout, myotisDeadline ?? timeout) : timeout
                 do {
-                    let result = try await withSourceDeadline(wait, source: .myotis) {
+                    let result = try await boundedMyotis(wait: wait) {
                         try await self.myotisReverse(address: address, coinType: coinType, client: myotis)
                     }
                     noteMyotisServed()

@@ -320,6 +320,7 @@ final class MyotisResolverTierTests: XCTestCase {
         clock.advance(by: 16)
         gate.hold = false
         gate.release()
+        await Task.yield()
         let later = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data([0x01]), system: .wns)
         guard case .data(let laterBytes, _, let laterTrust) = later else { return XCTFail("expected data") }
         XCTAssertEqual(gate.calls, 2)
@@ -335,5 +336,37 @@ final class MyotisResolverTierTests: XCTestCase {
         XCTAssertEqual(gate.calls, 3, "still cooling down")
         gate.hold = false
         gate.release()
+    }
+
+    /// A read that finishes after the lookup moved on is adopted: the
+    /// lower-tier results cached meanwhile are swept and the cooldown is
+    /// reset, so the very next lookup goes back to Myotis.
+    func testLateMyotisAnswerSweepsCachesAndResetsCooldown() async throws {
+        let gate = HangGate()
+        let client = MyotisENSClient(
+            availability: { true },
+            verifiedBlock: { 25_760_849 },
+            ethCall: { _, _ in
+                await gate.wait()
+                return .ok(resultHex: self.sampleBytes.web3.hexString)
+            }
+        )
+        let resolver = resolver(myotis: client)
+        resolver.myotisDeadline = 0.05
+
+        let first = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data([0x01]), system: .wns)
+        XCTAssertEqual(first.trustLevel, .unverified, "fallback answered at the budget")
+        XCTAssertEqual(gate.calls, 1)
+
+        // The engine finishes the read late; no clock advance, no new lookup.
+        gate.hold = false
+        gate.release()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let next = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data([0x01]), system: .wns)
+        guard case .data(let bytes, _, let trust) = next else { return XCTFail("expected data") }
+        XCTAssertEqual(gate.calls, 2, "cooldown was reset by the late answer")
+        XCTAssertEqual(bytes, sampleBytes)
+        XCTAssertEqual(trust.method, .myotis)
     }
 }
