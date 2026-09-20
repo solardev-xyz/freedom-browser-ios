@@ -198,6 +198,7 @@ public struct MyotisGenerationStore: Sendable {
         let pointer = Pointer(schemaVersion: Self.schemaVersion, chainId: network.chainId, generation: id)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            inheritPeerCaches(network, into: directory)
             try Self.writeJSON(anchor, to: directory.appendingPathComponent("anchor.json"))
             try Self.writeJSON(pointer, to: pointerURL(network))
         } catch {
@@ -206,6 +207,42 @@ public struct MyotisGenerationStore: Sendable {
         return MyotisGeneration(
             id: id, chainId: network.chainId, directory: directory, origin: origin, checkpoint: checkpoint
         )
+    }
+
+    /// The engine's learned peer lists — `peers[-net].cache` (execution
+    /// layer, with the served / failed verdicts that order the dials on
+    /// the next start) and `cl-peers[-net].cache` (beacon side). They are
+    /// addresses, not sync state, so a new generation may start from the
+    /// previous one's instead of an empty pool: a cold pool is what makes
+    /// the first minutes after "ready" fail every read (myotis #465).
+    /// Anchor and sync-state files stay per generation.
+    public static func peerCacheNames(_ network: MyotisNetwork) -> [String] {
+        let suffix = network == .mainnet ? "" : "-\(network.rawValue)"
+        return ["peers\(suffix).cache", "cl-peers\(suffix).cache"]
+    }
+
+    /// Best-effort copy of the peer caches from the generation the
+    /// pointer names (or the legacy layout's chain directory) into a
+    /// freshly created generation directory. Never fails the creation:
+    /// an unreadable pointer or a missing cache simply means a cold pool,
+    /// as before.
+    private func inheritPeerCaches(_ network: MyotisNetwork, into directory: URL) {
+        let fm = FileManager.default
+        var sources: [URL] = []
+        if let pointer: Pointer = try? Self.readJSON(pointerURL(network)),
+           pointer.chainId == network.chainId, Self.isGenerationId(pointer.generation) {
+            sources.append(generationDirectory(network, id: pointer.generation))
+        }
+        sources.append(chainDirectory(network))
+        for name in Self.peerCacheNames(network) {
+            let destination = directory.appendingPathComponent(name)
+            guard !fm.fileExists(atPath: destination.path) else { continue }
+            for source in sources {
+                let candidate = source.appendingPathComponent(name)
+                guard candidate != destination, fm.fileExists(atPath: candidate.path) else { continue }
+                if (try? fm.copyItem(at: candidate, to: destination)) != nil { break }
+            }
+        }
     }
 
     static func isGenerationId(_ id: String) -> Bool {
