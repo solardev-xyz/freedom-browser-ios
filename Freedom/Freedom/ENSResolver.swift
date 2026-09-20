@@ -20,7 +20,7 @@ private extension QuorumWave.TrustTier {
 final class ENSResolver {
     static let universalResolverAddress = UniversalResolverABI.address
 
-    enum ConsensusResult {
+    enum ConsensusResult: @unchecked Sendable {
         case data(resolvedData: Data, resolverAddress: EthereumAddress, trust: ENSTrust)
         case notFound(reason: ENSNotFoundReason, trust: ENSTrust)
         case conflict(groups: [ENSConflictGroup], trust: ENSTrust)
@@ -112,6 +112,8 @@ final class ENSResolver {
     /// serving results the now-gone tier minted) happen immediately
     /// instead of waiting out cached TTLs. Desktop parity.
     func sweepResultCaches() {
+        myotisTimeoutCount = 0
+        myotisCooldownUntil = .distantPast
         cache.removeAll()
         for task in inFlight.values { task.cancel() }
         inFlight.removeAll()
@@ -139,11 +141,35 @@ final class ENSResolver {
     /// meantime get their P2P attempt immediately.
     private var myotisFellThrough = false
 
+    /// A page-driven name lookup gives Myotis this long when a later
+    /// method is enabled (the router's interactive budget): a healthy
+    /// read answers in milliseconds, while a tip-lagging engine walks
+    /// its snap peers into a 15 s request timeout before giving up.
+    /// Tests shorten it.
+    var myotisDeadline: TimeInterval = 2
+    /// Escalating skip after Myotis timed out on a lookup, so the next
+    /// navigations do not each pay the budget again while the engine
+    /// catches up. Cleared when Myotis serves again or its availability
+    /// flips. Same schedule as the chain-data router's route cooldowns.
+    private var myotisTimeoutCount = 0
+    private var myotisCooldownUntil: Date = .distantPast
+
+    private var myotisCoolingDown: Bool { clock() < myotisCooldownUntil }
+
+    private func noteMyotisTimeout() {
+        myotisTimeoutCount += 1
+        let cooldown = AdaptiveRouting.timeoutCooldowns[min(myotisTimeoutCount, AdaptiveRouting.timeoutCooldowns.count) - 1]
+        myotisCooldownUntil = clock().addingTimeInterval(cooldown)
+        log.info("[ens] myotis timed out — skipping it for \(Int(cooldown))s")
+    }
+
     private func noteMyotisFallthrough() {
         myotisFellThrough = true
     }
 
     private func noteMyotisServed() {
+        myotisTimeoutCount = 0
+        myotisCooldownUntil = .distantPast
         guard myotisFellThrough else { return }
         myotisFellThrough = false
         // Drop cached results only — in-flight resolutions (including
@@ -397,24 +423,38 @@ final class ENSResolver {
                 switch method {
                 case .myotis:
                     guard let myotis, myotis.isAvailable else { continue }
+                    if myotisCoolingDown {
+                        log.info("[ens] myotis skipped — cooling down after a timeout")
+                        continue
+                    }
+                    let hasLater = index + 1 < enabled.count
+                    let wait = hasLater ? min(timeout, myotisDeadline) : timeout
                     do {
-                        result = try await tryMyotis(
-                            dnsEncodedName: dnsEncodedName, callData: callData,
-                            client: myotis, system: system
-                        )
+                        result = try await withSourceDeadline(wait, source: .myotis) {
+                            try await self.tryMyotis(
+                                dnsEncodedName: dnsEncodedName, callData: callData,
+                                client: myotis, system: system
+                            )
+                        }
                         noteMyotisServed()
                     } catch let err as ColibriENSError {
                         log.info("[ens] myotis-fallthrough error=\(String(describing: err), privacy: .public)")
                         noteMyotisFallthrough()
                         throw err
+                    } catch let err as ChainSourceDeadline {
+                        noteMyotisFallthrough()
+                        noteMyotisTimeout()
+                        throw err
                     }
                 case .colibri:
                     guard let colibri else { continue }
                     do {
-                        result = try await tryColibri(
-                            dnsEncodedName: dnsEncodedName, callData: callData,
-                            client: colibri, system: system
-                        )
+                        result = try await withSourceDeadline(timeout, source: .colibri) {
+                            try await self.tryColibri(
+                                dnsEncodedName: dnsEncodedName, callData: callData,
+                                client: colibri, system: system
+                            )
+                        }
                     } catch let err as ColibriENSError {
                         // Loud on purpose: a silent fall-through would hide
                         // prover health regressions and the rare attack signal.
@@ -457,7 +497,7 @@ final class ENSResolver {
     /// A tier could not answer — the walk moves on. Everything else a
     /// tier throws is the chain's answer or a security signal.
     private static func isTierFallThrough(_ error: Error) -> Bool {
-        if error is ColibriENSError || error is TierUnavailable || error is ConsensusError { return true }
+        if error is ColibriENSError || error is TierUnavailable || error is ConsensusError || error is ChainSourceDeadline { return true }
         if case ENSResolutionError.customRpcFailed = error { return true }
         if case ENSResolutionError.allProvidersErrored = error { return true }
         return false
@@ -1196,14 +1236,19 @@ final class ENSResolver {
         // Direct RPC methods share one provider walk: the user's own
         // endpoint first when Direct is enabled, then the public pool.
         let enabled = settings.ensEnabledResolutionMethods
+        let timeout = TimeInterval(settings.ensQuorumTimeoutMs) / 1000
         var rpcWalkDone = false
         for method in enabled {
             try Task.checkCancellation()
             switch method {
             case .myotis:
-                guard let myotis, myotis.isAvailable else { continue }
+                guard let myotis, myotis.isAvailable, !myotisCoolingDown else { continue }
+                let hasLater = enabled.last != .myotis
+                let wait = hasLater ? min(timeout, myotisDeadline) : timeout
                 do {
-                    let result = try await myotisReverse(address: address, coinType: coinType, client: myotis)
+                    let result = try await withSourceDeadline(wait, source: .myotis) {
+                        try await self.myotisReverse(address: address, coinType: coinType, client: myotis)
+                    }
                     noteMyotisServed()
                     return result
                 } catch let err as ColibriENSError {
@@ -1211,11 +1256,16 @@ final class ENSResolver {
                         "[ens] myotis-fallthrough reverse address=\(address.asString(), privacy: .public) error=\(String(describing: err), privacy: .public)"
                     )
                     noteMyotisFallthrough()
+                } catch is ChainSourceDeadline {
+                    noteMyotisFallthrough()
+                    noteMyotisTimeout()
                 }
             case .colibri:
                 guard let colibri else { continue }
                 do {
-                    return try await colibriReverse(address: address, coinType: coinType, client: colibri)
+                    return try await withSourceDeadline(timeout, source: .colibri) {
+                        try await self.colibriReverse(address: address, coinType: coinType, client: colibri)
+                    }
                 } catch let err as ColibriENSError {
                     log.warning(
                         "[ens] colibri-fallback reverse address=\(address.asString(), privacy: .public) error=\(String(describing: err), privacy: .public)"
