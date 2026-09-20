@@ -266,7 +266,10 @@ final class ChainDataQuorumTests: XCTestCase {
         let r = try await router(transport, order: [.quorum, .direct]).request(chainID: 1, method: "eth_call", params: call)
         XCTAssertEqual(r.source, .direct)
         XCTAssertEqual(r.trust.agreed, ["d.example"])
-        XCTAssertEqual(transport.hits, ["a.example", "b.example", "c.example", "d.example"])
+        // The three legs start concurrently (any order); d is asked once, last.
+        XCTAssertEqual(Set(transport.hits.prefix(3)), ["a.example", "b.example", "c.example"])
+        XCTAssertEqual(transport.hits.count, 4)
+        XCTAssertEqual(transport.hits.last, "d.example")
     }
 
     // MARK: - Trust levels
