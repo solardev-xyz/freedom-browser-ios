@@ -1,5 +1,6 @@
 import Network
 import SwiftData
+import OSLog
 import SwiftUI
 import SwarmKit
 import IPFSKit
@@ -40,6 +41,10 @@ struct ContentView: View {
     @State private var banner: Banner? = nil
     @State private var isShowingTabSwitcher = false
     @State private var isShowingSettings = false
+    /// DEBUG smoke hook: the settings page to open at launch
+    /// (`FREEDOM_DEBUG_SETTINGS=ens|chains|chain:<id>`), so a simulator
+    /// run can screenshot a settings page without anyone tapping.
+    @State private var debugSettingsPath: [SettingsPath] = []
     @State private var isShowingWallet = false
     @State private var isShowingNode = false
     @State private var isShowingIpfsNode = false
@@ -117,6 +122,33 @@ struct ContentView: View {
         )
     }
 
+    private func openDebugSettingsIfRequested() {
+        #if DEBUG
+        guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SETTINGS"], !raw.isEmpty else { return }
+        Logger(subsystem: "com.browser.Freedom", category: "DebugOpen").notice("[debug-settings] opening \(raw, privacy: .public)")
+        // ens | ens:<method> | chains | chain:<id> | chain:<id>:<source>
+        let parts = raw.split(separator: ":").map(String.init)
+        switch parts.first {
+        case "ens":
+            debugSettingsPath = [.ens]
+            if parts.count > 1, let method = ENSResolutionMethod(rawValue: parts[1]) {
+                debugSettingsPath.append(.ensMethod(method))
+            }
+        case "chains":
+            debugSettingsPath = [.rpc]
+        case "chain":
+            guard parts.count > 1, let id = Int(parts[1]) else { return }
+            debugSettingsPath = [.rpc, .chainEditor(id)]
+            if parts.count > 2, let source = ChainSource(rawValue: parts[2]) {
+                debugSettingsPath.append(.chainSource(id, source))
+            }
+        default:
+            return
+        }
+        isShowingSettings = true
+        #endif
+    }
+
     var body: some View {
         ZStack {
             // Top-safe-area background only when the page declares a
@@ -170,8 +202,9 @@ struct ContentView: View {
             TabSwitcher(isPresented: $isShowingTabSwitcher)
         }
         .sheet(isPresented: $isShowingSettings) {
-            SettingsView()
+            SettingsView(initialPath: debugSettingsPath)
         }
+        .task { openDebugSettingsIfRequested() }
         .sheet(isPresented: $isShowingWallet) {
             WalletSheet(isPresented: $isShowingWallet)
         }

@@ -76,9 +76,12 @@ final class ConsensusResolveTests: XCTestCase {
     }
 
     func testSingleSourceFallbackWhenKUnderpowered() async throws {
-        // K<3 — corroborated path can't mint verified, so we degrade.
+        // K<3 — the corroborated path can't mint verified, so the quorum
+        // method falls through; with Direct RPC enabled after it, the
+        // walk degrades to a single unverified source.
         settings.ensPublicRpcProviders = [alpha].map(\.absoluteString)
         settings.ensQuorumK = 2
+        settings.setResolutionMethod(.userConfigured, enabled: true)
         let anchor = makeAnchor(
             heads: [alpha: 1000],
             hashes: [alpha: [992: "0xblock"]]
@@ -324,13 +327,15 @@ final class ConsensusResolveTests: XCTestCase {
         XCTAssertEqual(trust.queried, ["my-node.example.com"])
     }
 
-    /// P1 fail-closed: invalid custom URL throws customRpcFailed, NOT
-    /// allProvidersErrored. User chose custom RPC for privacy — silently
-    /// falling back to public would defeat that intent.
+    /// P1 fail-closed: an unreachable custom node throws customRpcFailed,
+    /// NOT allProvidersErrored, and the public pool is never consulted.
+    /// The user chose custom RPC for privacy — the legacy method maps to
+    /// an order with no public method after it.
     func testCustomRpcInvalidURLFailsClosed() async throws {
         settings.ensResolutionMethod = .userConfigured
-        settings.ensRpcUrl = ""  // empty → invalid
+        settings.ensRpcUrl = "https://my-node.example.com"  // no leg scripted → unreachable
         settings.ensPublicRpcProviders = [alpha, bravo, charlie].map(\.absoluteString)
+        XCTAssertEqual(settings.ensEnabledResolutionMethods, [.myotis, .userConfigured])
         let anchor = makeAnchor(heads: [:], hashes: [:])
         let resolver = ENSResolver(
             pool: pool, settings: settings, anchor: anchor,

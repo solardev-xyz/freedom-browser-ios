@@ -138,3 +138,7 @@ retired bundled generation.
   so the engine parks; the verified generation uses the network default).
   Watch the light-client log: `STALE_ANCHOR — anchor period …` →
   `checkpoint verified · slot …` → `recovery complete`.
+
+## Peer caches carry over between generations (2026-09-20)
+
+A new generation directory used to start empty, so after every checkpoint recovery the engine relearned its peers from scratch; a cold pool is exactly what makes the first minutes after "ready" fail every read (myotis #465). `MyotisGenerationStore.create` now copies the engine's learned peer lists — `peers[-net].cache` (execution layer, with the served / failed verdicts that order the next start's dials) and `cl-peers[-net].cache` (beacon side) — from the generation the pointer names, or from the legacy chain directory, into the new one. Only addresses travel: `anchor.json`, `sync-state.snapshot` and the native marker stay per generation, so the checkpoint trust model is unchanged. Best-effort: a missing or unreadable source just means a cold pool, as before.

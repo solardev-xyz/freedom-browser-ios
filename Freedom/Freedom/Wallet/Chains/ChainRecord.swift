@@ -36,6 +36,24 @@ final class ChainRecord {
     /// user-added chains take the next free slot.
     var sortOrder: Int
 
+    // MARK: Chain-data routing policy (desktop `access` + `quorum`)
+
+    /// `ChainSource` raw values in priority order; empty means the
+    /// desktop default for the chain (`ChainAccessPolicy.default`).
+    var readOrder: [String] = []
+    var broadcastOrder: [String] = []
+    var quorumK: Int = ChainAccessPolicy.defaultQuorumK
+    var quorumM: Int = ChainAccessPolicy.defaultQuorumM
+    var quorumTimeoutMs: Int = ChainAccessPolicy.defaultQuorumTimeoutMs
+    /// Colibri prover override; empty means the binding's default.
+    var proverURL: String = ""
+    var zkProof: Bool = true
+    /// The RPC URLs the chain shipped with (the "Public RPCs" of the
+    /// settings page). `rpcURLs` minus this is what the user added
+    /// themselves. Empty on records seeded before the field existed;
+    /// `ChainStore` backfills it on launch.
+    var defaultRPCURLs: [String] = []
+
     init(
         id: Int,
         displayName: String,

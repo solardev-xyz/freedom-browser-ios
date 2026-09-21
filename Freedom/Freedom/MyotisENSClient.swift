@@ -121,9 +121,16 @@ final class MyotisENSClient {
     /// `.proofFailed` — the resolver treats those as transient and falls
     /// through to the next tier unconditionally.
     private func provenEthCall(to: EthereumAddress, callData: Data) async throws -> String {
+        let started = ContinuousClock.now
         let outcome = await ethCall(to.asString(), callData.web3.hexString)
         switch outcome {
         case .ok(let resultHex):
+            // The one number that says whether the resolver's 2 s budget
+            // for this tier is generous: a healthy engine answers in
+            // milliseconds, a tip-lagging one never gets here.
+            let ms = Int(Double(started.duration(to: .now).components.attoseconds) / 1e15)
+                + Int(started.duration(to: .now).components.seconds) * 1_000
+            log.info("[myotis] read served in \(ms)ms")
             return resultHex
         case .revert(let dataHex):
             throw ColibriENSError.revert(data: dataHex)

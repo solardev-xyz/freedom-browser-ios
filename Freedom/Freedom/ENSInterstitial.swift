@@ -50,14 +50,21 @@ struct ENSInterstitial: View {
             AnchorDetails(largest: largest, total: total, threshold: threshold)
         case .unverifiedOnchain(let document, _):
             OnchainSummary(provenance: document.provenance)
+        case .conflictOnchain(let document, _):
+            OnchainSummary(provenance: document.provenance, showDissent: true)
         }
     }
 
     private var canContinue: Bool {
         switch gate {
         case .unverifiedUntrusted, .unverifiedOnchain: true
-        case .conflict, .anchorDisagreement: false
+        case .conflict, .anchorDisagreement, .conflictOnchain: false
         }
+    }
+
+    private var canRetry: Bool {
+        if case .conflictOnchain = gate { return true }
+        return false
     }
 
     private var actions: some View {
@@ -69,6 +76,13 @@ struct ENSInterstitial: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.orange)
+            }
+            if canRetry {
+                Button { tab.retryGatedNavigation() } label: {
+                    Label("Try again", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
             }
             Button { tab.dismissGate() } label: {
                 Text("Go back").frame(maxWidth: .infinity)
@@ -82,14 +96,14 @@ struct ENSInterstitial: View {
     private var headerSymbol: String {
         switch gate {
         case .unverifiedUntrusted, .unverifiedOnchain: "exclamationmark.shield.fill"
-        case .conflict, .anchorDisagreement: "xmark.shield.fill"
+        case .conflict, .anchorDisagreement, .conflictOnchain: "xmark.shield.fill"
         }
     }
 
     private var headerColor: Color {
         switch gate {
         case .unverifiedUntrusted, .unverifiedOnchain: .orange
-        case .conflict, .anchorDisagreement: .red
+        case .conflict, .anchorDisagreement, .conflictOnchain: .red
         }
     }
 
@@ -99,6 +113,7 @@ struct ENSInterstitial: View {
         case .conflict: "Providers disagreed"
         case .anchorDisagreement: "Block-hash disagreement"
         case .unverifiedOnchain: "Onchain app not independently verified"
+        case .conflictOnchain: "RPC endpoints disagreed about this app"
         }
     }
 
@@ -112,16 +127,25 @@ struct ENSInterstitial: View {
             "Providers returned different block hashes at the corroboration anchor. A provider is serving a stale or forged chain state. Do not continue."
         case .unverifiedOnchain:
             "Freedom fetched this app's code through one public RPC endpoint, but could not verify the answer against chain consensus. The app has not run yet. Continue once runs exactly these bytes for this session; if the contract returns different code later, Freedom will warn you again."
+        case .conflictOnchain:
+            "The RPC endpoints Freedom asked returned different code for this contract and no verified source could settle it. One of them may be lying, or the chain is reorganizing. The app has not run. Try again in a moment, or check the endpoints under Settings → Chains."
         }
     }
 }
 
 private struct OnchainSummary: View {
     let provenance: OnchainAppProvenance
+    var showDissent = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             detailsHeader
+            if showDissent {
+                LabeledContent("Answered", value: provenance.trust.agreed.joined(separator: ", "))
+                    .font(.caption)
+                LabeledContent("Disagreed", value: provenance.trust.dissented.joined(separator: ", "))
+                    .font(.caption)
+            }
             LabeledContent("Network", value: "\(provenance.networkName) (chain \(provenance.app.chainID))")
                 .font(.caption)
             LabeledContent("Contract") {

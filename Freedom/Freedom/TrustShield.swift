@@ -58,6 +58,20 @@ private struct TrustDetailsSheet: View {
                     Section("Prover") {
                         ForEach(trust.queried, id: \.self) { hostRow($0) }
                     }
+                } else if isDirect {
+                    Section("Endpoint") {
+                        ForEach(trust.agreed, id: \.self) { hostRow($0) }
+                    }
+                    if trust.k > 1 {
+                        Section("Agreement attempted (\(trust.m) of \(trust.k))") {
+                            ForEach(trust.queried, id: \.self) { hostRow($0) }
+                        }
+                    }
+                    if !trust.dissented.isEmpty {
+                        Section("Disagreed (\(trust.dissented.count))") {
+                            ForEach(trust.dissented, id: \.self) { hostRow($0) }
+                        }
+                    }
                 } else {
                     Section("Pinned Block") {
                         HStack {
@@ -110,6 +124,7 @@ private struct TrustDetailsSheet: View {
 
     private var isColibri: Bool { trust.method == .colibri }
     private var isMyotis: Bool { trust.method == .myotis }
+    private var isDirect: Bool { trust.method == .direct }
 
     private var levelHeader: some View {
         HStack(spacing: 12) {
@@ -141,9 +156,25 @@ private struct TrustDetailsSheet: View {
                 return "The app's code was read from contract storage by this device's embedded light client — Merkle-proven against beacon-chain finality."
             case .verified:
                 return "The app's code was read from contract storage under a sync-committee proof, not trusted from an RPC's word."
+            case .unverified where !trust.dissented.isEmpty:
+                return "Endpoints disagreed about the app's code. These bytes come from one of them and are not trusted."
             case .unverified:
                 return "The app's code came from one public RPC endpoint and was not cross-checked. You chose to run these exact bytes for this session."
-            case .userConfigured, .conflict:
+            case .userConfigured:
+                return "The app's code came from your own configured endpoint — single-source trust, by your choice."
+            case .conflict:
+                break
+            }
+        }
+        if isDirect {
+            switch trust.level {
+            case .userConfigured:
+                return "Answered by your configured endpoint — single-source trust."
+            case .unverified where !trust.dissented.isEmpty:
+                return "Endpoints disagreed. This answer is one endpoint's word and is not trusted."
+            case .unverified:
+                return "Answered by one public RPC endpoint without cross-checking."
+            case .verified, .conflict:
                 break
             }
         }

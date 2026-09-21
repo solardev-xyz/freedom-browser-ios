@@ -45,6 +45,10 @@ final class BrowserTab {
         /// for. Holds the exact fetched bytes: "Continue once" runs
         /// these, never a fresh fetch (desktop PR #232).
         case unverifiedOnchain(document: OnchainAppDocument, url: URL)
+        /// Contract-hosted app whose `html()` the chain's endpoints
+        /// disagreed about, with no verified tier to settle it. No
+        /// continue: one of them is lying or the chain is mid-reorg.
+        case conflictOnchain(document: OnchainAppDocument, url: URL)
     }
 
     let recordID: UUID
@@ -473,6 +477,11 @@ final class BrowserTab {
         }
         if Task.isCancelled { return }
         let target = app.canonicalURL(tail: path)
+        if document.provenance.hasConflict {
+            ensStatus = .idle
+            pendingGate = .conflictOnchain(document: document, url: target)
+            return
+        }
         if !document.provenance.isTrusted, !OnchainApprovals.shared.isApproved(document.provenance) {
             // Withhold the load — and the shield — until the user opts
             // in to exactly these bytes.
@@ -643,9 +652,18 @@ final class BrowserTab {
             pendingGate = nil
             ensStatus = .idle
             loadOnchain(document, url: url)
-        case .conflict, .anchorDisagreement, nil:
+        case .conflict, .anchorDisagreement, .conflictOnchain, nil:
             return
         }
+    }
+
+    /// Re-run the gated navigation — the onchain conflict gate's "Try
+    /// again": a fresh fetch through the same ladder, which resolves an
+    /// honest reorg on its own and re-gates a persistent disagreement.
+    func retryGatedNavigation() {
+        guard case .conflictOnchain(let document, _) = pendingGate else { return }
+        pendingGate = nil
+        navigate(to: .onchain(app: document.app, path: document.app.canonicalURL(tail: "").path))
     }
 
     func dismissGate() {

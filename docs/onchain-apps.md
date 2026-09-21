@@ -20,21 +20,23 @@ The wallet permission key is desktop's `getPermissionKey` byte for byte: `web3:/
 ```
 BrowserURL.parse("web3://…")            → .onchain(app, path)
 BrowserTab.navigate(.onchain)
- → OnchainAppLoader.load(app)           html() through Myotis → Colibri → direct pool, keeping provenance
- → verified?           → stage + load canonical URL
+ → OnchainAppLoader.load(app)           html() through the chain-data router (docs/chain-data-router.md) with the app's origin, keeping provenance
+ → verified / user's endpoint → stage + load canonical URL
  → unverified          → Gate.unverifiedOnchain(document)  (ENSInterstitial)
         Continue once  → OnchainApprovals.approve(hash) → stage + load the same bytes
+ → endpoints disagreed → Gate.conflictOnchain(document)   (no Continue; Try again re-fetches)
  → Web3SchemeHandler serves the staged document to WebKit
 ```
 
-`OnchainAppLoader` (`Onchain/OnchainAppLoader.swift`) is the wallet's read ladder with the answer's source kept. The wallet's `WalletRPC.fanOut` strips it; the gate needs it. Verified sources (`ChainRegistry.verifiedSources`: Myotis, Colibri) label the document verified. The chain's direct RPC pool labels it unverified and names the endpoint, quarantining dead endpoints as it walks. A revert on any tier is the contract's answer ("not an ERC-8244 app"). The decoded document is capped at 8 MiB, checked on the encoded size before decoding; the whole load has a 30 s budget. An unregistered chain fails with a pointer to the wallet's network list.
+`OnchainAppLoader` (`Onchain/OnchainAppLoader.swift`) asks `ChainDataRouter` for one `eth_call` with the app's permission key as routing context, so the fetch gets the interactive budget a page read gets and the answer's provenance comes back with it: Myotis, Colibri and an agreeing RPC quorum label the document verified; the user's own endpoint labels it `userConfigured`; a public endpoint labels it unverified and names the endpoint; endpoints that disagreed travel with the answer as dissent. A revert on any tier is the contract's answer ("not an ERC-8244 app"). The decoded document is capped at 8 MiB, checked on the encoded size before decoding; the whole load has a 30 s budget. An unregistered chain fails with a pointer to the wallet's network list.
 
 ## Gate
 
 Desktop PR #232's boundary, without its token machinery:
 
-- **verified** (Myotis, Colibri): loads directly.
-- **unverified** (direct RPC): held at the interstitial showing network, chain, contract, endpoint and the document's keccak hash. "Continue once" runs exactly the bytes already fetched and remembers chain + contract + hash for the process lifetime (`OnchainApprovals`, bounded, never persisted). Changed bytes warn again.
+- **verified** (Myotis, Colibri, RPC quorum) and **user-configured** (the user's own endpoint): loads directly.
+- **conflict** (endpoints disagreed, nothing verified settled it): hard-blocked, "Try again" re-fetches through the ladder, no Continue.
+- **unverified** (one public endpoint): held at the interstitial showing network, chain, contract, endpoint and the document's keccak hash. "Continue once" runs exactly the bytes already fetched and remembers chain + contract + hash for the process lifetime (`OnchainApprovals`, bounded, never persisted). Changed bytes warn again.
 
 There is no token, header or interstitial page in the web content because the scheme handler never fetches: the only way bytes reach WebKit under a `web3:` origin is `BrowserTab` staging them after fetching and gating. A hostile page that fetches or frames `web3://…` gets a 403 (the request's main document is not the app), so there is nothing to replay and nothing to pre-approve. Documents that fall out of the per-tab staging window (8 apps) come back through the tab on the next navigation, which fetches and gates again.
 
@@ -58,14 +60,14 @@ The trust shield reuses the ENS trust vocabulary (`ENSTrust`): verified via Myot
 
 ## Scope
 
-Direct contracts exposing `html()` only. Upgrade registries and resolver discovery, optional in the ERC, are not inferred (desktop parity). Runtime provenance (an app whose code was verified but whose later reads came from an unverified RPC) is not tracked yet on either platform.
+Direct contracts exposing `html()` only. Upgrade registries and resolver discovery, optional in the ERC, are not inferred (desktop parity). Runtime provenance (an app whose code was verified but whose later reads came from an unverified RPC) is not tracked yet on either platform. The app's own reads go through the same router with the app's origin; a source that cannot keep up with the app's call shape is cooled down per route without reordering the chain's policy (`docs/chain-data-router.md`).
 
 ## File map
 
 ```
 Freedom/Freedom/Onchain/
 ├── OnchainApp.swift            — OnchainAppRef (URL forms, permission key, html() decode), provenance, document, errors
-├── OnchainAppLoader.swift      — provenance-keeping html() ladder, OnchainApprovals, OnchainChainPin
+├── OnchainAppLoader.swift      — html() through the chain-data router, OnchainApprovals, OnchainChainPin
 └── Web3SchemeHandler.swift     — staged-document handler + response policy
 
 Freedom/Freedom/

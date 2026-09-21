@@ -146,4 +146,54 @@ final class MyotisGenerationStoreTests: XCTestCase {
         // Gnosis uses the suffixed marker name.
         XCTAssertEqual(MyotisGenerationStore.nativeMarkerName(.gnosis), "sync-anchor-gnosis.json")
     }
+
+    // MARK: - Peer cache inheritance (myotis #465)
+
+    func testReplacedGenerationInheritsPeerCachesButNotSyncState() throws {
+        let bundled = try store.loadOrCreate(.mainnet, nowMs: nowMs)
+        let peers = Data("1.2.3.4\t30303\t0xab\t1\tsnapok\n".utf8)
+        let clPeers = Data("cl-peer-list".utf8)
+        try peers.write(to: bundled.directory.appendingPathComponent("peers.cache"))
+        try clPeers.write(to: bundled.directory.appendingPathComponent("cl-peers.cache"))
+        try Data("old sync state".utf8).write(to: bundled.directory.appendingPathComponent("sync-state.snapshot"))
+
+        let verified = try store.replace(.mainnet, checkpoint: checkpoint(), nowMs: nowMs)
+        XCTAssertNotEqual(verified.directory, bundled.directory)
+        XCTAssertEqual(try Data(contentsOf: verified.directory.appendingPathComponent("peers.cache")), peers)
+        XCTAssertEqual(try Data(contentsOf: verified.directory.appendingPathComponent("cl-peers.cache")), clPeers)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: verified.directory.appendingPathComponent("sync-state.snapshot").path),
+            "sync state belongs to its anchor and is never carried over"
+        )
+        // The previous generation is untouched.
+        XCTAssertEqual(try Data(contentsOf: bundled.directory.appendingPathComponent("peers.cache")), peers)
+    }
+
+    func testFirstGenerationInheritsLegacyPeerCachesPerNetwork() throws {
+        // v0.1.7 layout kept the engine files in <network>/ — including the
+        // caches, under the network-suffixed names on Gnosis.
+        let gnosisDir = root.appendingPathComponent("gnosis", isDirectory: true)
+        try FileManager.default.createDirectory(at: gnosisDir, withIntermediateDirectories: true)
+        let peers = Data("5.6.7.8\t30303\t0xcd\t1\n".utf8)
+        try peers.write(to: gnosisDir.appendingPathComponent("peers-gnosis.cache"))
+        let generation = try store.loadOrCreate(.gnosis, nowMs: nowMs)
+        XCTAssertEqual(try Data(contentsOf: generation.directory.appendingPathComponent("peers-gnosis.cache")), peers)
+        XCTAssertEqual(try Data(contentsOf: gnosisDir.appendingPathComponent("peers-gnosis.cache")), peers, "legacy file retained")
+        XCTAssertEqual(MyotisGenerationStore.peerCacheNames(.mainnet), ["peers.cache", "cl-peers.cache"])
+        XCTAssertEqual(MyotisGenerationStore.peerCacheNames(.gnosis), ["peers-gnosis.cache", "cl-peers-gnosis.cache"])
+    }
+
+    func testRepairInheritsTheCurrentGenerationsPeerCaches() throws {
+        let current = try store.loadOrCreate(.mainnet, nowMs: nowMs)
+        let peers = Data("9.9.9.9\t30303\t0xef\t1\tsnapok\n".utf8)
+        try peers.write(to: current.directory.appendingPathComponent("peers.cache"))
+        let repaired = try store.repair(.mainnet)
+        XCTAssertNotEqual(repaired.directory, current.directory)
+        XCTAssertEqual(try Data(contentsOf: repaired.directory.appendingPathComponent("peers.cache")), peers)
+    }
+
+    func testMissingCachesLeaveTheNewGenerationCold() throws {
+        let generation = try store.loadOrCreate(.mainnet, nowMs: nowMs)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: generation.directory.appendingPathComponent("peers.cache").path))
+    }
 }

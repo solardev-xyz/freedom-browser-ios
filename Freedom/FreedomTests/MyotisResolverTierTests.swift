@@ -61,8 +61,29 @@ final class MyotisResolverTierTests: XCTestCase {
             legRunner: makeLegRunner([
                 alpha: .data(resolvedData: fallbackBytes, resolverAddress: sampleResolver),
             ]),
+            clock: { [unowned self] in self.clock.now },
             myotis: myotis
         )
+    }
+
+    /// Holds Myotis reads open until released — a tip-lagging engine that
+    /// reports ready but walks its snap peers into a 15 s request timeout.
+    private final class HangGate {
+        private var held: [CheckedContinuation<Void, Never>] = []
+        var hold = true
+        private(set) var calls = 0
+
+        func wait() async {
+            calls += 1
+            guard hold else { return }
+            await withCheckedContinuation { held.append($0) }
+        }
+
+        func release() {
+            let pending = held
+            held.removeAll()
+            pending.forEach { $0.resume() }
+        }
     }
 
     // MARK: - WNS/GNS (NameNFT) path: raw proven call, easiest to pin
@@ -263,5 +284,89 @@ final class MyotisResolverTierTests: XCTestCase {
         let swept = try await resolver.resolveContent("swarmit.wei")
         XCTAssertEqual(swept.trust.method, .myotis)
         XCTAssertEqual(swept.contentRef, sampleHashHex)
+    }
+
+    // MARK: - Tip-lag budget
+
+    /// The resolver gives a ready-but-stalled Myotis the interactive budget
+    /// when a later method is enabled, falls through, and skips it on the
+    /// next lookups until the cooldown lapses; a served read resets that.
+    func testHangingMyotisFallsThroughAtTheDeadlineAndCoolsDown() async throws {
+        let gate = HangGate()
+        let client = MyotisENSClient(
+            availability: { true },
+            verifiedBlock: { 25_760_849 },
+            ethCall: { _, _ in
+                await gate.wait()
+                return .ok(resultHex: self.sampleBytes.web3.hexString)
+            }
+        )
+        let resolver = resolver(myotis: client)
+        resolver.myotisDeadline = 0.05
+
+        let started = ContinuousClock.now
+        let first = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data([0x01]), system: .wns)
+        guard case .data(let bytes, _, let trust) = first else { return XCTFail("expected data") }
+        XCTAssertEqual(bytes, Data([0xFB]), "the fallback answered")
+        XCTAssertEqual(trust.level, .unverified)
+        XCTAssertLessThan(started.duration(to: .now), .seconds(1), "did not wait for the engine's own timeout")
+        XCTAssertEqual(gate.calls, 1)
+
+        // Next lookup: Myotis is skipped outright while cooling down.
+        _ = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data([0x01]), system: .wns)
+        XCTAssertEqual(gate.calls, 1, "no second Myotis attempt inside the cooldown")
+
+        // Cooldown lapsed and the engine answers again: Myotis serves.
+        clock.advance(by: 16)
+        gate.hold = false
+        gate.release()
+        await Task.yield()
+        let later = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data([0x01]), system: .wns)
+        guard case .data(let laterBytes, _, let laterTrust) = later else { return XCTFail("expected data") }
+        XCTAssertEqual(gate.calls, 2)
+        XCTAssertEqual(laterBytes, sampleBytes)
+        XCTAssertEqual(laterTrust.method, .myotis)
+
+        // A fresh timeout starts the schedule over at the 15 s step.
+        gate.hold = true
+        _ = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data([0x02]), system: .wns)
+        XCTAssertEqual(gate.calls, 3)
+        clock.advance(by: 14)
+        _ = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data([0x03]), system: .wns)
+        XCTAssertEqual(gate.calls, 3, "still cooling down")
+        gate.hold = false
+        gate.release()
+    }
+
+    /// A read that finishes after the lookup moved on is adopted: the
+    /// lower-tier results cached meanwhile are swept and the cooldown is
+    /// reset, so the very next lookup goes back to Myotis.
+    func testLateMyotisAnswerSweepsCachesAndResetsCooldown() async throws {
+        let gate = HangGate()
+        let client = MyotisENSClient(
+            availability: { true },
+            verifiedBlock: { 25_760_849 },
+            ethCall: { _, _ in
+                await gate.wait()
+                return .ok(resultHex: self.sampleBytes.web3.hexString)
+            }
+        )
+        let resolver = resolver(myotis: client)
+        resolver.myotisDeadline = 0.05
+
+        let first = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data([0x01]), system: .wns)
+        XCTAssertEqual(first.trustLevel, .unverified, "fallback answered at the budget")
+        XCTAssertEqual(gate.calls, 1)
+
+        // The engine finishes the read late; no clock advance, no new lookup.
+        gate.hold = false
+        gate.release()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let next = try await resolver.consensusResolve(dnsEncodedName: Data(), callData: Data([0x01]), system: .wns)
+        guard case .data(let bytes, _, let trust) = next else { return XCTFail("expected data") }
+        XCTAssertEqual(gate.calls, 2, "cooldown was reset by the late answer")
+        XCTAssertEqual(bytes, sampleBytes)
+        XCTAssertEqual(trust.method, .myotis)
     }
 }

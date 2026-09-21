@@ -12,7 +12,7 @@ final class Web3SchemeHandlerTests: XCTestCase {
         provenance: OnchainAppProvenance(
             app: app, networkName: "Ethereum",
             htmlHash: OnchainAppRef.htmlHash("<!doctype html><title>zSwap</title>"),
-            trust: OnchainAppLoader.verifiedTrust(source: "myotis")
+            trust: TestTrust.verified()
         )
     )
 

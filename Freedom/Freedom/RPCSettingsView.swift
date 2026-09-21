@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Chain list — the top-level Settings → RPC page. Each row is a chain
-/// from `ChainStore`, drilling into `ChainRPCDetailView` for the per-
-/// chain provider editor. Mainnet + Gnosis are seeded built-ins and
+/// Chain list — the top-level Settings → Chains page (desktop parity).
+/// Each row is a chain from `ChainStore`, drilling into
+/// `ChainDetailView` for the chain's routing policy and endpoints. Mainnet + Gnosis are seeded built-ins and
 /// can't be deleted (they're protocol-pinned: ENS / Colibri only run
 /// against mainnet, and the embedded bee node depends on Gnosis at
 /// the chain-store level). User-added chains (Phase 3+: chainlist.org
@@ -20,7 +20,7 @@ struct RPCSettingsView: View {
                 }
                 .onDelete(perform: deleteChains)
             } footer: {
-                Text("Tap a chain to edit its RPC providers. Mainnet and Gnosis are required.")
+                Text("The chains Freedom resolves names and balances on. Select a chain to manage how it is read and verified, and its RPC and prover endpoints. Ethereum and Gnosis are required.")
             }
             Section {
                 NavigationLink(value: SettingsPath.chainlistSearch) {
@@ -28,7 +28,7 @@ struct RPCSettingsView: View {
                 }
             }
         }
-        .navigationTitle("RPC")
+        .navigationTitle("Chains")
         .navigationBarTitleDisplayMode(.inline)
     }
 
@@ -36,7 +36,7 @@ struct RPCSettingsView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(chain.displayName)
-                Text(providerCountLabel(for: chain))
+                Text("chain \(chain.id) · \(providerCountLabel(for: chain))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -46,7 +46,7 @@ struct RPCSettingsView: View {
 
     private func providerCountLabel(for chain: Chain) -> String {
         let count = chainStore.rpcURLs(forChainID: chain.id).count
-        return count == 1 ? "1 provider" : "\(count) providers"
+        return count == 1 ? "1 endpoint" : "\(count) endpoints"
     }
 
     /// `.onDelete` fires for any swipe; we drop the indices that point at

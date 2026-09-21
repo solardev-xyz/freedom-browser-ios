@@ -27,7 +27,7 @@ final class OnchainAppPolicyTests: XCTestCase {
             html: html,
             provenance: OnchainAppProvenance(
                 app: app, networkName: "Ethereum", htmlHash: OnchainAppRef.htmlHash(html),
-                trust: OnchainAppLoader.verifiedTrust(source: "myotis")
+                trust: TestTrust.verified()
             )
         )
         let handler = Web3SchemeHandler()

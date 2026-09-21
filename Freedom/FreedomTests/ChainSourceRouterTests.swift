@@ -15,12 +15,18 @@ final class ChainSourceRouterTests: XCTestCase {
     /// `failure` (when set) is thrown for served methods instead.
     private final class FakeSource: ChainDataSource {
         let sourceName: String
+        let kind: ChainSource
         var available = true
         var served: [String: Any] = [:]
         var failure: Error?
         var calls: [String] = []
 
-        init(name: String = "fake") { sourceName = name }
+        /// Sources are looked up by tier, so a fake takes the tier it
+        /// stands in for (Myotis unless told otherwise).
+        init(name: String = "fake", kind: ChainSource = .myotis) {
+            sourceName = name
+            self.kind = kind
+        }
 
         func isAvailable(chainID: Int) -> Bool { available }
         func serves(method: String, params: [Any], chainID: Int) -> Bool {
@@ -136,9 +142,9 @@ final class ChainSourceRouterTests: XCTestCase {
     }
 
     func testSourceOrderIsRespected() async throws {
-        let first = FakeSource(name: "first")
+        let first = FakeSource(name: "first", kind: .myotis)
         first.served["eth_getBalance"] = "0x1"
-        let second = FakeSource(name: "second")
+        let second = FakeSource(name: "second", kind: .colibri)
         second.served["eth_getBalance"] = "0x2"
         let (rpc, _) = rpc(sources: [first, second], poolResult: try rpcResult("0xfb"))
         let balance = try await rpc.balance(of: "0xabc", on: .mainnet)
@@ -147,10 +153,10 @@ final class ChainSourceRouterTests: XCTestCase {
     }
 
     func testFirstSourceUnavailableSecondServes() async throws {
-        let first = FakeSource(name: "first")
+        let first = FakeSource(name: "first", kind: .myotis)
         first.served["eth_getBalance"] = "0x1"
         first.failure = ChainSourceUnavailable(reason: "syncing")
-        let second = FakeSource(name: "second")
+        let second = FakeSource(name: "second", kind: .colibri)
         second.served["eth_getBalance"] = "0x2"
         let (rpc, stub) = rpc(sources: [first, second], poolResult: try rpcResult("0xfb"))
         let balance = try await rpc.balance(of: "0xabc", on: .mainnet)

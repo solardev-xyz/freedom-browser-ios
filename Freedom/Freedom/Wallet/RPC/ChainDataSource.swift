@@ -17,6 +17,9 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "ChainData"
 protocol ChainDataSource: AnyObject {
     /// For logs.
     var sourceName: String { get }
+    /// Which policy tier this source implements; the router looks
+    /// sources up by it when walking a chain's `readOrder`.
+    var kind: ChainSource { get }
     /// Whether the source can plausibly answer for this chain right now.
     /// False skips it without burning an attempt.
     func isAvailable(chainID: Int) -> Bool
@@ -27,12 +30,31 @@ protocol ChainDataSource: AnyObject {
     func serves(method: String, params: [Any], chainID: Int) -> Bool
     /// The JSON-RPC `result` value (`NSNull` for a well-defined null).
     func result(method: String, params: [Any], chainID: Int) async throws -> Any
+    /// Who vouches for an answer, for the trust sheet: the light client
+    /// label, or the prover host.
+    func evidenceLabel(chainID: Int) -> String
+    /// The verified head the source executes against, when it exposes
+    /// one. Sampled before and after a call so the router only labels
+    /// an answer with a block that stayed stable around it.
+    func verifiedHead(chainID: Int) -> UInt64?
+}
+
+extension ChainDataSource {
+    func evidenceLabel(chainID: Int) -> String { sourceName }
+    func verifiedHead(chainID: Int) -> UInt64? { nil }
 }
 
 /// "This source can't serve the request right now" — the ladder falls
 /// through to the next source. Not an error the caller ever sees.
 struct ChainSourceUnavailable: Error {
     let reason: String
+    /// Set when the source knows *why* (timeout, execution ceiling) so
+    /// the router's adaptive layer can remember the route.
+    var failureKind: ChainSourceFailureKind?
+
+    init(reason: String) {
+        self.reason = reason
+    }
 }
 
 // MARK: - Shared param gates (pure, unit-tested)
@@ -120,6 +142,7 @@ private extension Data {
 @MainActor
 final class MyotisChainSource: ChainDataSource {
     let sourceName = "myotis"
+    let kind: ChainSource = .myotis
     private let node: MyotisNode
 
     init(node: MyotisNode) {
@@ -128,6 +151,13 @@ final class MyotisChainSource: ChainDataSource {
 
     func isAvailable(chainID: Int) -> Bool {
         chainID >= 0 && node.isReady(chainId: UInt64(chainID))
+    }
+
+    func evidenceLabel(chainID: Int) -> String { ENSResolver.myotisProviderLabel }
+
+    func verifiedHead(chainID: Int) -> UInt64? {
+        guard chainID >= 0, let hex = node.blockNumberHex(chainId: UInt64(chainID)) else { return nil }
+        return UInt64(hex.dropFirst(hex.lowercased().hasPrefix("0x") ? 2 : 0), radix: 16)
     }
 
     func serves(method: String, params: [Any], chainID: Int) -> Bool {
@@ -286,13 +316,14 @@ final class MyotisChainSource: ChainDataSource {
 @MainActor
 final class ColibriChainSource: ChainDataSource {
     let sourceName = "colibri"
+    let kind: ChainSource = .colibri
     private static let supportedChains: Set<Int> = [1, 100]
     private static let servableMethods: Set<String> = ["eth_call", "eth_getBalance"]
 
     private let settings: SettingsStore
     private let chainStore: ChainStore
     private var cached: [Int: Colibri] = [:]
-    private var cachedKey: String?
+    private var cachedKeys: [Int: String] = [:]
 
     init(settings: SettingsStore, chainStore: ChainStore) {
         self.settings = settings
@@ -301,6 +332,12 @@ final class ColibriChainSource: ChainDataSource {
 
     func isAvailable(chainID: Int) -> Bool {
         Self.supportedChains.contains(chainID)
+    }
+
+    /// The prover host answering for the chain.
+    func evidenceLabel(chainID: Int) -> String {
+        let prover = provers(chainID: chainID).first ?? sourceName
+        return URL(string: prover)?.hostOrAbsolute ?? prover
     }
 
     func serves(method: String, params: [Any], chainID: Int) -> Bool {
@@ -331,27 +368,30 @@ final class ColibriChainSource: ChainDataSource {
     }
 
     /// Mirror of `ColibriENSClient.currentClient`, parameterized by
-    /// chain: mainnet honours the user's prover override, Gnosis uses
-    /// the binding's per-chain prover defaults.
+    /// chain: each chain's policy may override the prover and the ZK
+    /// setting (mainnet's live in the ENS settings keys); an empty
+    /// override means the binding's per-chain defaults.
     private func currentClient(chainID: Int) -> Colibri {
-        let key = "\(resolvedMainnetProver)|\(settings.ensColibriZkProof)"
-        if cachedKey != key { cached.removeAll(); cachedKey = key }
-        if let client = cached[chainID] { return client }
+        let policy = chainStore.policy(forChainID: chainID)
+        let key = "\(chainID)|\(provers(chainID: chainID))|\(policy.zkProof)"
+        if let client = cached[chainID], cachedKeys[chainID] == key { return client }
         let client = Colibri()
         client.chainId = UInt64(chainID)
-        client.provers = chainID == 1
-            ? [resolvedMainnetProver]
-            : Colibri.defaultProvers(for: UInt64(chainID))
-        client.zkProof = settings.ensColibriZkProof
+        client.provers = provers(chainID: chainID)
+        client.zkProof = policy.zkProof
         client.privacyMode = .basic
         client.maxLatestAgeSeconds = 60
         client.eth_rpcs = chainStore.rpcURLs(forChainID: chainID)
         cached[chainID] = client
+        cachedKeys[chainID] = key
         return client
     }
 
-    private var resolvedMainnetProver: String {
-        let raw = settings.ensColibriProverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        return raw.isEmpty ? ColibriENSClient.defaultProverURL : raw
+    private func provers(chainID: Int) -> [String] {
+        if let override = chainStore.policy(forChainID: chainID).trimmedProverURL {
+            return [override]
+        }
+        if chainID == 1 { return [ColibriENSClient.defaultProverURL] }
+        return Colibri.defaultProvers(for: UInt64(max(0, chainID)))
     }
 }

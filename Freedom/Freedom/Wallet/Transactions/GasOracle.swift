@@ -43,15 +43,16 @@ struct GasOracle {
     private static let tipWei = BigUInt(1_000_000_000)
 
     func suggestedGasPrice(on chain: Chain) async throws -> BigUInt {
-        async let quoteHex = rpc.gasPrice(on: chain)
-        async let header = rpc.latestBlockHeader(on: chain)
-
-        let hex = try await quoteHex
+        // Both components from one source (and on direct, one URL): a
+        // gas price from one endpoint floored by another endpoint's base
+        // fee is exactly the mixed quote the router exists to avoid.
+        let fee = try await rpc.router.feeQuote(chainID: chain.id)
+        let hex = fee.gasPriceHex
         guard let quote = Hex.bigUInt(hex) else {
             throw Error.unparseableQuote(hex)
         }
         // nil on pre-London chains — no base fee exists, the quote stands.
-        let baseFee = try await header.baseFeePerGas.flatMap(Hex.bigUInt)
+        let baseFee = fee.baseFeePerGasHex.flatMap(Hex.bigUInt)
         let floor = baseFee.map {
             $0 * Self.headroomNumerator / Self.headroomDenominator + Self.tipWei
         }

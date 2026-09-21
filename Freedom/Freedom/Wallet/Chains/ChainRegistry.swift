@@ -22,6 +22,9 @@ final class ChainRegistry {
     /// `WalletRPC` value copies snapshotted at `TransactionService.init`
     /// still see later installations.
     @ObservationIgnored var verifiedSources: [ChainDataSource] = []
+    /// Per-chain routing policy overrides for tests; production policy
+    /// lives on the `ChainRecord` (see `ChainStore.policy(forChainID:)`).
+    @ObservationIgnored var policyOverrides: [Int: ChainAccessPolicy] = [:]
 
     init(
         chainStore: ChainStore,
@@ -36,16 +39,51 @@ final class ChainRegistry {
         self.pools[mainnetPool.chainID] = mainnetPool
     }
 
+    /// The chain-data router every read goes through. Lives on the
+    /// wallet RPC so a test that injects a transport there gets the
+    /// same router the bridge and the onchain loader use.
+    var chainData: ChainDataRouter { walletRPC.router }
+
+    /// The routing policy the router applies for a chain — a test
+    /// override when one is set, else the persisted per-chain policy —
+    /// sanitized for the chain (unsupported tiers dropped, never empty).
+    func policy(forChainID id: Int) -> ChainAccessPolicy {
+        (policyOverrides[id] ?? chainStore.policy(forChainID: id)).sanitized(forChainID: id)
+    }
+
+    /// Whether a direct answer from this URL is the user's own node
+    /// (trust `userConfigured`) rather than a public endpoint's word.
+    func isUserConfigured(url: URL, chainID: Int) -> Bool {
+        chainStore.isUserAddedRPCURL(url.absoluteString, chainID: chainID)
+    }
+
+    /// The installed source implementing a verified tier, if any.
+    func source(_ kind: ChainSource) -> ChainDataSource? {
+        verifiedSources.first { $0.kind == kind }
+    }
+
     func rpcURLs(for chain: Chain) -> [URL] {
-        pool(for: chain.id).availableProviders()
+        rpcURLs(forChainID: chain.id)
+    }
+
+    func rpcURLs(forChainID id: Int) -> [URL] {
+        pool(for: id).availableProviders()
     }
 
     func markSuccess(url: URL, on chain: Chain) {
-        pool(for: chain.id).markSuccess(url)
+        markSuccess(url: url, chainID: chain.id)
     }
 
     func markFailure(url: URL, on chain: Chain) {
-        pool(for: chain.id).markFailure(url)
+        markFailure(url: url, chainID: chain.id)
+    }
+
+    func markSuccess(url: URL, chainID: Int) {
+        pool(for: chainID).markSuccess(url)
+    }
+
+    func markFailure(url: URL, chainID: Int) {
+        pool(for: chainID).markFailure(url)
     }
 
     /// Clear shuffle + quarantine on every materialized pool. Called from
@@ -75,10 +113,19 @@ final class ChainRegistry {
     }
 
     /// Exposed for tests + the chain store seed. Single source of truth
-    /// for which URLs ship with Gnosis on first launch.
+    /// for which URLs ship with Gnosis. Refreshed 2026-09-18 against
+    /// live probes (Ankr now needs a key, Blast API shut down).
     static let gnosisURLs: [URL] = [
         URL(string: "https://rpc.gnosischain.com")!,
-        URL(string: "https://rpc.ankr.com/gnosis")!,
-        URL(string: "https://gnosis-mainnet.public.blastapi.io")!,
+        URL(string: "https://gnosis-rpc.publicnode.com")!,
+        URL(string: "https://gnosis.drpc.org")!,
+        URL(string: "https://rpc.gnosis.gateway.fm")!,
+    ]
+
+    /// Every Gnosis seed that ever shipped (see `legacyPublicRpcProviders`).
+    static let legacyGnosisURLs: Set<String> = [
+        "https://rpc.gnosischain.com",
+        "https://rpc.ankr.com/gnosis",
+        "https://gnosis-mainnet.public.blastapi.io",
     ]
 }
