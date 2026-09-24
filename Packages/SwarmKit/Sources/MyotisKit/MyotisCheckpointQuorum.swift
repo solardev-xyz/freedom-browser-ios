@@ -2,8 +2,9 @@ import Foundation
 
 /// Stale-anchor recovery, part 2: the external checkpoint quorum. Port
 /// of desktop `checkpoint-verifier-worker.js` `checkpointVote` /
-/// `checkpointQuorum` / `fetchBytes` — same endpoints, same evidence
-/// rules, same replacement rule, same error classes.
+/// `checkpointQuorum` / `fetchBytes` (PR #353, PR #416) — same
+/// endpoints, same evidence rules, same replacement rule, same error
+/// classes, same bounded per-source diagnostics.
 ///
 /// Trust model (desktop parity): each authority votes once for a
 /// `(slot, root)` only after explicitly endorsing finality — a block-root
@@ -72,23 +73,30 @@ public final class MyotisURLSessionFetcher: NSObject, MyotisCheckpointFetcher, U
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         do {
             let (bytes, response) = try await session.bytes(for: request, delegate: self)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                throw MyotisCheckpointError.unavailable
+            guard let http = response as? HTTPURLResponse else {
+                throw MyotisCheckpointTransportError(.transport)
+            }
+            guard http.statusCode == 200 else {
+                throw MyotisCheckpointTransportError(.http, httpStatus: http.statusCode)
             }
             if http.expectedContentLength >= 0, http.expectedContentLength > Int64(limit) {
-                throw MyotisCheckpointError.unavailable
+                throw MyotisCheckpointTransportError(.bodyLimit)
             }
             var data = Data()
             data.reserveCapacity(min(limit, Int(max(0, http.expectedContentLength))))
             for try await byte in bytes {
                 data.append(byte)
-                if data.count > limit { throw MyotisCheckpointError.unavailable }
+                if data.count > limit { throw MyotisCheckpointTransportError(.bodyLimit) }
             }
             return data
+        } catch let error as MyotisCheckpointTransportError {
+            throw error
         } catch let error as MyotisCheckpointError {
             throw error
+        } catch let error as URLError where error.code == .timedOut {
+            throw MyotisCheckpointTransportError(.timeout)
         } catch {
-            throw MyotisCheckpointError.unavailable
+            throw MyotisCheckpointTransportError(.transport)
         }
     }
 }
@@ -101,15 +109,22 @@ public struct MyotisCheckpointQuorum: Sendable {
     public let fetcher: MyotisCheckpointFetcher
     /// Injectable clock (ms since the epoch).
     public let nowMs: @Sendable () -> Int64
+    /// Per-source outcome sink (log lines). Observation only: a throwing
+    /// or slow sink cannot affect a vote. At most `maxDiagnostics` per
+    /// quorum client.
+    public let onDiagnostic: (@Sendable (MyotisCheckpointSourceDiagnostic) -> Void)?
+    public static let maxDiagnostics = 64
 
     public init(
         network: MyotisCheckpointNetwork,
         fetcher: MyotisCheckpointFetcher,
-        nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
+        nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
+        onDiagnostic: (@Sendable (MyotisCheckpointSourceDiagnostic) -> Void)? = nil
     ) {
         self.network = network
         self.fetcher = fetcher
         self.nowMs = nowMs
+        self.onDiagnostic = onDiagnostic
     }
 
     /// One authority's vote for `slot`.
@@ -120,16 +135,22 @@ public struct MyotisCheckpointQuorum: Sendable {
         public var finalizedEpoch: UInt64
     }
 
-    private func metadata(_ source: String, _ path: String) async throws -> [String: Any] {
-        guard let url = URL(string: source + path) else { throw MyotisCheckpointError.unavailable }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "accept")
-        let bytes = try await fetcher.fetch(request, limit: Self.maxMetadataBytes)
-        guard let object = try? JSONSerialization.jsonObject(with: bytes),
-              let dictionary = object as? [String: Any]
-        else { throw MyotisCheckpointError.unavailable }
-        return dictionary
+    private func metadata(
+        _ source: String, _ path: String, stage: MyotisCheckpointStagedError.Stage
+    ) async throws -> [String: Any] {
+        do {
+            guard let url = URL(string: source + path) else { throw MyotisCheckpointTransportError(.transport) }
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("application/json", forHTTPHeaderField: "accept")
+            let bytes = try await fetcher.fetch(request, limit: Self.maxMetadataBytes)
+            guard let object = try? JSONSerialization.jsonObject(with: bytes),
+                  let dictionary = object as? [String: Any]
+            else { throw MyotisCheckpointTransportError(.invalidJSON) }
+            return dictionary
+        } catch {
+            throw MyotisCheckpointStagedError(stage: stage, underlying: error)
+        }
     }
 
     /// Desktop `checkpointVote`. Two GETs in parallel: the block root at
@@ -138,8 +159,18 @@ public struct MyotisCheckpointQuorum: Sendable {
     /// the authority's finalized-slot history must list exactly this
     /// slot with exactly this root.
     public func vote(source: String, slot: UInt64) async throws -> Vote {
-        async let blockTask = metadata(source, "/eth/v1/beacon/blocks/\(slot)/root")
-        async let finalityTask = metadata(source, "/eth/v1/beacon/states/head/finality_checkpoints")
+        do {
+            return try await voteDetailed(source: source, slot: slot)
+        } catch {
+            throw MyotisCheckpointError.wrap(error)
+        }
+    }
+
+    /// `vote` with the failing stage attached (`MyotisCheckpointStagedError`)
+    /// for the diagnostics; the verdict is the same.
+    func voteDetailed(source: String, slot: UInt64) async throws -> Vote {
+        async let blockTask = metadata(source, "/eth/v1/beacon/blocks/\(slot)/root", stage: .blockRoot)
+        async let finalityTask = metadata(source, "/eth/v1/beacon/states/head/finality_checkpoints", stage: .finality)
         let block = try await blockTask
         let finality = try await finalityTask
         for body in [block, finality] {
@@ -148,6 +179,20 @@ public struct MyotisCheckpointQuorum: Sendable {
                 if optimistic { throw MyotisCheckpointError.quorumConflict }
             }
         }
+        // The requested BLOCK's own finality flag (Beacon API primitive).
+        // A head STATE can be unfinalized while its reported finalized
+        // checkpoint is valid — the state response's top-level flag is
+        // never read as evidence for this vote.
+        var blockFinalized: Bool?
+        if let flag = block["finalized"] {
+            guard let value = flag as? Bool else { throw MyotisCheckpointError.unavailable }
+            blockFinalized = value
+        }
+        if blockFinalized == false { throw MyotisCheckpointError.race }
+        let blockEndorsed = blockFinalized == true && block["execution_optimistic"] as? Bool == false
+        // A standard Beacon API authority has no finalized-slot history:
+        // without the explicit endorsement on the block it cannot vote.
+        if network.beaconSources.contains(source), !blockEndorsed { throw MyotisCheckpointError.unavailable }
         let blockData = block["data"] as? [String: Any]
         let finalityData = finality["data"] as? [String: Any]
         let finalized = finalityData?["finalized"] as? [String: Any]
@@ -164,7 +209,15 @@ public struct MyotisCheckpointQuorum: Sendable {
         if epochSlot < slot { throw MyotisCheckpointError.race }
         if finalizedRoot != root {
             if epoch == network.epochCeil(slot) { throw MyotisCheckpointError.quorumConflict }
-            let history = try await metadata(source, "/checkpointz/v1/beacon/slots")
+            // The block is older than the authority's current finalized
+            // checkpoint. Its explicit `finalized: true` endorses finalized
+            // history — no Checkpointz history scan needed (PublicNode
+            // has none). Otherwise the finalized-slot history must list
+            // exactly this slot with exactly this root.
+            if blockEndorsed {
+                return Vote(source: source, slot: slot, root: root, finalizedEpoch: network.epochCeil(slot))
+            }
+            let history = try await metadata(source, "/checkpointz/v1/beacon/slots", stage: .history)
             guard let slots = (history["data"] as? [String: Any])?["slots"] as? [Any], slots.count <= 256 else {
                 throw MyotisCheckpointError.unavailable
             }
@@ -200,9 +253,24 @@ public struct MyotisCheckpointQuorum: Sendable {
             ) { group in
                 for (index, source) in candidates.enumerated() {
                     group.addTask {
+                        let started = self.nowMs()
+                        var failure: Error?
+                        defer {
+                            // Diagnostics cannot affect a vote: built from bounded
+                            // fields only, delivered best-effort.
+                            if let sink = self.onDiagnostic,
+                               let diagnostic = MyotisCheckpointSourceDiagnostic(
+                                   source: source, network: self.network, slot: slot,
+                                   elapsedMs: Int(clamping: self.nowMs() - started), error: failure
+                               )
+                            {
+                                sink(diagnostic)
+                            }
+                        }
                         do {
-                            return (index, .success(try await self.vote(source: source, slot: slot)))
+                            return (index, .success(try await self.voteDetailed(source: source, slot: slot)))
                         } catch {
+                            failure = error
                             return (index, .failure(MyotisCheckpointError.wrap(error)))
                         }
                     }
@@ -328,15 +396,20 @@ public struct MyotisCheckpointAcquirer: Sendable {
     public let fetcher: MyotisCheckpointFetcher
     public let corroborator: MyotisCheckpointCorroborator
     public let nowMs: @Sendable () -> Int64
+    /// Per-source outcome sink, bounded to `MyotisCheckpointQuorum.maxDiagnostics`
+    /// per acquisition; never affects the verdict.
+    public let onDiagnostic: (@Sendable (MyotisCheckpointSourceDiagnostic) -> Void)?
 
     public init(
         fetcher: MyotisCheckpointFetcher,
         corroborator: MyotisCheckpointCorroborator,
-        nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
+        nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
+        onDiagnostic: (@Sendable (MyotisCheckpointSourceDiagnostic) -> Void)? = nil
     ) {
         self.fetcher = fetcher
         self.corroborator = corroborator
         self.nowMs = nowMs
+        self.onDiagnostic = onDiagnostic
     }
 
     public func acquire(chainId: UInt64) async throws -> MyotisCheckpointRecord {
@@ -358,7 +431,12 @@ public struct MyotisCheckpointAcquirer: Sendable {
     }
 
     private func verify(network: MyotisCheckpointNetwork) async throws -> MyotisCheckpointRecord {
-        let quorum = MyotisCheckpointQuorum(network: network, fetcher: fetcher, nowMs: nowMs)
+        let budget = DiagnosticBudget(limit: MyotisCheckpointQuorum.maxDiagnostics)
+        let sink = onDiagnostic
+        let quorum = MyotisCheckpointQuorum(network: network, fetcher: fetcher, nowMs: nowMs) { diagnostic in
+            guard let sink, budget.take() else { return }
+            sink(diagnostic)
+        }
         let ledger = MyotisTrustLedger(quorum: quorum, maxRequests: Self.maxTrustRequests)
         defer { Task { await ledger.cancelAll() } }
 
@@ -414,5 +492,19 @@ public struct MyotisCheckpointAcquirer: Sendable {
             finalizedEpoch: observation.finalizedEpoch
         )
         return try record.validated(chainId: network.chainId, nowMs: now, fresh: true)
+    }
+}
+
+/// Counts diagnostics handed out per acquisition (desktop caps at 64).
+final class DiagnosticBudget: @unchecked Sendable {
+    private let lock = NSLock()
+    private var remaining: Int
+    init(limit: Int) { remaining = limit }
+    func take() -> Bool {
+        lock.withLock {
+            guard remaining > 0 else { return false }
+            remaining -= 1
+            return true
+        }
     }
 }

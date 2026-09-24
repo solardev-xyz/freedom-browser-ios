@@ -3,9 +3,10 @@ import Foundation
 /// Stale-anchor recovery, part 1: the checkpoint *policy* — network
 /// constants, the persisted checkpoint record and its validation rules.
 /// A byte-for-byte port of desktop freedom-browser's
-/// `src/main/myotis/checkpoint-verifier.js` (PR #353): same sources,
-/// same quorum thresholds, same freshness and clock rules, same error
-/// taxonomy. Pure — no I/O — so the decision tables are unit-testable.
+/// `src/main/myotis/checkpoint-verifier.js` (PR #353, PR #416): same
+/// sources, same quorum thresholds, same freshness and clock rules, same
+/// error taxonomy. Pure — no I/O — so the decision tables are
+/// unit-testable.
 ///
 /// Why this exists: myotis v0.1.8+ enforces a weak-subjectivity gate.
 /// When both the embedded checkpoint and the saved snapshot are older
@@ -78,8 +79,92 @@ public enum MyotisCheckpointError: String, Error, Sendable, Equatable, CaseItera
     /// verification verdict.
     public static func wrap(_ error: Error) -> MyotisCheckpointError {
         if let known = error as? MyotisCheckpointError { return known }
+        if let staged = error as? MyotisCheckpointStagedError { return wrap(staged.underlying) }
         if error is CancellationError { return .unavailable }
         return .unavailable
+    }
+}
+
+/// How a fetch failed — diagnostics only. Every one of these is
+/// `MyotisCheckpointError.unavailable` for the verdict (`wrap`); the
+/// class and status travel beside it so the node log can say *why* a
+/// source did not vote without ever carrying its response body.
+public struct MyotisCheckpointTransportError: Error, Sendable, Equatable {
+    public enum Kind: String, Sendable {
+        case http, timeout, transport
+        case bodyLimit = "body-limit"
+        case invalidJSON = "invalid-json"
+    }
+    public var kind: Kind
+    public var httpStatus: Int?
+    public init(_ kind: Kind, httpStatus: Int? = nil) {
+        self.kind = kind
+        self.httpStatus = httpStatus
+    }
+}
+
+/// A vote-stage failure: which request of the vote failed. Unwrapped
+/// by `MyotisCheckpointError.wrap`; read by the diagnostics.
+public struct MyotisCheckpointStagedError: Error, Sendable {
+    public enum Stage: String, Sendable { case blockRoot = "block-root", finality, history }
+    public var stage: Stage
+    public var underlying: Error
+    public init(stage: Stage, underlying: Error) {
+        self.stage = stage
+        self.underlying = underlying
+    }
+}
+
+/// One source's outcome for one quorum lookup (desktop PR #416
+/// `checkpoint-source` diagnostics). Allow-listed fields only: the
+/// source is one of the policy's URLs, the outcome an error code or
+/// `vote`, the failure class and HTTP status bounded enumerations —
+/// never a response body, URL path or free-form message. Diagnostics
+/// are observation only; they cannot settle or veto a vote.
+public struct MyotisCheckpointSourceDiagnostic: Sendable, Equatable {
+    public var source: String
+    public var slot: UInt64
+    /// `"vote"` or a `MyotisCheckpointError` raw value.
+    public var outcome: String
+    public var elapsedMs: Int
+    public var stage: MyotisCheckpointStagedError.Stage?
+    public var failure: MyotisCheckpointTransportError.Kind?
+    public var httpStatus: Int?
+
+    /// Desktop `validateDiagnostic`: build only from bounded inputs.
+    public init?(
+        source: String, network: MyotisCheckpointNetwork, slot: UInt64, elapsedMs: Int,
+        error: Error?
+    ) {
+        guard network.sources.contains(source), slot > 0, elapsedMs >= 0,
+              elapsedMs <= Int(MyotisCheckpointAcquirer.deadlineSeconds) * 1000
+        else { return nil }
+        self.source = source
+        self.slot = slot
+        self.elapsedMs = elapsedMs
+        guard let error else {
+            outcome = "vote"
+            return
+        }
+        outcome = MyotisCheckpointError.wrap(error).rawValue
+        var underlying = error
+        if let staged = error as? MyotisCheckpointStagedError {
+            stage = staged.stage
+            underlying = staged.underlying
+        }
+        if let transport = underlying as? MyotisCheckpointTransportError {
+            failure = transport.kind
+            if let status = transport.httpStatus, (100...599).contains(status) { httpStatus = status }
+        }
+    }
+
+    /// One log line, allow-listed fields only.
+    public var logLine: String {
+        var parts = ["source=\(URL(string: source)?.host ?? source)", "slot=\(slot)", "outcome=\(outcome)", "\(elapsedMs)ms"]
+        if let stage { parts.append("stage=\(stage.rawValue)") }
+        if let failure { parts.append("failure=\(failure.rawValue)") }
+        if let httpStatus { parts.append("status=\(httpStatus)") }
+        return parts.joined(separator: " ")
     }
 }
 
@@ -95,6 +180,11 @@ public struct MyotisCheckpointNetwork: Sendable, Equatable {
     public let source: String
     /// Candidate pool in stable order. Replacement walks this order.
     public let sources: [String]
+    /// Standard Beacon API authorities (no Checkpointz history endpoint):
+    /// their vote requires the requested BLOCK's own `finalized: true`
+    /// and `execution_optimistic: false`; missing or malformed flags are
+    /// not a vote (desktop PR #416 `beaconSources`).
+    public let beaconSources: [String]
     /// Seats: how many candidates vote concurrently.
     public let participants: Int
     /// Agreeing votes required. Never reduced.
@@ -104,6 +194,24 @@ public struct MyotisCheckpointNetwork: Sendable, Equatable {
     public let genesis: UInt64
     public let secondsPerSlot: UInt64
     public let slotsPerEpoch: UInt64
+
+    public init(
+        chainId: UInt64, network: String, source: String, sources: [String], beaconSources: [String] = [],
+        participants: Int, threshold: Int, prover: String, genesis: UInt64, secondsPerSlot: UInt64,
+        slotsPerEpoch: UInt64
+    ) {
+        self.chainId = chainId
+        self.network = network
+        self.source = source
+        self.sources = sources
+        self.beaconSources = beaconSources
+        self.participants = participants
+        self.threshold = threshold
+        self.prover = prover
+        self.genesis = genesis
+        self.secondsPerSlot = secondsPerSlot
+        self.slotsPerEpoch = slotsPerEpoch
+    }
 
     public static let mainnet = MyotisCheckpointNetwork(
         chainId: 1,
@@ -130,11 +238,16 @@ public struct MyotisCheckpointNetwork: Sendable, Equatable {
         chainId: 100,
         network: "gnosis",
         source: "https://checkpoint.gnosischain.com",
+        // Three independent operators (Gnosis, DAppNode, PublicNode/
+        // Allnodes), two must agree — desktop PR #416. DAppNode's .io/.net
+        // aliases are one authority, never two.
         sources: [
             "https://checkpoint.gnosischain.com",
             "https://checkpoint-sync-gnosis.dappnode.net",
+            "https://gnosis-beacon-api.publicnode.com",
         ],
-        participants: 2,
+        beaconSources: ["https://gnosis-beacon-api.publicnode.com"],
+        participants: 3,
         threshold: 2,
         prover: "https://gnosis.colibri-proof.tech",
         genesis: 1_638_993_340,

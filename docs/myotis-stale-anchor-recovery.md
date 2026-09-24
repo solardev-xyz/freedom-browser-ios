@@ -43,11 +43,29 @@ each engine release. Recovery is mandatory, not optional.
 1. **External checkpoint quorum** (`MyotisCheckpointQuorum`). Ethereum:
    2 of 3 seats from seven checkpointz hosts (Sigma Prime, EthStaker,
    ChainSafe, Attestant, beaconcha.in, PietjePuk, Stakely), filled in
-   stable order, unavailable candidates replaced. Gnosis: both of
-   `checkpoint.gnosischain.com` and `checkpoint-sync-gnosis.dappnode.net`.
-   A vote is a block root **plus** a finality endorsement covering the
-   slot; dissent and contradictory evidence keep their seat; the
-   threshold never drops.
+   stable order, unavailable candidates replaced. Gnosis (desktop PR
+   #416, 2026-09-24): 2 of 3 seats from three independent operators —
+   `checkpoint.gnosischain.com`, `checkpoint-sync-gnosis.dappnode.net`
+   and `gnosis-beacon-api.publicnode.com` — so one provider being down
+   no longer prevents recovery. DAppNode's `.io`/`.net` aliases are one
+   authority. A vote is a block root **plus** a finality endorsement
+   covering the slot; dissent and contradictory evidence keep their
+   seat; the threshold never drops.
+
+   PublicNode exposes the standard Beacon API but no Checkpointz history
+   (`/checkpointz/v1/beacon/slots`). For such `beaconSources` the vote
+   requires the requested **block** response's own `finalized: true` and
+   `execution_optimistic: false` (Beacon API primitives); missing or
+   malformed flags are not a vote, `finalized: false` is a race. The head
+   **state** response's top-level `finalized` flag describes the head,
+   not the block, and is never read as evidence. An explicit block
+   endorsement also covers finalized history — a block older than the
+   authority's current finalized checkpoint needs no history scan, from
+   any authority. The Checkpointz providers keep their history path when
+   the flags are absent. Freshness, same-slot/root agreement, same-epoch
+   contradiction and the proof/header binding are unchanged. These JSON
+   answers are HTTPS authority assertions, not finality proofs; Colibri
+   corroboration stays mandatory.
 2. **Colibri corroboration** (`ColibriCheckpointCorroborator`). A
    disposable Colibri verifier (fresh in-memory storage) verifies a zk
    proof for the latest block from the network's Colibri prover. The
@@ -92,13 +110,32 @@ proof decoder in the Swift package and add the header re-hash.
    (`snapServingPeers ≥ 1`, engine ABI 31+ — a pooled peer that still
    lags the head does not count), the EL reader up and no EL hunt.
 
-Retry ladder: transient failures (`unavailable`, `quorum-unavailable`,
-`race`, `stale`) retry after 15 s, then 60 s, then block. Terminal
-failures (`mismatch`, `quorum-conflict`, `clock`, `storage`,
-`storage-io`, `ownership`, `unsupported`, `installation`, `startup`,
-`stalled`) block immediately. A recovery episode longer than 60 s shows
-"taking longer than expected"; a chain not ready for 5 minutes with no
-recovery in flight blocks as `stalled` ("Syncing slowly").
+Retry ladder (desktop PR #416): transient failures (`unavailable`,
+`quorum-unavailable`, `race`, `stale`) retry after 15 s, then 60 s, then
+every 5 minutes for as long as the app is in the foreground — an outage
+never parks recovery permanently. Terminal failures (`mismatch`,
+`quorum-conflict`, `clock`, `storage`, `storage-io`, `ownership`,
+`unsupported`, `installation`, `startup`, `stalled`) block immediately
+and never bypass verification. iOS lifecycle: timers do not run while
+suspended, so `pause()` drops the timer but keeps the `waiting` state
+with its `nextRetryAt`; `resume()` (and the next poll) reconciles — an
+overdue retry runs at once, otherwise the remaining wait is re-armed —
+without duplicating an in-flight acquisition. Stop, pause and profile
+changes invalidate pending work through the lifecycle token, so late
+results are ignored. **Retry now** is offered while waiting as well as
+while blocked. A recovery episode longer than 60 s shows "taking longer
+than expected" (while waiting: "still trying automatically"); a chain
+not ready for 5 minutes with no recovery in flight blocks as `stalled`
+("Syncing slowly"). Not built: a connectivity-triggered retry — the
+next poll or resume covers it within the cadence.
+
+Diagnostics: every source outcome of an attempt is logged as one
+allow-listed line — `checkpoint source source=<host> slot=N
+outcome=vote|<error code> <ms>ms [stage=block-root|finality|history]
+[failure=http|timeout|transport|body-limit|invalid-json] [status=NNN]
+(attempt K)` — at most 64 per attempt, only for the active attempt.
+Response bodies, paths and free-form upstream messages never reach the
+log (`MyotisCheckpointSourceDiagnostic`).
 
 Blocked chains offer **Retry sync** (storage/startup/stall reasons
 restart the same owned generation; the rest run a fresh checkpoint

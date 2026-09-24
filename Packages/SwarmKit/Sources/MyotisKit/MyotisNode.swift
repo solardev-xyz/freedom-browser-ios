@@ -460,10 +460,10 @@ public final class MyotisNode {
             }
         }
         recoveryTask = [:]
-        for (chainId, task) in retryTask {
-            task.cancel()
-            if recovery[chainId]?.phase == .waiting { recovery[chainId] = nil }
-        }
+        // Timers do not run while suspended: drop them, keep the `waiting`
+        // state (with its `nextRetryAt`) so `resume()` can reconcile an
+        // overdue retry instead of restarting the ladder from scratch.
+        for task in retryTask.values { task.cancel() }
         retryTask = [:]
         let paused = handles
         Task.detached(priority: .utility) { [weak self] in
@@ -490,15 +490,48 @@ public final class MyotisNode {
             let line = count > 0 ? "resumed \(count)/\(resuming.count) engines" : "resume: engines were not paused"
             await MainActor.run { self?.append(line) }
         }
+        for chainId in recovery.keys { reconcileRetry(chainId: chainId) }
+    }
+
+    /// A `waiting` chain whose timer is gone (background pause, or the
+    /// poll noticing a dropped timer): run the retry now if it is
+    /// overdue, else re-arm the remaining wait. Never duplicates work —
+    /// an in-flight acquisition or a live timer is left alone.
+    private func reconcileRetry(chainId: UInt64) {
+        guard status == .running, let state = recovery[chainId], state.phase == .waiting,
+              recoveryTask[chainId] == nil, retryTask[chainId] == nil
+        else { return }
+        let remaining = (state.nextRetryAt ?? now()).timeIntervalSince(now())
+        if remaining <= 0 {
+            recoverCheckpoint(chainId: chainId)
+        } else {
+            scheduleRetry(chainId: chainId, after: remaining)
+        }
+    }
+
+    /// Arm the automatic retry timer for a `waiting` chain.
+    private func scheduleRetry(chainId: UInt64, after delay: TimeInterval) {
+        retryTask[chainId]?.cancel()
+        let token = lifecycleGeneration
+        retryTask[chainId] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.lifecycleGeneration == token else { return }
+            self.retryTask[chainId] = nil
+            self.recoverCheckpoint(chainId: chainId)
+        }
     }
 
     // MARK: - Recovery actions (Nodes UI)
 
-    /// "Retry sync" while blocked. Storage/startup/stall reasons restart
-    /// the same owned generation; everything else runs a fresh
-    /// checkpoint recovery with the attempt counter reset.
+    /// "Retry sync" while blocked or waiting for an automatic retry.
+    /// Storage/startup/stall reasons restart the same owned generation;
+    /// everything else runs a fresh checkpoint recovery with the attempt
+    /// counter reset (a pending automatic retry is cancelled first).
     public func retryRecovery(chainId: UInt64) {
-        guard status == .running, let state = recovery[chainId], state.phase == .blocked, state.canRetry else { return }
+        guard status == .running, let state = recovery[chainId], state.offersRetry, recoveryTask[chainId] == nil
+        else { return }
+        retryTask[chainId]?.cancel()
+        retryTask[chainId] = nil
         if state.reason?.restartsOwnedState == true {
             restartOwnedState(chainId: chainId, repair: false)
         } else {
@@ -669,8 +702,15 @@ public final class MyotisNode {
         recovery[chainId] = MyotisRecoveryState(phase: .checking, attempt: attempt, startedAt: startedAt)
         publishReadiness(chainId: chainId)
         append("chain \(chainId): stale anchor — acquiring verified checkpoint (attempt \(attempt))")
-        let acquirer = MyotisCheckpointAcquirer(fetcher: checkpointFetcher, corroborator: corroborator)
         let token = lifecycleGeneration
+        // Per-source outcomes (desktop PR #416 `checkpoint source` lines):
+        // allow-listed fields only, for the active attempt only.
+        let acquirer = MyotisCheckpointAcquirer(fetcher: checkpointFetcher, corroborator: corroborator) { [weak self] diagnostic in
+            Task { @MainActor [weak self] in
+                guard let self, self.lifecycleGeneration == token, self.recoveryAttempt[chainId] == attempt else { return }
+                self.append("chain \(chainId): checkpoint source \(diagnostic.logLine) (attempt \(attempt))")
+            }
+        }
         let task = Task { [weak self] in
             do {
                 let record = try await acquirer.acquire(chainId: chainId)
@@ -800,14 +840,11 @@ public final class MyotisNode {
             startedAt: delay == nil ? nil : startedAt
         )
         publishReadiness(chainId: chainId)
-        append("chain \(chainId): recovery \(delay == nil ? "blocked" : "waiting") — \(reason.rawValue)")
-        guard let delay else { return }
-        let token = lifecycleGeneration
-        retryTask[chainId] = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard !Task.isCancelled, let self, self.lifecycleGeneration == token else { return }
-            self.retryTask[chainId] = nil
-            self.recoverCheckpoint(chainId: chainId)
+        if let delay {
+            append("chain \(chainId): recovery attempt \(attempt) failed — \(reason.rawValue); retrying in \(Int(delay)) s")
+            scheduleRetry(chainId: chainId, after: delay)
+        } else {
+            append("chain \(chainId): recovery blocked — \(reason.rawValue)")
         }
     }
 
@@ -822,8 +859,9 @@ public final class MyotisNode {
             } else if state?.phase == .blocked, state?.reason == .stalled, !inFlight {
                 recoverCheckpoint(chainId: chainId, resetAttempts: true)
             } else if state?.phase == .waiting, retryTask[chainId] == nil, !inFlight {
-                // A retry that was dropped by a background pause: resume it.
-                recoverCheckpoint(chainId: chainId)
+                // A retry whose timer was dropped (background pause): run it
+                // if overdue, else re-arm the remaining wait.
+                reconcileRetry(chainId: chainId)
             } else if state?.phase == .restarting, !inFlight {
                 if state?.mode == .restart {
                     recovery[chainId] = nil
