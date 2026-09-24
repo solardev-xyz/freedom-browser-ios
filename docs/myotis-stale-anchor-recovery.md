@@ -21,7 +21,7 @@ otherwise BLS-verify.
 Every fresh Gnosis install is therefore stale within a day and a half of
 each engine release. Recovery is mandatory, not optional.
 
-## The engine API (v0.1.10, ABI 26)
+## The engine API (introduced in v0.1.10, ABI 26; the app now pins v0.1.12, ABI 32)
 
 * `myotis_create_with_checkpoint(network, data_dir, root, slot)` —
   bootstraps a fresh directory from a caller-supplied beacon block root
@@ -88,7 +88,9 @@ proof decoder in the Swift package and add the header re-hash.
    start.
 4. `restarting` clears when the engine reports `SYNCED` past the anchor
    (or at the anchor slot with the anchored root). Readiness then also
-   needs a snap peer, the EL reader up and no LC hunt.
+   needs a state peer that can serve at the verified head
+   (`snapServingPeers ≥ 1`, engine ABI 31+ — a pooled peer that still
+   lags the head does not count), the EL reader up and no EL hunt.
 
 Retry ladder: transient failures (`unavailable`, `quorum-unavailable`,
 `race`, `stale`) retry after 15 s, then 60 s, then block. Terminal
@@ -138,6 +140,20 @@ retired bundled generation.
   so the engine parks; the verified generation uses the network default).
   Watch the light-client log: `STALE_ANCHOR — anchor period …` →
   `checkpoint verified · slot …` → `recovery complete`.
+* Simulator smoke, cold peer pool: `FREEDOM_MYOTIS_BOOT_ENODES_MAINNET`
+  (or `_GNOSIS`) = a JSON array of `enode://<128 hex>@ip:port` strings
+  hands the engine host seed pins (`myotis_set_boot_enodes`, ABI 31+;
+  DEBUG builds only). The engine applies or refuses the list as a whole
+  and dials the pins first. With `FREEDOM_DEBUG_RESOLVE=<name>` on top
+  this is the cold-start check: `snapServingPeers` (status, the readiness
+  gate since ABI 31) should turn positive within seconds and the name
+  resolve via Myotis. `MyotisNode.setBootEnodes(chainId:enodes:)` is the
+  same surface for product code; the app ships bundled lists — see
+  `docs/myotis-seed-pins.md`.
+* Engine log volume: every line the engine buffers is forwarded to the
+  unified log (`log show --predicate 'subsystem == "com.browser.Freedom"'
+  --info --debug`); `RUST_LOG=info,myotis_net::el=debug` in the scheme
+  environment raises the engine's own filter.
 
 ## Peer caches carry over between generations (2026-09-20)
 

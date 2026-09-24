@@ -75,6 +75,12 @@ struct FreedomApp: App {
             // availability is polled off the node, and the resolver skips
             // it whenever it can't serve.
             let myotisInstance = MyotisNode()
+            // Host seed pins for cold starts (see docs/myotis-seed-pins.md):
+            // one bundled list per network, a random subset pushed per boot.
+            myotisInstance.seedEnodes = [
+                .mainnet: MyotisSeedPins.load(Bundle.main.url(forResource: "seeds-mainnet", withExtension: "json")),
+                .gnosis: MyotisSeedPins.load(Bundle.main.url(forResource: "seeds-gnosis", withExtension: "json")),
+            ]
             // Stale-anchor recovery corroborates each quorum checkpoint
             // with a disposable Colibri verifier (desktop PR #353
             // parity). Without it a stale anchor blocks as unsupported.
@@ -365,7 +371,7 @@ struct FreedomApp: App {
         for attempt in 1...6 {
             ensResolver.sweepResultCaches()
             let chain = myotis.chainStatus[1]
-            log.notice("[debug-resolve] attempt \(attempt) \(name, privacy: .public) myotisReady=\(myotis.isReady(chainId: 1), privacy: .public) snapPeers=\(chain?.snapPeers ?? -1) head=\(chain?.executionBlockNumber ?? 0) finalized=\(chain?.finalizedBlockNumber ?? 0)")
+            log.notice("[debug-resolve] attempt \(attempt) \(name, privacy: .public) myotisReady=\(myotis.isReady(chainId: 1), privacy: .public) snapPeers=\(chain?.snapPeers ?? -1) serving=\(chain?.snapServingPeers ?? -1) head=\(chain?.executionBlockNumber ?? 0) finalized=\(chain?.finalizedBlockNumber ?? 0)")
             do {
                 let content = try await ensResolver.resolveContent(name)
                 log.notice("[debug-resolve] attempt \(attempt) → \(content.uri.absoluteString, privacy: .public) method=\(content.trust.method.rawValue, privacy: .public) level=\(String(describing: content.trust.level), privacy: .public)")

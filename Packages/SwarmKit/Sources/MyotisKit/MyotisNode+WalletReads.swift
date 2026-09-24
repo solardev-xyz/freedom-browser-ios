@@ -115,8 +115,15 @@ extension MyotisNode {
         guard let handle = runningHandle(chainId: chainId) else {
             return .unavailable(reason: "node not running for chain \(chainId)")
         }
+        // ABI 32: the read takes the RPC block selector. "latest" proves at
+        // the verified head, as before; "finalized" would prove at the
+        // beacon-finalized block (best effort — peers may have pruned it).
         let json = await Task.detached(priority: .userInitiated) {
-            address.withCString { Self.takeString(myotis_request_account_json(handle, $0)) }
+            address.withCString { addr in
+                "latest".withCString { block in
+                    Self.takeString(myotis_request_account_json(handle, addr, block))
+                }
+            }
         }.value
         guard let json else { return .unavailable(reason: "engine returned NULL") }
         return MyotisAccountOutcome.decode(json)
