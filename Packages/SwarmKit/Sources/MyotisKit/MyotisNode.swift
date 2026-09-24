@@ -57,6 +57,13 @@ public struct MyotisChainStatus: Sendable, Equatable {
     public var beaconState: String = ""
     public var peerCount: Int = 0
     public var snapPeers: Int = 0
+    /// Pooled state peers that can answer a read at the verified head NOW:
+    /// their announced head or a served proof puts them at or near it and
+    /// they are not read-benched (engine ABI 31+, myotis #465). A pool of
+    /// still-syncing peers keeps `snapPeers` positive for hours while every
+    /// read fails with "0 headers"; this is the count that predicts a
+    /// served read. A missing key decodes to 0 (fail closed).
+    public var snapServingPeers: Int = 0
     public var executionBlockNumber: Int64 = 0
     public var finalizedBlockNumber: Int64 = 0
     public var running: Bool = false
@@ -84,18 +91,18 @@ public struct MyotisChainStatus: Sendable, Equatable {
     public var isStaleAnchor: Bool { beaconState == "STALE_ANCHOR" }
 
     /// Whether a verified read attempted now has a realistic chance of
-    /// being answered. Beacon `SYNCED` alone is not enough: right after
-    /// sync the EL side can still lack a snap peer, and every read fails
-    /// with "state unavailable" / "no snap peer available" (observed in
-    /// the Phase 0 spike). Gating on `snapPeers >= 1` skips the tier
-    /// during that warm-up instead of burning a failed attempt per
-    /// resolution. Desktop also requires the EL reader up and no EL hunt
-    /// (first reads during a hunt fail on the cold context). The LC hunt
-    /// flag is deliberately NOT a gate: on mainnet the light-client
-    /// server pool is thin and the hunt stays engaged for long stretches
-    /// while the chain is SYNCED and perfectly able to serve.
+    /// being answered. Beacon `SYNCED` alone is not enough, and neither is
+    /// a pooled state peer: after a restart the pool fills with peers that
+    /// still lag the verified head, and every read fails with "0 headers"
+    /// while `snapPeers` stays positive (myotis #465). The engine now
+    /// reports the peers that can serve at the head, `snapServingPeers`,
+    /// and that is the gate (desktop parity). Also required: the EL reader
+    /// up and no EL hunt (first reads during a hunt fail on the cold
+    /// context). The LC hunt flag is deliberately NOT a gate: on mainnet
+    /// the light-client server pool is thin and the hunt stays engaged for
+    /// long stretches while the chain is SYNCED and perfectly able to serve.
     public var ready: Bool {
-        running && !paused && beaconState == "SYNCED" && snapPeers >= 1 && elReaderAvailable && !elHunting
+        running && !paused && beaconState == "SYNCED" && snapServingPeers >= 1 && elReaderAvailable && !elHunting
     }
 
     /// Why a SYNCED chain is not serving — for the node log and the
@@ -103,7 +110,11 @@ public struct MyotisChainStatus: Sendable, Equatable {
     public var notServingReason: String {
         guard running, !paused, beaconState == "SYNCED", !ready else { return "" }
         var reasons: [String] = []
-        if snapPeers < 1 { reasons.append("no state peer") }
+        if snapPeers < 1 {
+            reasons.append("no state peer")
+        } else if snapServingPeers < 1 {
+            reasons.append("no state peer at the verified head")
+        }
         if !elReaderAvailable { reasons.append("EL reader down") }
         if elHunting { reasons.append("EL hunting for a head") }
         return reasons.joined(separator: ", ")
@@ -119,6 +130,7 @@ public struct MyotisChainStatus: Sendable, Equatable {
             var beaconState: String?
             var peerCount: Int?
             var snapPeers: Int?
+            var snapServingPeers: Int?
             var executionBlockNumber: Int64?
             var finalizedBlockNumber: Int64?
             var running: Bool?
@@ -139,6 +151,7 @@ public struct MyotisChainStatus: Sendable, Equatable {
         status.beaconState = raw.beaconState ?? ""
         status.peerCount = raw.peerCount ?? 0
         status.snapPeers = raw.snapPeers ?? 0
+        status.snapServingPeers = raw.snapServingPeers ?? 0
         status.executionBlockNumber = raw.executionBlockNumber ?? 0
         status.finalizedBlockNumber = raw.finalizedBlockNumber ?? 0
         status.running = raw.running ?? false
@@ -197,12 +210,21 @@ public enum MyotisCallOutcome: Sendable, Equatable {
 @MainActor
 @Observable
 public final class MyotisNode {
-    /// The engine ABI this wrapper was written against (myotis v0.1.10).
+    /// The engine ABI this wrapper was written against (myotis v0.1.12).
     /// `start()` refuses to run against any other — a stale framework
-    /// would otherwise fail confusingly deep inside a resolve. ABI 26 is
-    /// also the checkpoint-recovery capability signal
-    /// (`myotis_create_with_checkpoint`).
-    public static let expectedABI: Int32 = 26
+    /// would otherwise fail confusingly deep inside a resolve. ABI 26
+    /// brought checkpoint recovery (`myotis_create_with_checkpoint`);
+    /// 27–32 (v0.1.11/v0.1.12): `eth_call` applies or refuses its block
+    /// selector, results carry `blockNumber`/`verified`, a NULL `to` is
+    /// refused, `finalized` runs at the finalized block, status reports
+    /// `snapServingPeers`, host seed pins via `myotis_set_boot_enodes`,
+    /// and the account/code/storage reads take a block selector.
+    public static let expectedABI: Int32 = 32
+
+    /// Host seed pins per network (see `MyotisSeedPins`): set before
+    /// `start()`. Every engine boot — start and every recovery relaunch —
+    /// pushes a fresh random subset of at most `MyotisSeedPins.limit`.
+    public var seedEnodes: [MyotisNetwork: [String]] = [:]
 
     /// Live-set eth/69 served-block window. The engine default (32,
     /// ~16 KB per served request) suits a desktop; on a phone we serve
@@ -273,6 +295,24 @@ public final class MyotisNode {
     /// Verified reads can be served for `chainId` right now: engine
     /// ready AND no recovery in flight or blocked AND (for a verified
     /// generation) synced past the anchored checkpoint.
+    /// Hand the engine known-good execution peers to dial first (engine
+    /// ABI 31+, `myotis_set_boot_enodes`): a list of `enode://<128 hex
+    /// pubkey>@ip:port` strings, numeric addresses only, at most 64. The
+    /// engine applies or refuses the list AS A WHOLE (any malformed entry
+    /// refuses everything), replaces the previous host list (an empty list
+    /// clears it), and replays it after every start and resume. Returns
+    /// whether the list was applied. False when the chain is not running.
+    @discardableResult
+    public func setBootEnodes(chainId: UInt64, enodes: [String]) -> Bool {
+        guard let handle = runningHandle(chainId: chainId),
+              let data = try? JSONSerialization.data(withJSONObject: enodes),
+              let json = String(data: data, encoding: .utf8)
+        else { return false }
+        let ok = json.withCString { myotis_set_boot_enodes(handle, $0) }
+        append("chain \(chainId): host seed pins (\(enodes.count)) \(ok ? "applied" : "refused")")
+        return ok
+    }
+
     public func isReady(chainId: UInt64) -> Bool {
         guard status == .running, handles[chainId] != nil, recovery[chainId] == nil,
               let chain = chainStatus[chainId]
@@ -293,6 +333,7 @@ public final class MyotisNode {
         let store = MyotisGenerationStore(baseDir: dataDir)
         self.store = store
         append("starting myotis (\(networks.map(\.rawValue).joined(separator: ", ")))…")
+        let seeds = seedEnodes
 
         Task.detached(priority: .userInitiated) { [weak self] in
             let abi = myotis_init()
@@ -317,7 +358,7 @@ public final class MyotisNode {
                     boots.append((network, .failure(.storage(MyotisGenerationStore.map(error)))))
                     continue
                 }
-                boots.append((network, Boot.launch(network: network, generation: generation)))
+                boots.append((network, Boot.launch(network: network, generation: generation, seeds: seeds[network] ?? [])))
             }
 
             await MainActor.run {
@@ -531,7 +572,7 @@ public final class MyotisNode {
         }
 
         nonisolated static func launch(
-            network: MyotisNetwork, generation: MyotisGeneration
+            network: MyotisNetwork, generation: MyotisGeneration, seeds: [String] = []
         ) -> Result<(Int64, MyotisGeneration), Failure> {
             try? FileManager.default.createDirectory(at: generation.directory, withIntermediateDirectories: true)
             let handle: Int64 = network.rawValue.withCString { namePtr in
@@ -562,6 +603,24 @@ public final class MyotisNode {
                 ))
             }
             _ = myotis_set_served_block_window(handle, MyotisNode.servedBlockWindow)
+            // Host seed pins (engine ABI 31+, myotis #465): a random subset
+            // of the bundled list, pushed on every boot. The engine applies
+            // or refuses the list as a whole and replays it after resume.
+            var pins = MyotisSeedPins.select(seeds)
+            #if DEBUG
+            // Smoke-test hook (simulator only): `FREEDOM_MYOTIS_BOOT_ENODES_<NETWORK>`
+            // = JSON array of `enode://<128 hex>@ip:port` replaces the bundled
+            // list for this run (an empty array clears it).
+            if let raw = ProcessInfo.processInfo.environment["FREEDOM_MYOTIS_BOOT_ENODES_\(network.rawValue.uppercased())"],
+               let data = raw.data(using: .utf8)
+            {
+                pins = MyotisSeedPins.parse(data)
+            }
+            #endif
+            if !pins.isEmpty {
+                let ok = MyotisSeedPins.json(pins).withCString { myotis_set_boot_enodes(handle, $0) }
+                nodeLog.info("\(network.rawValue, privacy: .public): seed pins (\(pins.count)) \(ok ? "applied" : "REFUSED", privacy: .public)")
+            }
             #if DEBUG
             // Smoke-test hook (simulator only): `FREEDOM_MYOTIS_WS_BOUND_PERIODS=1`
             // in the scheme environment lowers the weak-subjectivity bound on
@@ -698,6 +757,7 @@ public final class MyotisNode {
             guard lifecycleGeneration == token else { throw CancellationError() }
         }
         try Task.checkCancellation()
+        let seeds = seedEnodes[network] ?? []
         let boot: Result<(Int64, MyotisGeneration), Boot.Failure> = await Task.detached(priority: .userInitiated) {
             let generation: MyotisGeneration
             do {
@@ -706,7 +766,7 @@ public final class MyotisNode {
             } catch {
                 return .failure(.storage(MyotisGenerationStore.map(error)))
             }
-            return Boot.launch(network: network, generation: generation)
+            return Boot.launch(network: network, generation: generation, seeds: seeds)
         }.value
         guard lifecycleGeneration == token else {
             if case .success(let (handle, _)) = boot { myotis_stop(handle) }
@@ -867,9 +927,16 @@ public final class MyotisNode {
     private func drainEngineLogs() {
         Task.detached(priority: .utility) { [weak self] in
             guard let lines = Self.takeString(myotis_drain_logs(50)), !lines.isEmpty else { return }
+            let all = lines.split(separator: "\n")
+            // Every drained engine line reaches the unified log (so a
+            // `RUST_LOG=…=debug` run can be read back with `log show`);
+            // the in-app ring keeps the tail only.
+            for line in all.dropLast(min(10, all.count)) {
+                nodeLog.info("\(String(line), privacy: .public)")
+            }
             await MainActor.run {
                 guard let self else { return }
-                for line in lines.split(separator: "\n").suffix(10) {
+                for line in all.suffix(10) {
                     self.append(String(line))
                 }
             }

@@ -17,6 +17,7 @@ final class NodeSegmentStateTests: XCTestCase {
         status.beaconState = ready ? "SYNCED" : "SYNCING"
         status.peerCount = beaconPeers
         status.snapPeers = snapPeers ?? (ready ? 1 : 0)
+        status.snapServingPeers = status.snapPeers
         return status
     }
 

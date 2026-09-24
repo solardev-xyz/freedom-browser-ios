@@ -93,7 +93,9 @@ struct MyotisNodeHomeView: View {
                 // snap pool. Labeled so they don't read as one hierarchy.
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
                     detailRow("Beacon peers", "\(status.peerCount)")
-                    detailRow("State peers", "\(status.snapPeers)")
+                    detailRow("State peers", status.snapPeers > 0
+                        ? "\(status.snapPeers) · \(status.snapServingPeers) at head"
+                        : "0")
                     if status.executionBlockNumber > 0 {
                         detailRow("Verified head", "\(status.executionBlockNumber)")
                     }

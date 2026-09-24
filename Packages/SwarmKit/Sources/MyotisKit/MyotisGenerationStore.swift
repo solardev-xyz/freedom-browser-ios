@@ -39,7 +39,10 @@ public struct MyotisGeneration: Sendable, Equatable {
 
 public struct MyotisGenerationStore: Sendable {
     public static let schemaVersion = 1
-    /// The engine ABI whose marker semantics this store understands.
+    /// The engine ABI that introduced the native anchor-marker contract
+    /// generations are stamped with. A constant, like desktop's — NOT the
+    /// current engine ABI (`MyotisNode.expectedABI`), bumping it would
+    /// orphan every verified generation on disk.
     public static let nativeCheckpointApi = 26
     /// Cap on any JSON the store reads (pointer, anchor, native marker).
     public static let maxRecordBytes = 16 * 1024

@@ -8,7 +8,7 @@ import MyotisKit
 final class MyotisRecoveryTests: XCTestCase {
     private func status(
         beacon: String = "SYNCED", finalizedSlot: UInt64 = 0, finalizedRoot: String = "",
-        snapPeers: Int = 1, elReader: Bool = true, hunting: Bool = false, lcHunting: Bool = false
+        snapPeers: Int = 1, serving: Int? = nil, elReader: Bool = true, hunting: Bool = false, lcHunting: Bool = false
     ) -> MyotisChainStatus {
         var s = MyotisChainStatus()
         s.running = true
@@ -16,6 +16,7 @@ final class MyotisRecoveryTests: XCTestCase {
         s.finalizedSlot = finalizedSlot
         s.finalizedRootHex = finalizedRoot
         s.snapPeers = snapPeers
+        s.snapServingPeers = serving ?? snapPeers
         s.elReaderAvailable = elReader
         s.elHunting = hunting
         s.lcHunting = lcHunting
@@ -79,6 +80,8 @@ final class MyotisRecoveryTests: XCTestCase {
         XCTAssertTrue(status(lcHunting: true).ready)
         XCTAssertEqual(status(hunting: true).notServingReason, "EL hunting for a head")
         XCTAssertEqual(status(snapPeers: 0, elReader: false).notServingReason, "no state peer, EL reader down")
+        XCTAssertFalse(status(snapPeers: 4, serving: 0).ready)
+        XCTAssertEqual(status(snapPeers: 4, serving: 0).notServingReason, "no state peer at the verified head")
         XCTAssertEqual(status().notServingReason, "")
         XCTAssertEqual(status(beacon: "CATCHING_UP", snapPeers: 0).notServingReason, "")
         XCTAssertFalse(status(beacon: "STALE_ANCHOR").ready)
@@ -89,7 +92,7 @@ final class MyotisRecoveryTests: XCTestCase {
         let json = """
         {"beaconState":"STALE_ANCHOR","currentPeriod":1825,"targetPeriod":1858,"wsBoundPeriods":13,
          "finalizedSlot":12345,"finalizedRootHex":"\(MyotisCheckpointTests.root.dropFirst(2))",
-         "elReaderAvailable":true,"lcHunting":true,"elHunting":false,"running":true,"paused":false,"snapPeers":0,"peerCount":2}
+         "elReaderAvailable":true,"lcHunting":true,"elHunting":false,"running":true,"paused":false,"snapPeers":0,"snapServingPeers":0,"peerCount":2}
         """
         let decoded = MyotisChainStatus.decode(json)
         XCTAssertTrue(decoded.isStaleAnchor)
@@ -98,12 +101,15 @@ final class MyotisRecoveryTests: XCTestCase {
         XCTAssertEqual(decoded.wsBoundPeriods, 13)
         XCTAssertEqual(decoded.finalizedSlot, 12345)
         XCTAssertEqual(decoded.finalizedRootHex, String(MyotisCheckpointTests.root.dropFirst(2)))
-        // Missing optional keys keep the permissive defaults (pre-26 shapes).
+        // Missing optional keys keep the permissive defaults (pre-26 shapes)
+        // — except the ABI-31 serving count, which fails closed.
         let old = MyotisChainStatus.decode(#"{"beaconState":"SYNCED","running":true,"snapPeers":1}"#)
         XCTAssertTrue(old.elReaderAvailable)
         XCTAssertFalse(old.lcHunting)
         XCTAssertFalse(old.elHunting)
-        XCTAssertTrue(old.ready)
+        XCTAssertFalse(old.ready)
+        let serving = MyotisChainStatus.decode(#"{"beaconState":"SYNCED","running":true,"snapPeers":1,"snapServingPeers":1}"#)
+        XCTAssertTrue(serving.ready)
         XCTAssertTrue(decoded.lcHunting)
         XCTAssertFalse(decoded.elHunting)
     }
@@ -148,8 +154,12 @@ final class MyotisRecoveryTests: XCTestCase {
         let node = MyotisNode()
         XCTAssertFalse(node.isReady(chainId: 1))
         XCTAssertNil(node.recovery[1])
-        XCTAssertEqual(MyotisNode.expectedABI, 26)
-        XCTAssertEqual(MyotisGenerationStore.nativeCheckpointApi, Int(MyotisNode.expectedABI))
+        XCTAssertEqual(MyotisNode.expectedABI, 32)
+        // The anchor marker contract was introduced at ABI 26 and is what
+        // generations are stamped with (desktop parity: a constant, not the
+        // engine ABI — bumping it would orphan every verified generation).
+        XCTAssertEqual(MyotisGenerationStore.nativeCheckpointApi, 26)
+        XCTAssertGreaterThanOrEqual(Int(MyotisNode.expectedABI), MyotisGenerationStore.nativeCheckpointApi)
         keep = node
     }
 
