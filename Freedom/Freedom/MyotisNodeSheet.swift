@@ -111,10 +111,12 @@ struct MyotisNodeHomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    /// Stale-anchor recovery status + actions (desktop PR #353 parity).
-    /// Automatic recovery needs no decision; a blocked one offers
-    /// "Retry sync" (or "Repair sync data" for inconsistent saved
-    /// state) plus a short explanation. No risk-accept bypass exists.
+    /// Stale-anchor recovery status + actions (desktop PR #353 / #416
+    /// parity). Automatic recovery needs no decision; a blocked one
+    /// offers "Retry sync" (or "Repair sync data" for inconsistent saved
+    /// state) plus a short explanation, and a waiting one offers "Retry
+    /// now" so nobody sits out a five-minute wait after an outage ends.
+    /// No risk-accept bypass exists.
     @ViewBuilder
     private func recoverySection(_ network: MyotisNetwork, _ recovery: MyotisRecoveryState) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -129,9 +131,16 @@ struct MyotisNodeHomeView: View {
                 }
             }
             if recovery.phase != .blocked, recovery.takingLonger() {
-                Text("This is taking longer than expected. Verified reads resume automatically once sync completes.")
+                Text(recovery.phase == .waiting
+                    ? "Recovery is still trying automatically. Verified reads resume once a checkpoint is confirmed."
+                    : "This is taking longer than expected. Verified reads resume automatically once sync completes.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+            if recovery.phase == .waiting, recovery.offersRetry {
+                Button("Retry now") { myotis.retryRecovery(chainId: network.chainId) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             }
             if recovery.phase == .blocked, let reason = recovery.reason {
                 if reason.offersHelp {

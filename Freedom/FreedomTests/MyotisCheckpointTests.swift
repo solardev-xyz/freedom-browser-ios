@@ -22,6 +22,8 @@ final class MyotisCheckpointTests: XCTestCase {
     /// Scripted fetcher: exact URL → body or error; unknown → unavailable.
     final class StubFetcher: MyotisCheckpointFetcher, @unchecked Sendable {
         var routes: [String: Result<Data, MyotisCheckpointError>] = [:]
+        /// Exact URL → transport failure class (what the real fetcher throws).
+        var transportFailures: [String: MyotisCheckpointTransportError] = [:]
         private let lock = NSLock()
         private(set) var calls: [String] = []
         private(set) var lastPostBody: Data?
@@ -32,6 +34,7 @@ final class MyotisCheckpointTests: XCTestCase {
                 calls.append(url)
                 if request.httpMethod == "POST" { lastPostBody = request.httpBody }
             }
+            if let transport = transportFailures[url] { throw transport }
             guard let route = routes[url] else { throw MyotisCheckpointError.unavailable }
             let data = try route.get()
             if data.count > limit { throw MyotisCheckpointError.unavailable }
@@ -45,13 +48,19 @@ final class MyotisCheckpointTests: XCTestCase {
         /// Script a fully agreeing authority for `slot`.
         func agree(_ source: String, slot: UInt64 = MyotisCheckpointTests.slot,
                    root: String = MyotisCheckpointTests.root, epoch: UInt64 = MyotisCheckpointTests.epoch,
-                   finalizedRoot: String? = nil, optimistic: Bool? = nil) {
+                   finalizedRoot: String? = nil, optimistic: Bool? = nil,
+                   blockFinalized: Any? = nil, blockOptimistic: Any? = nil, headStateFinalized: Any? = nil) {
             var block: [String: Any] = ["data": ["root": root]]
             var finality: [String: Any] = ["data": ["finalized": ["epoch": String(epoch), "root": finalizedRoot ?? root]]]
             if let optimistic {
                 block["execution_optimistic"] = optimistic
                 finality["execution_optimistic"] = optimistic
             }
+            // Beacon API primitives on the requested BLOCK (PublicNode shape).
+            if let blockFinalized { block["finalized"] = blockFinalized }
+            if let blockOptimistic { block["execution_optimistic"] = blockOptimistic }
+            // The head STATE's own top-level flag — never evidence for the block.
+            if let headStateFinalized { finality["finalized"] = headStateFinalized }
             routes["\(source)/eth/v1/beacon/blocks/\(slot)/root"] = json(block)
             routes["\(source)/eth/v1/beacon/states/head/finality_checkpoints"] = json(finality)
         }
@@ -253,18 +262,204 @@ final class MyotisCheckpointTests: XCTestCase {
         await assertThrows(.clock) { _ = try await quorum(fetcher).quorum(slot: Self.slot) }
     }
 
-    func testGnosisNeedsBothSources() async throws {
-        let gnosis = MyotisCheckpointNetwork.gnosis
-        let slot: UInt64 = 20_000_000
-        let epoch = slot / 16
-        let nowMs = gnosis.slotTimeMs(slot) + 60_000
+    // MARK: - Gnosis 2-of-3 with PublicNode's standard Beacon API (desktop PR #416)
+
+    static let gnosis = MyotisCheckpointNetwork.gnosis
+    static let gnosisSlot: UInt64 = 20_000_000
+    static let gnosisEpoch = gnosisSlot / 16
+    static let gnosisNowMs = gnosis.slotTimeMs(gnosisSlot) + 60_000
+    static let checkpointz = gnosis.sources[0]
+    static let dappnode = gnosis.sources[1]
+    static let publicnode = gnosis.sources[2]
+
+    private func gnosisQuorum(_ fetcher: StubFetcher) -> MyotisCheckpointQuorum {
+        MyotisCheckpointQuorum(network: Self.gnosis, fetcher: fetcher, nowMs: { Self.gnosisNowMs })
+    }
+
+    /// Script PublicNode's shape: explicit block flags, no Checkpointz history.
+    private func publicnodeAgrees(_ fetcher: StubFetcher, root: String = root, finalizedRoot: String? = nil) {
+        fetcher.agree(Self.publicnode, slot: Self.gnosisSlot, root: root, epoch: Self.gnosisEpoch,
+                      finalizedRoot: finalizedRoot, blockFinalized: true, blockOptimistic: false)
+    }
+
+    func testGnosisPolicyIsThreeIndependentOperatorsTwoMustAgree() {
+        XCTAssertEqual(Self.gnosis.sources, [
+            "https://checkpoint.gnosischain.com",
+            "https://checkpoint-sync-gnosis.dappnode.net",
+            "https://gnosis-beacon-api.publicnode.com",
+        ])
+        XCTAssertEqual(Self.gnosis.participants, 3)
+        XCTAssertEqual(Self.gnosis.threshold, 2)
+        XCTAssertEqual(Self.gnosis.beaconSources, ["https://gnosis-beacon-api.publicnode.com"])
+        XCTAssertEqual(MyotisCheckpointNetwork.mainnet.beaconSources, [])
+        XCTAssertEqual(MyotisCheckpointNetwork.mainnet.threshold, 2)
+        XCTAssertEqual(MyotisCheckpointNetwork.mainnet.participants, 3)
+    }
+
+    func testGnosisRecoversWithAnyOneProviderDown() async throws {
+        for down in Self.gnosis.sources {
+            let fetcher = StubFetcher()
+            for source in Self.gnosis.sources where source != down {
+                if source == Self.publicnode {
+                    publicnodeAgrees(fetcher)
+                } else {
+                    fetcher.agree(source, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch)
+                }
+            }
+            let observation = try await gnosisQuorum(fetcher).quorum(slot: Self.gnosisSlot)
+            XCTAssertEqual(observation.root, Self.root, "down: \(down)")
+            XCTAssertEqual(Set(observation.sources), Set(Self.gnosis.sources).subtracting([down]), "down: \(down)")
+        }
+    }
+
+    func testGnosisNeedsTwoUsableVotes() async {
         let fetcher = StubFetcher()
-        fetcher.agree(gnosis.sources[0], slot: slot, epoch: epoch)
-        let one = MyotisCheckpointQuorum(network: gnosis, fetcher: fetcher, nowMs: { nowMs })
-        await assertThrows(.quorumUnavailable) { _ = try await one.quorum(slot: slot) }
-        fetcher.agree(gnosis.sources[1], slot: slot, epoch: epoch)
-        let both = try await one.quorum(slot: slot)
-        XCTAssertEqual(both.sources, gnosis.sources)
+        fetcher.agree(Self.checkpointz, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch)
+        await assertThrows(.quorumUnavailable) { _ = try await gnosisQuorum(fetcher).quorum(slot: Self.gnosisSlot) }
+        // A PublicNode answer WITHOUT its finality flags is not a second vote.
+        fetcher.agree(Self.publicnode, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch)
+        await assertThrows(.quorumUnavailable) { _ = try await gnosisQuorum(fetcher).quorum(slot: Self.gnosisSlot) }
+    }
+
+    func testGnosisConflictingRootsStillConflict() async throws {
+        // One vote per root and the third seat unavailable: conflict, never
+        // a fallback to whichever root answered first.
+        let fetcher = StubFetcher()
+        fetcher.agree(Self.checkpointz, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch)
+        fetcher.agree(Self.dappnode, slot: Self.gnosisSlot, root: Self.otherRoot, epoch: Self.gnosisEpoch)
+        await assertThrows(.quorumConflict) { _ = try await gnosisQuorum(fetcher).quorum(slot: Self.gnosisSlot) }
+        // Two agreeing votes win despite the dissenter (existing rule):
+        // PublicNode's endorsement decides it.
+        publicnodeAgrees(fetcher)
+        let observation = try await gnosisQuorum(fetcher).quorum(slot: Self.gnosisSlot)
+        XCTAssertEqual(observation.root, Self.root)
+        XCTAssertEqual(Set(observation.sources), [Self.checkpointz, Self.publicnode])
+    }
+
+    func testBeaconSourceVoteRequiresExplicitBlockFinality() async throws {
+        // finalized: true + execution_optimistic: false on the BLOCK → a vote.
+        let ok = StubFetcher()
+        publicnodeAgrees(ok)
+        let vote = try await gnosisQuorum(ok).vote(source: Self.publicnode, slot: Self.gnosisSlot)
+        XCTAssertEqual(vote.root, Self.root)
+        XCTAssertEqual(vote.finalizedEpoch, Self.gnosisEpoch)
+        // Missing flags → not a vote (unavailable), never a verdict.
+        let missing = StubFetcher()
+        missing.agree(Self.publicnode, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch)
+        await assertThrows(.unavailable) { _ = try await self.gnosisQuorum(missing).vote(source: Self.publicnode, slot: Self.gnosisSlot) }
+        // Only one of the two flags → not a vote.
+        let half = StubFetcher()
+        half.agree(Self.publicnode, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch, blockFinalized: true)
+        await assertThrows(.unavailable) { _ = try await self.gnosisQuorum(half).vote(source: Self.publicnode, slot: Self.gnosisSlot) }
+        // Malformed flag → not a vote.
+        let malformed = StubFetcher()
+        malformed.agree(Self.publicnode, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch, blockFinalized: "yes", blockOptimistic: false)
+        await assertThrows(.unavailable) { _ = try await self.gnosisQuorum(malformed).vote(source: Self.publicnode, slot: Self.gnosisSlot) }
+        // finalized: false on the block → the checkpoint is ahead of this authority (race).
+        let unfinalized = StubFetcher()
+        unfinalized.agree(Self.publicnode, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch, blockFinalized: false, blockOptimistic: false)
+        await assertThrows(.race) { _ = try await self.gnosisQuorum(unfinalized).vote(source: Self.publicnode, slot: Self.gnosisSlot) }
+        // Optimistic execution → contradiction, as before.
+        let optimistic = StubFetcher()
+        optimistic.agree(Self.publicnode, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch, blockFinalized: true, blockOptimistic: true)
+        await assertThrows(.quorumConflict) { _ = try await self.gnosisQuorum(optimistic).vote(source: Self.publicnode, slot: Self.gnosisSlot) }
+    }
+
+    func testHeadStateTopLevelFinalizedFlagIsNotEvidenceForTheBlock() async throws {
+        // PublicNode's head STATE response can say finalized:false at the
+        // top level while data.finalized is correct; only the BLOCK's flag
+        // decides the vote.
+        let fetcher = StubFetcher()
+        fetcher.agree(Self.publicnode, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch,
+                      blockFinalized: true, blockOptimistic: false, headStateFinalized: false)
+        let vote = try await gnosisQuorum(fetcher).vote(source: Self.publicnode, slot: Self.gnosisSlot)
+        XCTAssertEqual(vote.root, Self.root)
+    }
+
+    func testExplicitBlockFinalityEndorsesOlderCheckpointsWithoutHistory() async throws {
+        // The requested block is older than the authority's current
+        // finalized checkpoint (different finalized root, later epoch), so
+        // the wall clock must be past that later epoch.
+        let later: Int64 = Self.gnosis.slotTimeMs(Self.gnosisSlot) + 10 * 60 * 1000
+        func gnosisQuorum(_ f: StubFetcher) -> MyotisCheckpointQuorum {
+            MyotisCheckpointQuorum(network: Self.gnosis, fetcher: f, nowMs: { later })
+        }
+        let fetcher = StubFetcher()
+        fetcher.agree(Self.publicnode, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch + 2,
+                      finalizedRoot: Self.otherRoot, blockFinalized: true, blockOptimistic: false)
+        let vote = try await gnosisQuorum(fetcher).vote(source: Self.publicnode, slot: Self.gnosisSlot)
+        XCTAssertEqual(vote.root, Self.root)
+        XCTAssertEqual(vote.finalizedEpoch, Self.gnosisEpoch)
+        XCTAssertFalse(fetcher.calls.contains { $0.contains("/checkpointz/") }, "PublicNode receives no Checkpointz request")
+        // A Checkpointz authority that also sets the block flags is endorsed
+        // the same way; without them it must consult its history (covered by
+        // testVoteWithDifferentFinalizedRootConsultsHistory).
+        let cz = StubFetcher()
+        cz.agree(Self.checkpointz, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch + 2,
+                 finalizedRoot: Self.otherRoot, blockFinalized: true, blockOptimistic: false)
+        _ = try await gnosisQuorum(cz).vote(source: Self.checkpointz, slot: Self.gnosisSlot)
+        XCTAssertFalse(cz.calls.contains { $0.contains("/checkpointz/") })
+        // Same-epoch contradiction still wins over the flag.
+        let contradiction = StubFetcher()
+        contradiction.agree(Self.publicnode, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch,
+                            finalizedRoot: Self.otherRoot, blockFinalized: true, blockOptimistic: false)
+        await assertThrows(.quorumConflict) { _ = try await self.gnosisQuorum(contradiction).vote(source: Self.publicnode, slot: Self.gnosisSlot) }
+    }
+
+    func testSourceDiagnosticsAreAllowlistedBoundedAndNeverSettleAVote() async throws {
+        let fetcher = StubFetcher()
+        fetcher.agree(Self.checkpointz, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch)
+        publicnodeAgrees(fetcher)
+        fetcher.transportFailures["\(Self.dappnode)/eth/v1/beacon/blocks/\(Self.gnosisSlot)/root"] =
+            MyotisCheckpointTransportError(.http, httpStatus: 503)
+        let seen = Locked<[MyotisCheckpointSourceDiagnostic]>([])
+        let quorum = MyotisCheckpointQuorum(network: Self.gnosis, fetcher: fetcher, nowMs: { Self.gnosisNowMs }) { d in
+            seen.mutate { $0.append(d) }
+            // A misbehaving sink must not reach the vote.
+            if d.source == Self.publicnode { fatalErrorFree() }
+        }
+        let observation = try await quorum.quorum(slot: Self.gnosisSlot)
+        XCTAssertEqual(Set(observation.sources), [Self.checkpointz, Self.publicnode])
+        let diagnostics = seen.value
+        XCTAssertEqual(diagnostics.count, 3)
+        let byHost = Dictionary(uniqueKeysWithValues: diagnostics.map { ($0.source, $0) })
+        XCTAssertEqual(byHost[Self.checkpointz]?.outcome, "vote")
+        XCTAssertEqual(byHost[Self.publicnode]?.outcome, "vote")
+        let failed = try XCTUnwrap(byHost[Self.dappnode])
+        XCTAssertEqual(failed.outcome, MyotisCheckpointError.unavailable.rawValue)
+        XCTAssertEqual(failed.stage, .blockRoot)
+        XCTAssertEqual(failed.failure, .http)
+        XCTAssertEqual(failed.httpStatus, 503)
+        XCTAssertEqual(failed.slot, Self.gnosisSlot)
+        XCTAssertTrue(diagnostics.allSatisfy { $0.elapsedMs >= 0 && Self.gnosis.sources.contains($0.source) })
+        // The log line carries only allow-listed fields — hostnames, never paths or bodies.
+        XCTAssertEqual(failed.logLine, "source=checkpoint-sync-gnosis.dappnode.net slot=\(Self.gnosisSlot) outcome=CHECKPOINT_UNAVAILABLE 0ms stage=block-root failure=http status=503")
+        // Bounded construction: an out-of-policy source or absurd timing is dropped.
+        XCTAssertNil(MyotisCheckpointSourceDiagnostic(source: "https://evil.example", network: Self.gnosis, slot: 1, elapsedMs: 1, error: nil))
+        XCTAssertNil(MyotisCheckpointSourceDiagnostic(source: Self.publicnode, network: Self.gnosis, slot: 1, elapsedMs: -1, error: nil))
+        XCTAssertNil(MyotisCheckpointSourceDiagnostic(source: Self.publicnode, network: Self.gnosis, slot: 0, elapsedMs: 1, error: nil))
+        // Timeout and invalid-JSON classes map through wrap() to unavailable.
+        let timeout = MyotisCheckpointSourceDiagnostic(source: Self.publicnode, network: Self.gnosis, slot: 1, elapsedMs: 20_000,
+            error: MyotisCheckpointStagedError(stage: .finality, underlying: MyotisCheckpointTransportError(.timeout)))
+        XCTAssertEqual(timeout?.failure, .timeout)
+        XCTAssertEqual(timeout?.stage, .finality)
+        XCTAssertEqual(timeout?.outcome, "CHECKPOINT_UNAVAILABLE")
+        XCTAssertEqual(MyotisCheckpointError.wrap(MyotisCheckpointStagedError(stage: .history, underlying: MyotisCheckpointTransportError(.invalidJSON))), .unavailable)
+        XCTAssertEqual(MyotisCheckpointError.wrap(MyotisCheckpointStagedError(stage: .history, underlying: MyotisCheckpointError.quorumConflict)), .quorumConflict)
+    }
+
+    func testGnosisQuorumWithPublicNodeCannotBypassAnInvalidColibriProof() async {
+        // Two agreeing authorities (one of them PublicNode) AND a verifier
+        // that rejects the proof: quorum is necessary, not sufficient.
+        let fetcher = StubFetcher()
+        fetcher.agree(Self.checkpointz, slot: Self.gnosisSlot, epoch: Self.gnosisEpoch)
+        publicnodeAgrees(fetcher)
+        fetcher.routes[Self.gnosis.prover] = .success(Data("proof-bytes".utf8))
+        let acquirer = MyotisCheckpointAcquirer(
+            fetcher: fetcher, corroborator: StubCorroborator(slots: [Self.gnosisSlot], failure: .mismatch),
+            nowMs: { Self.gnosisNowMs }
+        )
+        await assertThrows(.mismatch) { _ = try await acquirer.acquire(chainId: 100) }
     }
 
     // MARK: - Acquisition pipeline
@@ -463,6 +658,9 @@ final class MyotisCheckpointTests: XCTestCase {
 }
 
 /// Tiny lock box for capturing values from `@Sendable` closures.
+/// A sink side effect that must not influence the quorum (sinks cannot throw in Swift; this stands in for desktop's throwing-listener case).
+@Sendable func fatalErrorFree() {}
+
 final class Locked<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: T
@@ -471,4 +669,6 @@ final class Locked<T>: @unchecked Sendable {
         get { lock.withLock { stored } }
         set { lock.withLock { stored = newValue } }
     }
+    /// Atomic read-modify-write (concurrent sinks).
+    func mutate(_ body: (inout T) -> Void) { lock.withLock { body(&stored) } }
 }

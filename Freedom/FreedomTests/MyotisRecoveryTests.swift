@@ -47,12 +47,21 @@ final class MyotisRecoveryTests: XCTestCase {
         XCTAssertFalse(MyotisRecoveryReason.quorumUnavailable.restartsOwnedState)
     }
 
-    func testRetryLadderIsFifteenSixtyThenBlocked() {
+    func testRetryLadderIsFifteenSixtyThenEveryFiveMinutes() {
+        // Desktop PR #416: transient outages never park recovery for good.
         XCTAssertEqual(MyotisRecoveryPolicy.retryDelay(afterAttempt: 1), 15)
         XCTAssertEqual(MyotisRecoveryPolicy.retryDelay(afterAttempt: 2), 60)
-        XCTAssertNil(MyotisRecoveryPolicy.retryDelay(afterAttempt: 3))
+        XCTAssertEqual(MyotisRecoveryPolicy.retryDelay(afterAttempt: 3), 300)
+        XCTAssertEqual(MyotisRecoveryPolicy.retryDelay(afterAttempt: 40), 300)
         XCTAssertNil(MyotisRecoveryPolicy.retryDelay(afterAttempt: 0))
         XCTAssertEqual(MyotisRecoveryPolicy.noticeSeconds, 60)
+        // Manual retry while waiting for an automatic one, not only when blocked.
+        let waiting = MyotisRecoveryState(phase: .waiting, reason: .quorumUnavailable, attempt: 3,
+                                          nextRetryAt: Date(timeIntervalSinceNow: 300), canRetry: true)
+        XCTAssertTrue(waiting.offersRetry)
+        XCTAssertTrue(MyotisRecoveryState(phase: .blocked, reason: .clock, attempt: 1, canRetry: true).offersRetry)
+        XCTAssertFalse(MyotisRecoveryState(phase: .checking, attempt: 1, canRetry: true).offersRetry)
+        XCTAssertFalse(MyotisRecoveryState(phase: .waiting, reason: .unsupported, attempt: 1, canRetry: false).offersRetry)
         XCTAssertEqual(MyotisRecoveryPolicy.stallSeconds, 300)
     }
 

@@ -145,10 +145,19 @@ public struct MyotisRecoveryState: Sendable, Equatable {
     }
 
     /// Desktop `recovery.takingLonger`: the quiet progress notice after
-    /// one minute of recovering.
+    /// one minute of recovering. Spans the automatic retries (the episode
+    /// started at `startedAt`), so a long outage reads "still trying"
+    /// rather than looking stuck; cleared with the state on success.
     public func takingLonger(now: Date = Date()) -> Bool {
         guard let startedAt, phase != .blocked else { return false }
         return now.timeIntervalSince(startedAt) >= MyotisRecoveryPolicy.noticeSeconds
+    }
+
+    /// Manual retry is offered while blocked AND while waiting for an
+    /// automatic retry (desktop PR #416): a user need not sit out a
+    /// five-minute wait after an outage ends.
+    public var offersRetry: Bool {
+        canRetry && (phase == .blocked || phase == .waiting)
     }
 
     /// Desktop `myotis-ui.js` label + message for the chain row.
@@ -173,19 +182,29 @@ public struct MyotisRecoveryState: Sendable, Equatable {
     }
 }
 
-/// The retry ladder and timers (desktop constants).
+/// The retry ladder and timers (desktop constants, PR #353 + #416).
 public enum MyotisRecoveryPolicy {
     /// Automatic retry delays by attempt (attempt 1 fails → 15 s, attempt
-    /// 2 fails → 60 s, attempt 3 fails → blocked).
+    /// 2 fails → 60 s, every later failure → `backgroundRetrySeconds`).
+    /// Transient outages (a checkpoint service down, a race, a stale
+    /// reply) never park recovery permanently; only terminal reasons
+    /// (conflict, mismatch, clock, storage, unsupported) block.
     public static let retryDelaysSeconds: [TimeInterval] = [15, 60]
+    /// Desktop `RECOVERY_BACKGROUND_RETRY_MS`: the steady cadence after
+    /// the ladder — patient enough not to hammer outages, frequent enough
+    /// that a returning service is picked up without user action.
+    public static let backgroundRetrySeconds: TimeInterval = 5 * 60
     /// "Taking longer than expected" after this long recovering.
     public static let noticeSeconds: TimeInterval = 60
     /// Not ready for this long with no recovery in flight → `stalled`.
     public static let stallSeconds: TimeInterval = 5 * 60
 
-    /// Delay before the next automatic attempt, or nil when exhausted.
+    /// Delay before the next automatic attempt for a retryable failure.
+    /// Never nil for a real attempt: the ladder, then the background
+    /// cadence. (nil only for a nonsensical attempt number.)
     public static func retryDelay(afterAttempt attempt: Int) -> TimeInterval? {
-        guard attempt >= 1, attempt <= retryDelaysSeconds.count else { return nil }
+        guard attempt >= 1 else { return nil }
+        guard attempt <= retryDelaysSeconds.count else { return backgroundRetrySeconds }
         return retryDelaysSeconds[attempt - 1]
     }
 
