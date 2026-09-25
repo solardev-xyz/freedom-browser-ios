@@ -296,6 +296,7 @@ struct FreedomApp: App {
                 .task { startIpfsIfNeeded() }
                 .task { startMyotisIfNeeded() }
                 .task { await debugResolveIfRequested() }
+                .task { await debugAccountIfRequested() }
                 .task { await debugOpenURLIfRequested() }
                 .task { await startRadicleIfNeeded() }
                 .task { beeReadiness.start() }
@@ -377,6 +378,42 @@ struct FreedomApp: App {
                 log.notice("[debug-resolve] attempt \(attempt) → \(content.uri.absoluteString, privacy: .public) method=\(content.trust.method.rawValue, privacy: .public) level=\(String(describing: content.trust.level), privacy: .public)")
             } catch {
                 log.notice("[debug-resolve] attempt \(attempt) failed: \(String(describing: error), privacy: .public)")
+            }
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+        }
+        #endif
+    }
+
+    /// Smoke-test hook (DEBUG builds only): `FREEDOM_DEBUG_ACCOUNT=<chainId>:<address>`
+    /// issues a verified account read (balance + nonce, the wallet's
+    /// Gnosis read) through the light client once that chain reports
+    /// ready (or after 90 s regardless), six times 30 s apart, logging
+    /// served/failed with the time taken — the Gnosis twin of the resolve
+    /// hook, used to probe seed peers
+    /// (`log stream --predicate 'category == "DebugAccount"'`).
+    private func debugAccountIfRequested() async {
+        #if DEBUG
+        guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_ACCOUNT"],
+              let colon = raw.firstIndex(of: ":"), let chainId = UInt64(raw[..<colon])
+        else { return }
+        let address = String(raw[raw.index(after: colon)...])
+        guard address.hasPrefix("0x"), address.count == 42 else { return }
+        let log = Logger(subsystem: "com.browser.Freedom", category: "DebugAccount")
+        let deadline = Date().addingTimeInterval(90)
+        while !myotis.isReady(chainId: chainId), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        for attempt in 1...6 {
+            let chain = myotis.chainStatus[chainId]
+            log.notice("[debug-account] attempt \(attempt) chain=\(chainId) ready=\(myotis.isReady(chainId: chainId), privacy: .public) snapPeers=\(chain?.snapPeers ?? -1) serving=\(chain?.snapServingPeers ?? -1) head=\(chain?.executionBlockNumber ?? 0)")
+            let started = Date()
+            let outcome = await myotis.requestAccount(chainId: chainId, address: address)
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            switch outcome {
+            case .ok(let balanceWei, let nonce):
+                log.notice("[debug-account] attempt \(attempt) served in \(ms)ms balance=\(balanceWei, privacy: .public) nonce=\(nonce)")
+            case .unavailable(let reason):
+                log.notice("[debug-account] attempt \(attempt) failed after \(ms)ms: \(reason, privacy: .public)")
             }
             try? await Task.sleep(nanoseconds: 30_000_000_000)
         }

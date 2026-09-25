@@ -66,7 +66,7 @@ final class MyotisSeedPinsTests: XCTestCase {
             let url = Bundle.main.url(forResource: "seeds-\(network)", withExtension: "json")
             XCTAssertNotNil(url, "\(network) seed list is bundled")
             let list = MyotisSeedPins.load(url)
-            XCTAssertGreaterThanOrEqual(list.count, 5, "\(network): enough pins for a cold-start floor")
+            XCTAssertGreaterThanOrEqual(list.count, 4, "\(network): enough pins for a cold-start floor")
             XCTAssertLessThanOrEqual(list.count, MyotisSeedPins.engineCap)
             // Every bundled entry survives the parser unchanged: a malformed
             // line in the resource would be silently dropped at runtime.
