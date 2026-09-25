@@ -20,8 +20,16 @@ pins are not written to the peer cache.
 **What ships.** `Freedom/Freedom/Resources/myotis/seeds-mainnet.json` and
 `seeds-gnosis.json`: nodes that have served a verified read to one of our
 engines (`snapok` in a warm profile's cache), IPv4, TCP-reachable when the
-list was built, and for mainnet additionally checked one at a time to
-serve the Universal Resolver `eth_call` a cold engine needs. Each engine
+list was built, and additionally engine-checked: mainnet one at a time to
+serve the Universal Resolver `eth_call` a cold engine needs (5 of 41);
+Gnosis all candidates pinned in one session, keeping the ones the engine
+connected and admitted at the head (4 of 18 on 2026-09-25; the rest
+failed at transport or handshake). Gnosis needs no per-peer isolation:
+two of the engine's built-in Gnosis discv4 bootnodes (141.94.97.22/.74,
+OVH) are serving full nodes, so a cold Gnosis start already has a serving
+peer within a second — measured with `FREEDOM_DEBUG_ACCOUNT=100:<addr>`,
+the wallet's balance read, served in 30–70 ms. The Gnosis list is a floor
+for when those operators are down, not the reason Gnosis works. Each engine
 boot (start and every recovery relaunch) pushes a random subset of at most
 `MyotisSeedPins.limit` (20), so no operator is dialed first by every
 install every time (`MyotisNode.seedEnodes`, set in `FreedomApp`).
@@ -31,9 +39,14 @@ instead of letting one bad line refuse the whole push.
 **Refresh at release time.** `scripts/myotis-seeds.py --network mainnet
 <peers.cache>...` rebuilds a candidate list from warm caches (a long-lived
 desktop profile is the best source), probing reachability;
-`scripts/myotis-seeds-probe.sh <sim-udid> <candidates.json>` then runs the
-engine against each candidate alone on a cold cache and reports which ones
-actually serve the resolver call and how fast — keep the fast ones. On
+`scripts/myotis-seeds-probe.sh <sim-udid> <candidates.json> [mainnet|gnosis]`
+then runs the engine against each candidate alone on a cold cache and
+reports which ones actually serve the chain's read (mainnet: the resolver
+call; gnosis: a verified balance read) and how fast — keep the fast ones.
+On Gnosis the per-peer isolation does not hold (see above), so judge
+candidates by one all-pinned session with `RUST_LOG=myotis_net::el::pool=debug`:
+keep `snap peer connected`, drop `transport failed`, `dial: failed` and
+`not pooling`. On
 2026-09-24, 8 of 41 reachable proven peers served at all (residential
 addresses and busy nodes never did) and 5 served in under 3.5 s; those 5
 ship. With them a cold simulator resolved a name via Myotis in 4.2 s on
