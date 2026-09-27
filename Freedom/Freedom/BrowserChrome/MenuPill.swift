@@ -28,6 +28,7 @@ struct MenuPill: View, Equatable {
     let onWallet: () -> Void
     let onNodes: () -> Void
     let onSettings: () -> Void
+    let onDownloads: () -> Void
 
     /// Data-only equality: the closures defeat SwiftUI's automatic
     /// diffing, so without this the pill re-evaluates on EVERY
@@ -72,6 +73,9 @@ struct MenuPill: View, Equatable {
             }
 
             Section {
+                Button(action: onDownloads) {
+                    Label("Downloads", systemImage: "arrow.down.circle")
+                }
                 Button(action: onSettings) {
                     Label("Settings", systemImage: "gear")
                 }

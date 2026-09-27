@@ -51,6 +51,7 @@ struct ContentView: View {
     @State private var isShowingMyotisNode = false
     @State private var isShowingRadicleNode = false
     @State private var isShowingNodesDrawer = false
+    @State private var isShowingDownloads = false
     @FocusState private var addressFocused: Bool
     /// Gates suggestions so they don't appear before the user actually
     /// types in the prefilled URL (Safari behavior). Reset on every
@@ -189,6 +190,7 @@ struct ContentView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
+                DownloadShelf { isShowingDownloads = true }
                 if let banner {
                     bannerRow(banner)
                 }
@@ -235,6 +237,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingNodesDrawer) {
             NodesDrawer()
+        }
+        .sheet(isPresented: $isShowingDownloads) {
+            DownloadsView()
         }
         .sheet(item: approvalBinding) { approval in
             EthereumApprovalSheet(approval: approval)
@@ -480,7 +485,8 @@ struct ContentView: View {
                         onNewTab: { tabStore.newTab() },
                         onWallet: { isShowingWallet = true },
                         onNodes: { isShowingNodesDrawer = true },
-                        onSettings: { isShowingSettings = true }
+                        onSettings: { isShowingSettings = true },
+                        onDownloads: { isShowingDownloads = true }
                     )
                     .equatable()
                     // iOS 26's `.buttonStyle(.glass)` reserves a slightly
