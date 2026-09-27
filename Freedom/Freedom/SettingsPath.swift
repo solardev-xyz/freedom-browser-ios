@@ -19,6 +19,7 @@ enum SettingsPath: Hashable {
     case myotis
     case rpc
     case adblock
+    case search
 
     case chainEditor(Int) // chain ID — resolved against ChainStore at destination time
     /// One source of a chain's read order: its switch and options.
@@ -36,7 +37,7 @@ enum SettingsPath: Hashable {
     var isAddChainStep: Bool {
         switch self {
         case .chainlistSearch, .addChainForm: return true
-        case .wallet, .ens, .swarm, .ipfs, .myotis, .rpc, .adblock, .chainEditor, .chainSource, .ensMethod: return false
+        case .wallet, .ens, .swarm, .ipfs, .myotis, .rpc, .adblock, .search, .chainEditor, .chainSource, .ensMethod: return false
         }
     }
 }

@@ -47,6 +47,9 @@ struct SettingsView: View {
                 NavigationLink(value: SettingsPath.adblock) {
                     Label("Ad Blocking", systemImage: "shield.lefthalf.filled")
                 }
+                NavigationLink(value: SettingsPath.search) {
+                    Label("Search", systemImage: "magnifyingglass")
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -84,6 +87,8 @@ struct SettingsView: View {
             RPCSettingsView()
         case .adblock:
             AdblockSettingsView()
+        case .search:
+            SearchSettingsView()
         case .chainEditor(let id):
             if let chain = chainStore.chain(id: id) {
                 ChainDetailView(chain: chain, chainStore: chainStore)

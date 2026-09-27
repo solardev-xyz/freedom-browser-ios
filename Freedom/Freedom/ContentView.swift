@@ -818,11 +818,19 @@ struct ContentView: View {
     }
 
     private func navigate() {
-        guard let parsed = BrowserURL.parse(addressText) else {
-            banner = .error(message: "Expected a name (foo.eth), bzz://<hash>, or https://…")
+        if let parsed = BrowserURL.parse(addressText) {
+            navigate(to: parsed)
             return
         }
-        navigate(to: parsed)
+        // Not a URL, hash, name or hostname: a web search (desktop parity).
+        guard let url = SearchEngine.buildURL(
+            query: addressText, providerID: settings.searchProvider,
+            customName: settings.customSearchName, customTemplate: settings.customSearchTemplate
+        ) else {
+            banner = .error(message: "Expected a name (foo.eth), bzz://<hash>, https://… or a search")
+            return
+        }
+        navigate(to: .web(url))
     }
 
     private func navigate(to browserURL: BrowserURL) {

@@ -437,6 +437,8 @@ Both are pinned by SHA, not version — a future repo compromise can't silently 
 
 User types `foo.eth` → `BrowserURL.parse` detects bare `.eth` → `BrowserTab.navigate(.ens(name))` → resolver runs in a cancelable Task while the UI shows "Resolving foo.eth…" → on success, the bzz URL loads in the webview and the shield appears; on unverified-with-setting-on, the interstitial replaces the webview area; on conflict/anchorDisagreement, a red interstitial with no bypass. The address bar stays on `ens://foo.eth` so revisits re-resolve and pick up any content-hash rotation. Favicons key on the ens name, not the bzz hash, so they survive rotation.
 
+Input that is not a URL, hash, name or hostname (`BrowserURL.parse` returns nil) is a web search (desktop parity): `SearchEngine.buildURL` sends it to the engine chosen under Settings → Search — DuckDuckGo by default, or Google, Bing, Brave Search, Ecosia, Startpage, or a custom HTTPS template with one `{searchTerms}` / `%s` placeholder (`SearchEngine.normalizeTemplate` refuses anything else; an invalid custom engine or a stale id falls back to the default).
+
 ### Tests
 
 61 tests across 7 test files. Every security invariant has coverage: median-vs-outlier, plurality-below-majority-even-at-user-M, NO_RESOLVER-vs-NO_CONTENTHASH bucket isolation, M-agreement early-resolve, second-wave escalation, cache-hit-skips-consensus, in-flight dedup. UI layers (shield, interstitials) aren't unit-tested — they're tested on-device.
