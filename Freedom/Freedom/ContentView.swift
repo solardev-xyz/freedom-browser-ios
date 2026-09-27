@@ -80,6 +80,19 @@ struct ContentView: View {
         )
     }
 
+    /// Swipe-dismissing the permission prompt is a dismissal: denied
+    /// once, counted toward the session embargo, nothing remembered.
+    private var permissionBinding: Binding<SitePermissionRequest?> {
+        Binding(
+            get: { tabStore.activeTab?.pendingPermissionRequest },
+            set: { newValue in
+                if newValue == nil, let request = tabStore.activeTab?.pendingPermissionRequest {
+                    request.respond(.dismiss, false)
+                }
+            }
+        )
+    }
+
     private var approvalBinding: Binding<ApprovalRequest?> {
         approvalBinding(
             get: { tabStore.activeTab?.pendingEthereumApproval },
@@ -225,6 +238,9 @@ struct ContentView: View {
         }
         .sheet(item: approvalBinding) { approval in
             EthereumApprovalSheet(approval: approval)
+        }
+        .sheet(item: permissionBinding) { request in
+            SitePermissionPrompt(request: request)
         }
         .sheet(item: openlvApprovalBinding, onDismiss: {
             openlvSheetSettling = false
