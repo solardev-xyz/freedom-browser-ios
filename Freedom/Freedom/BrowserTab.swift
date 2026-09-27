@@ -500,6 +500,23 @@ final class BrowserTab {
         bottomChromeProbeTask?.cancel()
     }
 
+    /// Desktop parity: a main-frame response the web view cannot render,
+    /// or one served as an attachment, is a download. Sub-frame responses
+    /// are left to WebKit (an undisplayable iframe is not a download).
+    static func shouldDownload(_ response: WKNavigationResponse) -> Bool {
+        guard response.isForMainFrame else { return false }
+        return shouldDownload(
+            canShowMIMEType: response.canShowMIMEType,
+            contentDisposition: (response.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")
+        )
+    }
+
+    static func shouldDownload(canShowMIMEType: Bool, contentDisposition: String?) -> Bool {
+        if !canShowMIMEType { return true }
+        guard let disposition = contentDisposition?.lowercased() else { return false }
+        return disposition.hasPrefix("attachment")
+    }
+
     /// The ENS name a history entry is backed by, or nil for a plain
     /// web/hash entry: `bzz://name.eth/…`, `ipfs://name.eth/…`,
     /// `ipns://name.eth/…` and the `ens://` form all classify as `.ens`.
@@ -1285,6 +1302,11 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
+        // `<a download>` and other explicit download requests.
+        if navigationAction.shouldPerformDownload {
+            decisionHandler(.download)
+            return
+        }
         if let url = navigationAction.request.url,
            navigationAction.targetFrame?.isMainFrame == true,
            Self.shouldInterceptForENS(navigationAction.navigationType),
@@ -1376,6 +1398,36 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
             && target.host == current.host
             && target.path == current.path
             && target.query == current.query
+    }
+
+    /// A response the web view cannot display (or one the server marks
+    /// as an attachment) becomes a download — for http(s), the dweb
+    /// scheme handlers and data URIs alike (desktop parity).
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        if BrowserTab.shouldDownload(navigationResponse) {
+            decisionHandler(.download)
+        } else {
+            decisionHandler(.allow)
+        }
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        MainActor.assumeIsolated {
+            DownloadManager.shared.adopt(download, sourceURL: navigationAction.request.url, mimeType: nil, from: webView)
+        }
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        MainActor.assumeIsolated {
+            DownloadManager.shared.adopt(
+                download, sourceURL: navigationResponse.response.url,
+                mimeType: navigationResponse.response.mimeType, from: webView
+            )
+        }
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
