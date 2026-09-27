@@ -44,6 +44,18 @@ final class SettingsStore {
     var ensRpcUrl: String {
         didSet { defaults.set(ensRpcUrl, forKey: Keys.ensRpcUrl) }
     }
+    /// Address-bar search engine id (`SearchEngine` raw value or
+    /// `SearchEngine.customID`); desktop `searchProvider`.
+    var searchProvider: String {
+        didSet { defaults.set(searchProvider, forKey: Keys.searchProvider) }
+    }
+    var customSearchName: String {
+        didSet { defaults.set(customSearchName, forKey: Keys.customSearchName) }
+    }
+    /// HTTPS URL template with `{searchTerms}` (or `%s`); validated on use.
+    var customSearchTemplate: String {
+        didSet { defaults.set(customSearchTemplate, forKey: Keys.customSearchTemplate) }
+    }
     /// Primary ENS resolution path. Default `.quorum` for now — Step 4 of
     /// the Colibri rollout flips it to `.colibri` for fresh installs after
     /// the trust popover + auto-migration land. While the default is
@@ -294,6 +306,9 @@ final class SettingsStore {
         self.defaults = defaults
         defaults.register(defaults: [
             Keys.ensRpcUrl: "",
+            Keys.searchProvider: SearchEngine.default.rawValue,
+            Keys.customSearchName: "",
+            Keys.customSearchTemplate: "",
             Keys.ensResolutionMethod: ENSResolutionMethod.colibri.rawValue,
             Keys.ensFallbackToQuorum: true,
             Keys.ensPreferVerified: true,
@@ -324,6 +339,9 @@ final class SettingsStore {
             Keys.radicleNodeEnabled: true,
         ])
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
+        self.searchProvider = defaults.string(forKey: Keys.searchProvider) ?? SearchEngine.default.rawValue
+        self.customSearchName = defaults.string(forKey: Keys.customSearchName) ?? ""
+        self.customSearchTemplate = defaults.string(forKey: Keys.customSearchTemplate) ?? ""
         self.ensColibriProverUrl = defaults.string(forKey: Keys.ensColibriProverUrl) ?? ""
         self.ensColibriZkProof = defaults.bool(forKey: Keys.ensColibriZkProof)
         self.ensPreferVerified = defaults.object(forKey: Keys.ensPreferVerified) as? Bool ?? true
@@ -447,6 +465,9 @@ final class SettingsStore {
     private enum Keys {
         static let enableEnsCustomRpc = "enableEnsCustomRpc"
         static let ensRpcUrl = "ensRpcUrl"
+        static let searchProvider = "searchProvider"
+        static let customSearchName = "customSearchName"
+        static let customSearchTemplate = "customSearchTemplate"
         static let ensResolutionMethod = "ensResolutionMethod"
         static let ensResolutionMethodMigrated = "ensResolutionMethodMigrated"
         static let ensFallbackToQuorum = "ensFallbackToQuorum"
