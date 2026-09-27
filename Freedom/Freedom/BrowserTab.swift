@@ -139,6 +139,11 @@ final class BrowserTab {
     /// A site permission prompt parked on this tab (camera, microphone,
     /// motion). One at a time; later requests queue behind it.
     var pendingPermissionRequest: SitePermissionRequest?
+    /// Set by TabStore: open `url` in a new tab, in front or behind.
+    @ObservationIgnored var onOpenInNewTab: ((URL, _ background: Bool) -> Void)?
+    /// The page's current text selection (relayed by the touch script).
+    @ObservationIgnored var lastSelection = ""
+    @ObservationIgnored private let selectionRelay = SelectionRelay()
     /// The system find navigator is showing: the bottom chrome steps
     /// aside so the navigator takes the address bar's place (Safari).
     var isFinding = false
@@ -369,7 +374,8 @@ final class BrowserTab {
         // miss the first page's blocking, which is acceptable since the
         // compile is sub-second once warm.
         adblock.attach(to: contentController)
-        self.webView = WKWebView(frame: .zero, configuration: config)
+        let freedomWebView = FreedomWebView(frame: .zero, configuration: config)
+        self.webView = freedomWebView
         // Find in page: the system find navigator (highlights, next /
         // previous, Done), entered from the address bar's "On This Page"
         // row — Safari's flow, desktop's Cmd+F bar.
@@ -378,6 +384,27 @@ final class BrowserTab {
         navDelegate.owner = self
         self.webView.uiDelegate = uiDelegate
         uiDelegate.owner = self
+        // Context menus: selection relay + "Search <Engine> for …" on the
+        // edit menu; the touch script goes in with the other user scripts.
+        selectionRelay.owner = self
+        contentController.add(selectionRelay, name: ContextMenuSupport.selectionHandlerName)
+        freedomWebView.searchMenuTitle = { [weak self] in
+            guard let self else { return nil }
+            let engine = SearchEngine.resolve(
+                providerID: settings.searchProvider, customName: settings.customSearchName,
+                customTemplate: settings.customSearchTemplate
+            ).label
+            return ContextMenuSupport.selectionMenuTitle(engine: engine, selection: lastSelection)
+        }
+        freedomWebView.onSearchSelection = { [weak self] in
+            guard let self,
+                  let url = SearchEngine.buildURL(
+                      query: lastSelection, providerID: settings.searchProvider,
+                      customName: settings.customSearchName, customTemplate: settings.customSearchTemplate
+                  )
+            else { return }
+            onOpenInNewTab?(url, false)
+        }
         // A popup's first navigation is driven by WEBKIT, not by
         // navigate(to:) — which is the only place hasNavigated normally
         // flips. ContentView mounts the web view only when hasNavigated is
@@ -484,11 +511,50 @@ final class BrowserTab {
         walletBridge?.installUserScript()
         swarmBridge?.installUserScript()
         radicleBridge?.installUserScript()
+        installContextMenuScript()
+        lastSelection = ""
+        installContextMenuScript()
         // SWIP messaging: subscriptions are session-scoped — the page
         // that opened them is going away (this runs from
         // didStartProvisionalNavigation), so tear them down like
         // desktop's `did-navigate` hook does.
         swarmBridge?.cancelSubscriptions()
+    }
+
+    private func installContextMenuScript() {
+        contentController.addUserScript(WKUserScript(
+            source: ContextMenuSupport.touchScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false
+        ))
+    }
+
+    // MARK: - Context menu actions
+
+    /// The element under the last touch, as the touch script recorded it.
+    func touchedElement() async -> ContextMenuSupport.TouchedElement {
+        let value = try? await webView.evaluateJavaScript(ContextMenuSupport.touchQuery)
+        return ContextMenuSupport.TouchedElement.parse(value)
+    }
+
+    func copyToPasteboard(_ url: URL) {
+        UIPasteboard.general.url = url
+        UIPasteboard.general.string = url.absoluteString
+    }
+
+    func share(_ url: URL) {
+        guard let presenter = webView.window?.rootViewController?.topMostPresented else { return }
+        let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        sheet.popoverPresentationController?.sourceView = webView
+        presenter.present(sheet, animated: true)
+    }
+
+    /// Fetch a web image and add it to Photos (needs the photo-library
+    /// add permission; iOS prompts on first use).
+    func saveImage(_ url: URL) {
+        guard ContextMenuSupport.canSaveImage(url) else { return }
+        Task {
+            guard let (data, _) = try? await URLSession.shared.data(from: url), let image = UIImage(data: data) else { return }
+            UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+        }
     }
 
     private func installPullToRefresh() {
@@ -1312,6 +1378,81 @@ private final class UIDelegate: NSObject, WKUIDelegate {
         MainActor.assumeIsolated { owner?.onRequestClose?() }
     }
 
+    /// Long-press on a link: a preview of the target plus our actions.
+    /// Without this WebKit shows its own preview with Open / Copy / Share
+    /// (or nothing at all when the page opts out) — this is the desktop
+    /// link + image context menu.
+    func webView(
+        _ webView: WKWebView,
+        contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
+        completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
+    ) {
+        guard let link = elementInfo.linkURL else { completionHandler(nil); return }
+        MainActor.assumeIsolated {
+            guard let owner else { completionHandler(nil); return }
+            Task { @MainActor in
+                let touched = await owner.touchedElement()
+                let configuration = webView.configuration
+                let config = UIContextMenuConfiguration(identifier: nil, previewProvider: {
+                    LinkPreviewController(url: link, configuration: configuration)
+                }, actionProvider: { _ in
+                    var items: [UIMenuElement] = [
+                        UIAction(title: "Open in New Tab", image: UIImage(systemName: "plus.square.on.square")) { _ in
+                            owner.onOpenInNewTab?(link, false)
+                        },
+                        UIAction(title: "Open in Background", image: UIImage(systemName: "square.on.square")) { _ in
+                            owner.onOpenInNewTab?(link, true)
+                        },
+                        UIAction(title: "Copy Link", image: UIImage(systemName: "doc.on.doc")) { _ in
+                            owner.copyToPasteboard(link)
+                        },
+                        UIAction(title: "Share…", image: UIImage(systemName: "square.and.arrow.up")) { _ in
+                            owner.share(link)
+                        },
+                    ]
+                    if let image = touched.image {
+                        var imageItems: [UIMenuElement] = [
+                            UIAction(title: "Open Image in New Tab", image: UIImage(systemName: "photo")) { _ in
+                                owner.onOpenInNewTab?(image, false)
+                            },
+                            UIAction(title: "Copy Image Address", image: UIImage(systemName: "link")) { _ in
+                                owner.copyToPasteboard(image)
+                            },
+                        ]
+                        if ContextMenuSupport.canSaveImage(image) {
+                            imageItems.append(UIAction(title: "Save Image", image: UIImage(systemName: "square.and.arrow.down")) { _ in
+                                owner.saveImage(image)
+                            })
+                        }
+                        items.append(UIMenu(title: "", options: .displayInline, children: imageItems))
+                    }
+                    return UIMenu(title: link.absoluteString, children: items)
+                })
+                completionHandler(config)
+            }
+        }
+    }
+
+    /// Tapping the preview opens the link in this tab, through the same
+    /// path a link click takes (ENS resolution and gates included).
+    func webView(
+        _ webView: WKWebView,
+        contextMenuForElement elementInfo: WKContextMenuElementInfo,
+        willCommitWithAnimator animator: UIContextMenuInteractionCommitAnimating
+    ) {
+        guard let link = elementInfo.linkURL else { return }
+        animator.addCompletion {
+            MainActor.assumeIsolated {
+                guard let owner = self.owner else { return }
+                if let browserURL = BrowserURL.classify(link) {
+                    owner.navigate(to: browserURL)
+                } else {
+                    owner.onOpenInNewTab?(link, false)
+                }
+            }
+        }
+    }
+
     /// getUserMedia: camera / microphone. Without this hook WebKit shows
     /// its own per-origin system prompt; with it, Freedom's prompt,
     /// remembered decisions and revocation apply (desktop parity).
@@ -1646,4 +1787,14 @@ private func fetchFeedSOC(
         payload = socPayload
     }
     return SwarmRouter.FeedRead(payload: payload, index: index, nextIndex: nil)
+}
+
+
+extension UIViewController {
+    /// The controller currently on top of this one's presentation chain.
+    var topMostPresented: UIViewController {
+        var top: UIViewController = self
+        while let next = top.presentedViewController { top = next }
+        return top
+    }
 }

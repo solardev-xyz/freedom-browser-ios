@@ -64,6 +64,24 @@ final class TabStore {
         (activeTab ?? ensureActiveTab()).navigate(to: browserURL)
     }
 
+    /// Context-menu "Open in New Tab" / "Open in Background": a new tab
+    /// navigated to `url`, activated or left behind the current one.
+    func open(_ url: URL, inBackground background: Bool, from opener: BrowserTab?) {
+        guard let browserURL = BrowserURL.classify(url) ?? BrowserURL.parse(url.absoluteString) else { return }
+        if !background {
+            newTab()
+            navigateActive(to: browserURL)
+            return
+        }
+        let record = TabRecord()
+        context.insert(record)
+        // Behind the opener: right after it in the strip.
+        let index = opener.flatMap { tab in records.firstIndex { $0.id == tab.recordID } }.map { $0 + 1 } ?? 0
+        records.insert(record, at: min(index, records.count))
+        save()
+        ensureLiveTab(for: record.id).navigate(to: browserURL)
+    }
+
     @discardableResult
     func newTab() -> UUID {
         let record = TabRecord()
@@ -201,6 +219,10 @@ final class TabStore {
         }
         tab.onCreatePopup = { [weak self] configuration in
             self?.adoptPopup(configuration: configuration)
+        }
+        tab.onOpenInNewTab = { [weak self, weak tab] url, background in
+            guard let self else { return }
+            self.open(url, inBackground: background, from: tab)
         }
         tab.onRequestClose = { [weak self, weak tab] in
             guard let self, let tab else { return }
