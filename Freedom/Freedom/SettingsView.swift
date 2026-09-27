@@ -50,6 +50,9 @@ struct SettingsView: View {
                 NavigationLink(value: SettingsPath.search) {
                     Label("Search", systemImage: "magnifyingglass")
                 }
+                NavigationLink(value: SettingsPath.sitePermissions) {
+                    Label("Site Permissions", systemImage: "hand.raised.fill")
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -89,6 +92,8 @@ struct SettingsView: View {
             AdblockSettingsView()
         case .search:
             SearchSettingsView()
+        case .sitePermissions:
+            SitePermissionsSettingsView()
         case .chainEditor(let id):
             if let chain = chainStore.chain(id: id) {
                 ChainDetailView(chain: chain, chainStore: chainStore)

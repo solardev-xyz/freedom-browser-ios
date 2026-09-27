@@ -136,6 +136,65 @@ final class BrowserTab {
     var pendingEthereumApproval: ApprovalRequest?
     var pendingSwarmApproval: ApprovalRequest?
     var pendingRadicleApproval: ApprovalRequest?
+    /// A site permission prompt parked on this tab (camera, microphone,
+    /// motion). One at a time; later requests queue behind it.
+    var pendingPermissionRequest: SitePermissionRequest?
+    @ObservationIgnored private var permissionQueue: [SitePermissionRequest] = []
+
+    /// WebKit asked on behalf of `origin`. Remembered decisions and
+    /// run-scoped embargoes answer without a prompt; otherwise the request
+    /// is parked for the prompt under the address bar. Desktop parity:
+    /// dismissing denies once without recording; three dismissals in a
+    /// row embargo the site + permission for this run.
+    func requestSitePermission(
+        origin: String?, kinds: [SitePermissionKind],
+        decide: @escaping (SitePermissionDecision) -> Void
+    ) {
+        guard let origin, !kinds.isEmpty else { decide(.block); return }
+        let store = SitePermissionStore.shared
+        if let settled = store.settled(origin: origin, kinds: kinds) {
+            decide(settled)
+            return
+        }
+        var answered = false
+        let request = SitePermissionRequest(origin: origin, kinds: kinds) { [weak self] answer, remember in
+            guard !answered else { return }
+            answered = true
+            switch answer {
+            case .allow:
+                store.noteAnswered(origin: origin, kinds: kinds)
+                if remember { store.remember(origin: origin, kinds: kinds, decision: .allow) }
+                decide(.allow)
+            case .block:
+                store.noteAnswered(origin: origin, kinds: kinds)
+                if remember { store.remember(origin: origin, kinds: kinds, decision: .block) }
+                decide(.block)
+            case .dismiss:
+                store.noteDismissal(origin: origin, kinds: kinds)
+                decide(.block)
+            }
+            self?.advancePermissionQueue()
+        }
+        if pendingPermissionRequest == nil {
+            pendingPermissionRequest = request
+        } else {
+            permissionQueue.append(request)
+        }
+    }
+
+    private func advancePermissionQueue() {
+        pendingPermissionRequest = permissionQueue.isEmpty ? nil : permissionQueue.removeFirst()
+    }
+
+    /// The page navigated away: withdraw its prompts (denied, nothing
+    /// recorded, no dismissal counted — the user never saw them).
+    func cancelPermissionPrompts() {
+        let parked = [pendingPermissionRequest].compactMap { $0 } + permissionQueue
+        permissionQueue = []
+        pendingPermissionRequest = nil
+        // Deliver the denial without re-entering the queue.
+        for request in parked { request.respond(.block, false) }
+    }
 
     func resolvePendingApproval(_ decision: ApprovalRequest.Decision) {
         let pending = pendingEthereumApproval
@@ -1166,9 +1225,41 @@ private final class UIDelegate: NSObject, WKUIDelegate {
 
     /// Only fires for pages WebKit itself opened via `createWebViewWith`
     /// (`window.close()` is a no-op for user-opened tabs) — so closing
-    /// the tab here can't be triggered by arbitrary pages.
+    /// the tab here can't be triggered by arbitrary tabs.
     func webViewDidClose(_ webView: WKWebView) {
         MainActor.assumeIsolated { owner?.onRequestClose?() }
+    }
+
+    /// getUserMedia: camera / microphone. Without this hook WebKit shows
+    /// its own per-origin system prompt; with it, Freedom's prompt,
+    /// remembered decisions and revocation apply (desktop parity).
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        MainActor.assumeIsolated {
+            owner?.requestSitePermission(
+                origin: SitePermissionStore.origin(for: origin),
+                kinds: SitePermissionKind.kinds(for: type)
+            ) { decisionHandler($0 == .allow ? .grant : .deny) }
+        }
+    }
+
+    /// DeviceMotion / DeviceOrientation events.
+    func webView(
+        _ webView: WKWebView,
+        requestDeviceOrientationAndMotionPermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        MainActor.assumeIsolated {
+            owner?.requestSitePermission(
+                origin: SitePermissionStore.origin(for: origin), kinds: [.motion]
+            ) { decisionHandler($0 == .allow ? .grant : .deny) }
+        }
     }
 }
 
@@ -1296,6 +1387,8 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         MainActor.assumeIsolated {
             owner?.reinstallPreloads()
             owner?.resetPerPageSurfaceState()
+            // A navigation withdraws the departing page's prompts.
+            owner?.cancelPermissionPrompts()
         }
     }
 

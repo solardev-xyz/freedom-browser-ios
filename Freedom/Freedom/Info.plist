@@ -10,7 +10,11 @@
 		<string>_p2p._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>Freedom uses the camera to scan the connection QR code shown by Freedom on your computer.</string>
+	<string>Freedom uses the camera to scan the connection QR code shown by Freedom on your computer, and for websites you allow to use it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Websites you allow can use the microphone.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Websites you allow can use motion and orientation sensors.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Freedom uses Face ID to unlock your wallet.</string>
 	<key>CFBundleURLTypes</key>
