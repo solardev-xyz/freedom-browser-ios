@@ -4,6 +4,9 @@ import Observation
 import UIKit
 import web3
 import WebKit
+import OSLog
+
+private let tabLog = Logger(subsystem: "com.browser.Freedom", category: "BrowserTab")
 
 @MainActor
 @Observable
@@ -438,6 +441,61 @@ final class BrowserTab {
         bottomChromeProbeTask?.cancel()
     }
 
+    /// The ENS name a history entry is backed by, or nil for a plain
+    /// web/hash entry: `bzz://name.eth/…`, `ipfs://name.eth/…`,
+    /// `ipns://name.eth/…` and the `ens://` form all classify as `.ens`.
+    static func ensNameToReverify(_ url: URL) -> String? {
+        guard case .ens(let name, _)? = BrowserURL.classify(url) else { return nil }
+        return name
+    }
+
+    /// Desktop #86: Back/Forward restored an ENS-backed page. Re-run
+    /// resolution under the current verification settings (the resolver's
+    /// own cache applies — this is not a hard reload) and let the fresh
+    /// verdict drive the shield and the gates:
+    /// - verified / unverified-and-allowed → shield updated in place;
+    /// - unverified while "Block unverified" is on → the same interstitial
+    ///   a fresh visit gets, over the restored page; "Continue once"
+    ///   keeps the page and sets the shield;
+    /// - conflict / anchor disagreement → the red gate, no bypass;
+    /// - resolution failure → no verdict (shield withheld), page stays;
+    ///   the address bar keeps the entry, nothing claims verification.
+    /// Nothing here changes the history stack.
+    func reverifyTrust(name: String, restored url: URL) {
+        hasNavigated = true
+        activeResolveTask?.cancel()
+        // The old verdict must not survive the traversal, even for the
+        // seconds the re-check takes.
+        pendingGate = nil
+        currentTrust = nil
+        ensStatus = .idle
+        activeResolveTask = Task { [weak self] in
+            guard let self else { return }
+            let result: ENSResolvedContent
+            do {
+                result = try await ensResolver.resolveContent(name)
+            } catch ENSResolutionError.conflict(let groups, let trust) {
+                if Task.isCancelled { return }
+                pendingGate = .conflict(groups: groups, trust: trust)
+                return
+            } catch ENSResolutionError.anchorDisagreement(let largest, let total, let threshold) {
+                if Task.isCancelled { return }
+                pendingGate = .anchorDisagreement(largestBucketSize: largest, total: total, threshold: threshold)
+                return
+            } catch {
+                if Task.isCancelled { return }
+                tabLog.notice("[ens] re-verify on history nav failed for \(name, privacy: .public): \(ENSErrorFormatting.describe(error), privacy: .public)")
+                return
+            }
+            if Task.isCancelled { return }
+            if result.trust.level == .unverified, settings.blockUnverifiedEns {
+                pendingGate = .unverifiedUntrusted(url: url, trust: result.trust)
+                return
+            }
+            currentTrust = result.trust
+        }
+    }
+
     func navigate(to browserURL: BrowserURL) {
         hasNavigated = true
         activeResolveTask?.cancel()
@@ -644,7 +702,10 @@ final class BrowserTab {
             pendingGate = nil
             ensStatus = .idle
             currentTrust = trust
-            loadInWebView(url)
+            // A gate raised by a history re-verification sits over the
+            // restored page, which is already showing: reloading it would
+            // push a duplicate history entry. Only load what isn't there.
+            if webView.url != url { loadInWebView(url) }
         case .unverifiedOnchain(let document, let url):
             // Remembered for this chain + contract + exact hash for the
             // rest of the process; different bytes warn again.
@@ -1144,6 +1205,18 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
             MainActor.assumeIsolated { owner?.navigate(to: browserURL) }
             return
         }
+        // Back/Forward onto an ENS-backed entry (desktop #86): keep
+        // WebKit's history traversal — the entry is restored, not
+        // re-navigated — but never restore the verdict from the first
+        // visit. The name is re-verified under the current settings and
+        // the shield and gates follow the fresh result.
+        if let url = navigationAction.request.url,
+           navigationAction.targetFrame?.isMainFrame == true,
+           navigationAction.navigationType == .backForward,
+           let name = BrowserTab.ensNameToReverify(url)
+        {
+            MainActor.assumeIsolated { owner?.reverifyTrust(name: name, restored: url) }
+        }
         // Contract-hosted apps: any main-frame `web3:` load the tab
         // hasn't fetched and staged goes through `navigate(to:)` so it
         // is fetched with provenance and gated first — a link from a
@@ -1183,7 +1256,9 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
     /// our own `loadInWebView` (the resolved URL coming back through
     /// the policy hook) — re-intercepting it would loop. `.reload`
     /// has its own ENS-aware path in `BrowserTab.reload()`; `.backForward`
-    /// re-visits an already-loaded page and shouldn't re-resolve.
+    /// restores an already-loaded entry and must not be re-navigated (that
+    /// would grow the history stack) — its verdict is refreshed in place
+    /// by `reverifyTrust` instead (desktop #86).
     /// `.formSubmitted` / `.formResubmitted` are excluded because
     /// re-issuing the navigation through `webView.load(URLRequest(url:))`
     /// downgrades the POST to a GET and silently drops the form body —
