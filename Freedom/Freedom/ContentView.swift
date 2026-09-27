@@ -52,6 +52,9 @@ struct ContentView: View {
     @State private var isShowingRadicleNode = false
     @State private var isShowingNodesDrawer = false
     @State private var isShowingDownloads = false
+    /// "On This Page" count for the typed text (nil: nothing to show).
+    @State private var pageMatchCount: Int? = nil
+    @State private var pageMatchTask: Task<Void, Never>?
     @FocusState private var addressFocused: Bool
     /// Gates suggestions so they don't appear before the user actually
     /// types in the prefilled URL (Safari behavior). Reset on every
@@ -189,12 +192,16 @@ struct ContentView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
+            // While the find navigator is up it takes the address bar's
+            // place: the chrome steps aside until Done or a navigation.
             VStack(spacing: 0) {
-                DownloadShelf { isShowingDownloads = true }
-                if let banner {
-                    bannerRow(banner)
+                if tabStore.activeTab?.isFinding != true {
+                    DownloadShelf { isShowingDownloads = true }
+                    if let banner {
+                        bannerRow(banner)
+                    }
+                    pillBar
                 }
-                pillBar
             }
             .frame(maxWidth: .infinity)
             // Reserved mode: paint the chrome region with the page's
@@ -212,6 +219,7 @@ struct ContentView: View {
             .onTapGesture { }
         }
         .animation(.snappy(duration: 0.25), value: isEditing)
+        .animation(.snappy(duration: 0.25), value: tabStore.activeTab?.isFinding)
         .animation(.snappy(duration: 0.25), value: tabStore.activeTab?.chromeIsCompact)
         .sheet(isPresented: $isShowingTabSwitcher) {
             TabSwitcher(isPresented: $isShowingTabSwitcher)
@@ -317,6 +325,7 @@ struct ContentView: View {
             // The displayURL→addressText sync above is gated on
             // !addressFocused, so any focused-time write is user-driven.
             if addressFocused { userEditedText = true }
+            refreshPageMatchCount()
         }
         .onChange(of: tabStore.activeRecordID) { _, _ in
             exitEditMode()
@@ -561,6 +570,33 @@ struct ContentView: View {
                     guard let classified = BrowserURL.classify(suggestion.url) else { return }
                     navigate(to: classified)
                 }
+                if let count = pageMatchCount, count > 0 {
+                    let query = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Text("On This Page")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.7))
+                        .padding(.horizontal, 20)
+                        .padding(.top, 14)
+                    Button {
+                        let tab = tabStore.activeTab
+                        exitEditMode()
+                        resetAddressTextToActiveURL()
+                        tab?.startFind(query)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "doc.text.magnifyingglass")
+                                .frame(width: 20)
+                            Text(FindInPage.label(count: count, query: query))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             // Bounded background — `.scaledToFill` is sized by this
@@ -601,6 +637,29 @@ struct ContentView: View {
     private func exitEditMode() {
         isEditing = false
         addressFocused = false
+        pageMatchTask?.cancel()
+        pageMatchCount = nil
+    }
+
+    /// Debounced page search for the typed text (Safari's "On This
+    /// Page"). Only while editing, only after the user typed, only with
+    /// a loaded page.
+    private func refreshPageMatchCount() {
+        pageMatchTask?.cancel()
+        let query = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isEditing, userEditedText, query.count >= FindInPage.minimumQueryLength,
+              let tab = tabStore.activeTab, tab.hasNavigated
+        else {
+            pageMatchCount = nil
+            return
+        }
+        pageMatchTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: FindInPage.debounceMilliseconds * 1_000_000)
+            guard !Task.isCancelled else { return }
+            let count = await tab.countMatches(query)
+            guard !Task.isCancelled, addressText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            pageMatchCount = count
+        }
     }
 
     private func resetAddressTextToActiveURL() {
