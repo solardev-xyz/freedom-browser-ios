@@ -139,6 +139,10 @@ final class BrowserTab {
     /// A site permission prompt parked on this tab (camera, microphone,
     /// motion). One at a time; later requests queue behind it.
     var pendingPermissionRequest: SitePermissionRequest?
+    /// The system find navigator is showing: the bottom chrome steps
+    /// aside so the navigator takes the address bar's place (Safari).
+    var isFinding = false
+    @ObservationIgnored private var findWatchTask: Task<Void, Never>?
     @ObservationIgnored private var permissionQueue: [SitePermissionRequest] = []
 
     /// WebKit asked on behalf of `origin`. Remembered decisions and
@@ -366,6 +370,10 @@ final class BrowserTab {
         // compile is sub-second once warm.
         adblock.attach(to: contentController)
         self.webView = WKWebView(frame: .zero, configuration: config)
+        // Find in page: the system find navigator (highlights, next /
+        // previous, Done), entered from the address bar's "On This Page"
+        // row — Safari's flow, desktop's Cmd+F bar.
+        self.webView.isFindInteractionEnabled = true
         self.webView.navigationDelegate = navDelegate
         navDelegate.owner = self
         self.webView.uiDelegate = uiDelegate
@@ -820,6 +828,63 @@ final class BrowserTab {
 
     func goBack()    { webView.goBack() }
     func goForward() { webView.goForward() }
+
+    /// Occurrences of `query` in the page's rendered text — the number
+    /// the address bar's "On This Page" row shows while typing. Zero
+    /// before the tab has loaded anything or when the script fails.
+    func countMatches(_ query: String) async -> Int {
+        guard hasNavigated, query.count >= FindInPage.minimumQueryLength else { return 0 }
+        let result = try? await webView.evaluateJavaScript(FindInPage.countScript(for: query))
+        return (result as? NSNumber)?.intValue ?? 0
+    }
+
+    /// Hand a typed term to the system find navigator: it opens already
+    /// searching, first match highlighted, arrows for the rest, Done to
+    /// leave (Safari's "On This Page" flow).
+    func startFind(_ query: String) {
+        guard hasNavigated, let interaction = webView.findInteraction else { return }
+        isFinding = true
+        // Safari keeps the keyboard up in find mode so the term can be
+        // edited in place. The address bar has just resigned; presenting
+        // in the same run loop races its keyboard dismissal and the
+        // navigator's search field loses first responder. Let the
+        // dismissal settle, then present — the field takes focus and the
+        // keyboard returns with the navigator on top of it.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard let self, isFinding else { return }
+            interaction.searchText = query
+            interaction.presentFindNavigator(showingReplace: false)
+            interaction.findNext()
+            self.watchFindNavigator()
+        }
+    }
+
+    private func watchFindNavigator() {
+        // UIFindInteraction has no host callback for Done; watch the
+        // navigator's visibility so the chrome returns when it closes.
+        findWatchTask?.cancel()
+        findWatchTask = Task { [weak self] in
+            // Give the presentation a moment before the first check.
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard let self else { return }
+                if webView.findInteraction?.isFindNavigatorVisible != true {
+                    isFinding = false
+                    return
+                }
+            }
+        }
+    }
+
+    /// A navigation ends any find session (highlights would be stale).
+    func endFind() {
+        findWatchTask?.cancel()
+        findWatchTask = nil
+        webView.findInteraction?.dismissFindNavigator()
+        isFinding = false
+    }
     /// Re-resolves ENS-origin pages so a rotated content-hash is picked up;
     /// otherwise delegates to WKWebView.reload which re-fetches the current URL.
     /// The handler's own ENS cache would honor `webView.reload()` until its
@@ -1439,8 +1504,10 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         MainActor.assumeIsolated {
             owner?.reinstallPreloads()
             owner?.resetPerPageSurfaceState()
-            // A navigation withdraws the departing page's prompts.
+            // A navigation withdraws the departing page's prompts and
+            // ends its find session.
             owner?.cancelPermissionPrompts()
+            owner?.endFind()
         }
     }
 
