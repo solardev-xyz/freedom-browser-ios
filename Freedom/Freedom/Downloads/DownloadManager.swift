@@ -27,6 +27,9 @@ struct DownloadItem: Identifiable, Codable, Equatable, Sendable {
     var state: State
     let startedAt: Date
     var finishedAt: Date?
+    /// From a private tab: never written to the index (gone at the next
+    /// launch; the saved file stays on disk).
+    var ephemeral: Bool = false
 
     var canResume: Bool { state == .paused }
     var isActive: Bool { state == .inProgress }
@@ -93,11 +96,12 @@ final class DownloadManager: NSObject {
     /// Take ownership of a download WebKit created for a navigation
     /// action or response; the originating web view is remembered so a
     /// paused download can be resumed through it.
-    func adopt(_ download: WKDownload, sourceURL: URL?, mimeType: String?, from webView: WKWebView?) {
+    func adopt(_ download: WKDownload, sourceURL: URL?, mimeType: String?, from webView: WKWebView?, ephemeral: Bool = false) {
         let id = UUID()
         let item = DownloadItem(
             id: id, sourceURL: sourceURL?.absoluteString ?? "", filename: "", mimeType: mimeType,
-            bytesReceived: 0, totalBytes: nil, state: .inProgress, startedAt: Date(), finishedAt: nil
+            bytesReceived: 0, totalBytes: nil, state: .inProgress, startedAt: Date(), finishedAt: nil,
+            ephemeral: ephemeral
         )
         items.insert(item, at: 0)
         attach(download, to: id, webView: webView)
@@ -253,7 +257,8 @@ final class DownloadManager: NSObject {
     }
 
     private func persist() {
-        if let data = try? JSONEncoder().encode(items) { try? data.write(to: indexURL, options: .atomic) }
+        let durable = items.filter { !$0.ephemeral }
+        if let data = try? JSONEncoder().encode(durable) { try? data.write(to: indexURL, options: .atomic) }
     }
 }
 

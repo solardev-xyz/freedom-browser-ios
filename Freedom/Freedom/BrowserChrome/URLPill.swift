@@ -12,6 +12,8 @@ struct URLPill: View {
     @FocusState.Binding var isFocused: Bool
     let trust: ENSTrust?
     var onchain: OnchainAppProvenance? = nil
+    /// Private tab: a glyph where the shield sits, and a darker field.
+    var isPrivate: Bool = false
     let isLoading: Bool
     let progress: Double
     let displayURL: URL?
@@ -31,6 +33,10 @@ struct URLPill: View {
             Group {
                 if let trust {
                     TrustShield(trust: trust, onchain: onchain)
+                } else if isPrivate {
+                    Image(systemName: "eye.slash.fill")
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Private tab")
                 } else {
                     Color.clear
                 }
@@ -123,7 +129,7 @@ struct URLPill: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: alignment)
         } else {
-            Text(Self.placeholder)
+            Text(isPrivate ? "Private · " + Self.placeholder : Self.placeholder)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

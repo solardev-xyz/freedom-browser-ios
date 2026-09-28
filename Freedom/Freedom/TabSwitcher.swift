@@ -48,11 +48,24 @@ struct TabSwitcher: View {
                     Button("Done") { isPresented = false }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        tabStore.newTab()
-                        isPresented = false
+                    Menu {
+                        Button {
+                            tabStore.newTab()
+                            isPresented = false
+                        } label: {
+                            Label("New tab", systemImage: "plus.square")
+                        }
+                        Button {
+                            tabStore.newTab(isPrivate: true)
+                            isPresented = false
+                        } label: {
+                            Label("New private tab", systemImage: "eye.slash")
+                        }
                     } label: {
                         Image(systemName: "plus")
+                    } primaryAction: {
+                        tabStore.newTab()
+                        isPresented = false
                     }
                 }
             }
@@ -98,7 +111,18 @@ private struct TabCard: View {
             .overlay {
                 if isActive {
                     RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                        .strokeBorder(record.isPrivate ? Color.purple : Color.accentColor, lineWidth: 2)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if record.isPrivate {
+                    Image(systemName: "eye.slash.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(Color.purple.opacity(0.85), in: Circle())
+                        .padding(6)
+                        .accessibilityLabel("Private tab")
                 }
             }
             Text(displayTitle)

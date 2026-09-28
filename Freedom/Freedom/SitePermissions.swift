@@ -74,7 +74,8 @@ final class SitePermissionStore {
     /// origin|kind embargoed for this run after repeated dismissals.
     private(set) var sessionBlocks: Set<String> = []
     private var dismissals: [String: Int] = [:]
-    private let defaults: UserDefaults
+    /// nil: in-memory only (a private tab's store).
+    private let defaults: UserDefaults?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -86,6 +87,15 @@ final class SitePermissionStore {
             decisions = [:]
         }
     }
+
+    /// A store that never touches disk: decisions live as long as it does.
+    init(ephemeral: Bool) {
+        precondition(ephemeral)
+        defaults = nil
+        decisions = [:]
+    }
+
+    var isEphemeral: Bool { defaults == nil }
 
     /// `scheme://host[:port]` — the origin a permission belongs to. ENS
     /// hosts keep the name (`bzz://vitalik.eth`), so a rotated content
@@ -182,6 +192,7 @@ final class SitePermissionStore {
     }
 
     private func persist() {
+        guard let defaults else { return }
         if let data = try? JSONEncoder().encode(decisions) { defaults.set(data, forKey: Self.key) }
     }
 }

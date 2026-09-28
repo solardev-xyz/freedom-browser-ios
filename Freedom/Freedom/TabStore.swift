@@ -69,11 +69,12 @@ final class TabStore {
     func open(_ url: URL, inBackground background: Bool, from opener: BrowserTab?) {
         guard let browserURL = BrowserURL.classify(url) ?? BrowserURL.parse(url.absoluteString) else { return }
         if !background {
-            newTab()
+            newTab(isPrivate: opener?.isPrivate ?? false)
             navigateActive(to: browserURL)
             return
         }
-        let record = TabRecord()
+        // A tab opened from a private tab is private too.
+        let record = TabRecord(isPrivate: opener?.isPrivate ?? false)
         context.insert(record)
         // Behind the opener: right after it in the strip.
         let index = opener.flatMap { tab in records.firstIndex { $0.id == tab.recordID } }.map { $0 + 1 } ?? 0
@@ -83,8 +84,8 @@ final class TabStore {
     }
 
     @discardableResult
-    func newTab() -> UUID {
-        let record = TabRecord()
+    func newTab(isPrivate: Bool = false) -> UUID {
+        let record = TabRecord(isPrivate: isPrivate)
         context.insert(record)
         save()
         records.insert(record, at: 0)
@@ -171,6 +172,7 @@ final class TabStore {
         if let existing = liveTabs[id] { return existing }
         let tab = BrowserTab(
             recordID: id,
+            isPrivate: record(for: id)?.isPrivate ?? false,
             ensResolver: ensResolver,
             settings: settings,
             wallet: wallet,
@@ -194,13 +196,16 @@ final class TabStore {
     /// from the configuration WebKit hands us, activate it, and return
     /// the web view for `createWebViewWith`. WebKit performs the popup's
     /// initial load itself — no navigate here.
-    private func adoptPopup(configuration: WKWebViewConfiguration) -> WKWebView {
-        let record = TabRecord()
+    private func adoptPopup(configuration: WKWebViewConfiguration, from opener: BrowserTab?) -> WKWebView {
+        // WebKit's popup configuration carries the opener's data store; a
+        // popup from a private tab is a private tab.
+        let record = TabRecord(isPrivate: opener?.isPrivate ?? false)
         context.insert(record)
         save()
         records.insert(record, at: 0)
         let tab = BrowserTab(
             recordID: record.id,
+            isPrivate: record.isPrivate,
             popupConfiguration: configuration,
             ensResolver: ensResolver,
             settings: settings,
@@ -225,8 +230,12 @@ final class TabStore {
             // re-resolve and pick up any content-hash rotation, and the
             // favicon stays tied to the name. The JS extraction still
             // runs against the webview's live page.
-            self.historyStore.record(url: url, title: title)
-            self.faviconStore.fetchIfNeeded(for: url, webView: tab.webView)
+            // Private tabs leave no local traces: no history entry, no
+            // favicon fetch (the cache is on disk), no autocomplete.
+            if !tab.isPrivate {
+                self.historyStore.record(url: url, title: title)
+                self.faviconStore.fetchIfNeeded(for: url, webView: tab.webView)
+            }
             // A tab loading in the background (Open in Background) is
             // never captured by activate(); give its switcher card the
             // title, URL and a thumbnail now, or it stays "New Tab".
@@ -234,8 +243,8 @@ final class TabStore {
                 Task { await self.captureBackground(tab) }
             }
         }
-        tab.onCreatePopup = { [weak self] configuration in
-            self?.adoptPopup(configuration: configuration)
+        tab.onCreatePopup = { [weak self, weak tab] configuration in
+            self?.adoptPopup(configuration: configuration, from: tab)
         }
         tab.onOpenInNewTab = { [weak self, weak tab] url, background in
             guard let self else { return }
@@ -256,7 +265,13 @@ final class TabStore {
             sortBy: [SortDescriptor(\.lastActiveAt, order: .reverse)]
         )
         do {
-            records = try context.fetch(descriptor)
+            let fetched = try context.fetch(descriptor)
+            // Private tabs are ephemeral by construction: their web data
+            // was never on disk, and their records do not outlive the run.
+            let stale = fetched.filter(\.isPrivate)
+            for record in stale { context.delete(record) }
+            if !stale.isEmpty { save() }
+            records = fetched.filter { !$0.isPrivate }
         } catch {
             log.error("TabRecord fetch failed: \(String(describing: error), privacy: .public)")
             records = []

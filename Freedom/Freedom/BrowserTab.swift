@@ -139,6 +139,12 @@ final class BrowserTab {
     /// A site permission prompt parked on this tab (camera, microphone,
     /// motion). One at a time; later requests queue behind it.
     var pendingPermissionRequest: SitePermissionRequest?
+    /// Private tab (see `TabRecord.isPrivate`).
+    let isPrivate: Bool
+    /// Site permission decisions: the profile store, or, for a private
+    /// tab, an in-memory store that dies with the tab — decisions made
+    /// here are never remembered and never touch the normal profile's.
+    @ObservationIgnored private let sitePermissions: SitePermissionStore
     /// Set by TabStore: open `url` in a new tab, in front or behind.
     @ObservationIgnored var onOpenInNewTab: ((URL, _ background: Bool) -> Void)?
     /// The page's current text selection (relayed by the touch script).
@@ -160,7 +166,7 @@ final class BrowserTab {
         decide: @escaping (SitePermissionDecision) -> Void
     ) {
         guard let origin, !kinds.isEmpty else { decide(.block); return }
-        let store = SitePermissionStore.shared
+        let store = sitePermissions
         if let settled = store.settled(origin: origin, kinds: kinds) {
             decide(settled)
             return
@@ -287,6 +293,7 @@ final class BrowserTab {
 
     init(
         recordID: UUID = UUID(),
+        isPrivate: Bool = false,
         popupConfiguration: WKWebViewConfiguration? = nil,
         ensResolver: ENSResolver,
         settings: SettingsStore,
@@ -297,6 +304,8 @@ final class BrowserTab {
         ipfs: IPFSNode
     ) {
         self.recordID = recordID
+        self.isPrivate = isPrivate
+        self.sitePermissions = isPrivate ? SitePermissionStore(ephemeral: true) : .shared
         self.ensResolver = ensResolver
         self.settings = settings
         self.adblock = adblock
@@ -317,6 +326,10 @@ final class BrowserTab {
             self.web3Handler = nil
         } else {
             config = WKWebViewConfiguration()
+            // Private: a unique in-memory data store — cookies, logins,
+            // caches and site data evaporate with the tab (desktop's
+            // `private-<uuid>` partition).
+            if isPrivate { config.websiteDataStore = .nonPersistent() }
             config.setURLSchemeHandler(BzzSchemeHandler(ensResolver: ensResolver), forURLScheme: "bzz")
             // Contract-hosted apps (ERC-8244). The handler only serves
             // what this tab staged after fetching + gating.
@@ -421,6 +434,10 @@ final class BrowserTab {
         // pinned chain wins over it (`chainPin`).
         let chainStore = wallet.chainStore
         let pin = chainPin
+        // Identity and wallet are persistent by design, so a private tab
+        // gets none of the page-facing providers: no window.ethereum /
+        // window.swarm / window.radicle, nothing announces (desktop parity).
+        if !isPrivate {
         let router = RPCRouter(
             registry: wallet.chainRegistry,
             permissionStore: wallet.permissionStore,
@@ -496,6 +513,7 @@ final class BrowserTab {
             contentController: contentController,
             services: radicle
         )
+        }
 
         observeWebView()
         installPullToRefresh()
@@ -1642,7 +1660,10 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
         MainActor.assumeIsolated {
-            DownloadManager.shared.adopt(download, sourceURL: navigationAction.request.url, mimeType: nil, from: webView)
+            DownloadManager.shared.adopt(
+                download, sourceURL: navigationAction.request.url, mimeType: nil, from: webView,
+                ephemeral: owner?.isPrivate ?? false
+            )
         }
     }
 
@@ -1650,7 +1671,8 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         MainActor.assumeIsolated {
             DownloadManager.shared.adopt(
                 download, sourceURL: navigationResponse.response.url,
-                mimeType: navigationResponse.response.mimeType, from: webView
+                mimeType: navigationResponse.response.mimeType, from: webView,
+                ephemeral: owner?.isPrivate ?? false
             )
         }
     }
