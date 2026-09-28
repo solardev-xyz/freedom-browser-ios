@@ -16,5 +16,6 @@ struct NodeSheet: View {
                     }
                 }
         }
+        .environment(\.dismissNodesUI, { isPresented = false })
     }
 }

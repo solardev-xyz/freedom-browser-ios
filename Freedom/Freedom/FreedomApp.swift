@@ -37,6 +37,7 @@ struct FreedomApp: App {
     @State private var swarmFeedStore: SwarmFeedStore
     @State private var swarmPublishHistoryStore: SwarmPublishHistoryStore
     @State private var swarmManifestStore: SwarmManifestStore
+    @State private var swarmUserPublisher: SwarmUserPublisher
     @State private var adblock: AdblockService
     @State private var adblockUpdate: AdblockUpdateService
     @Environment(\.scenePhase) private var scenePhase
@@ -209,6 +210,12 @@ struct FreedomApp: App {
                 currentStamps: { stamps.stamps },
                 getTag: { try await swarmBee.getTag(uid: $0) }
             )
+            self._swarmUserPublisher = State(wrappedValue: SwarmUserPublisher(
+                publishService: swarmServices.publishService,
+                history: publishHistory,
+                currentStamps: { stamps.stamps },
+                getTag: { try await swarmBee.getTag(uid: $0) }
+            ))
             // Embedded Radicle node (publish-capable: the no-spawn build
             // serves fetches in-process, so peers replicate the phone's
             // COB writes back). Provider gate mirrors desktop's
@@ -291,6 +298,7 @@ struct FreedomApp: App {
                 .environment(swarmFeedStore)
                 .environment(swarmPublishHistoryStore)
                 .environment(swarmManifestStore)
+                .environment(swarmUserPublisher)
                 .environment(adblock)
                 .environment(openlvSession)
                 // openlv links arrive via the custom `freedom://` scheme

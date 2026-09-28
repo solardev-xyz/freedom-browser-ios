@@ -66,7 +66,7 @@ struct SwarmPublishHistoryView: View {
                 NavigationLink {
                     SwarmPublishHistoryDetailView(entryId: entry.id)
                 } label: {
-                    HistoryCard(entry: entry)
+                    SwarmPublishHistoryCard(entry: entry)
                 }
                 .buttonStyle(.plain)
             }
@@ -75,7 +75,7 @@ struct SwarmPublishHistoryView: View {
 }
 
 @MainActor
-private struct HistoryCard: View {
+struct SwarmPublishHistoryCard: View {
     let entry: SwarmPublishHistoryRecord
 
     var body: some View {
