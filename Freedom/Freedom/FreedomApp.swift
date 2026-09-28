@@ -254,7 +254,7 @@ struct FreedomApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            TabsRoot()
                 .environment(swarm)
                 .environment(ipfs)
                 .environment(myotis)

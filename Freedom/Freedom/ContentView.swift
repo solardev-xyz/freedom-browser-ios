@@ -39,7 +39,9 @@ struct ContentView: View {
 
     @State private var addressText: String = ""
     @State private var banner: Banner? = nil
-    @State private var isShowingTabSwitcher = false
+    /// Reveal the tab overview beneath (see `TabsRoot`): the page
+    /// shrinks into its card.
+    let onShowTabs: () -> Void
     @State private var isShowingSettings = false
     /// DEBUG smoke hook: the settings page to open at launch
     /// (`FREEDOM_DEBUG_SETTINGS=ens|chains|chain:<id>`), so a simulator
@@ -141,14 +143,6 @@ struct ContentView: View {
 
     private func openDebugSettingsIfRequested() {
         #if DEBUG
-        // `FREEDOM_DEBUG_SHOW=tabs` opens the tab overview after launch so a
-        // simulator run can screenshot it without a tap.
-        if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "tabs" {
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                isShowingTabSwitcher = true
-            }
-        }
         guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SETTINGS"], !raw.isEmpty else { return }
         Logger(subsystem: "com.browser.Freedom", category: "DebugOpen").notice("[debug-settings] opening \(raw, privacy: .public)")
         // ens | ens:<method> | chains | chain:<id> | chain:<id>:<source>
@@ -229,9 +223,6 @@ struct ContentView: View {
         .animation(.snappy(duration: 0.25), value: isEditing)
         .animation(.snappy(duration: 0.25), value: tabStore.activeTab?.isFinding)
         .animation(.snappy(duration: 0.25), value: tabStore.activeTab?.chromeIsCompact)
-        .sheet(isPresented: $isShowingTabSwitcher) {
-            TabSwitcher(isPresented: $isShowingTabSwitcher)
-        }
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(initialPath: debugSettingsPath)
         }
@@ -500,7 +491,7 @@ struct ContentView: View {
                         canBookmark: activeURL != nil,
                         shareURL: activeURL,
                         onBookmarkToggle: toggleBookmark,
-                        onTabs: { isShowingTabSwitcher = true },
+                        onTabs: onShowTabs,
                         onNewTab: { tabStore.newTab() },
                         onWallet: { isShowingWallet = true },
                         onNodes: { isShowingNodesDrawer = true },
@@ -553,7 +544,7 @@ struct ContentView: View {
             .onEnded { value in
                 guard !addressFocused,
                       value.translation.height < -50 else { return }
-                isShowingTabSwitcher = true
+                onShowTabs()
             }
     }
 
