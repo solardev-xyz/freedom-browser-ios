@@ -33,6 +33,7 @@ struct TabSwitcher: View {
                     .padding()
                     .animation(.spring, value: tabStore.records.count)
                 }
+                .scrollContentBackground(.hidden)
                 .task {
                     // Land the viewport on the active card — Safari-style —
                     // so users with many tabs don't have to hunt for the one
@@ -50,9 +51,23 @@ struct TabSwitcher: View {
             }
             .navigationTitle(showingPrivate ? "Private" : "Tabs")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            // Safari's overview sits on a frosted version of the home
+            // screen; ours on the home page's hero — same idea, our brand.
+            .background {
+                Image("HomeHero")
+                    .resizable()
+                    .scaledToFill()
+                    .blur(radius: 40, opaque: true)
+                    .overlay(Color.black.opacity(0.45))
+                    .ignoresSafeArea()
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 bottomBar
             }
+            // Dark scheme for everything on the frosted hero, the bottom
+            // bar included (it is outside the inset's content otherwise).
+            .environment(\.colorScheme, .dark)
             .overlay {
                 if shown.isEmpty {
                     ContentUnavailableView {
@@ -69,37 +84,60 @@ struct TabSwitcher: View {
 
     /// Safari's tab-overview bar: + (a tab in the shown group), the
     /// Private / N Tabs group switch, Done.
+    private static let barControl: CGFloat = 52
+
     private var bottomBar: some View {
+        GlassChromeGroup(spacing: 12) {
         HStack(spacing: 12) {
-            Button {
-                tabStore.newTab(isPrivate: showingPrivate)
-                isPresented = false
+            // Tap: a new tab in the shown group. Long-press: the tabs
+            // closed this run, to reopen (Safari hides it here too).
+            Menu {
+                Section("Recently closed") {
+                    if tabStore.recentlyClosed.isEmpty {
+                        Text("Nothing to reopen")
+                    }
+                    ForEach(tabStore.recentlyClosed.entries) { entry in
+                        Button {
+                            tabStore.reopen(entry)
+                            isPresented = false
+                        } label: {
+                            Label(entry.displayTitle, systemImage: "arrow.uturn.backward")
+                        }
+                    }
+                }
             } label: {
                 Image(systemName: "plus")
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 48, height: 48)
+                    .font(.title2.weight(.semibold))
+                    .frame(width: Self.barControl, height: Self.barControl)
+            } primaryAction: {
+                tabStore.newTab(isPrivate: showingPrivate)
+                isPresented = false
             }
+            .tint(.white)
             .accessibilityLabel(showingPrivate ? "New private tab" : "New tab")
-            .glassPill()
+            .glassCircle()
             Spacer(minLength: 0)
             HStack(spacing: 0) {
                 groupButton(title: "Private", isPrivate: true)
                 groupButton(title: normalCount == 1 ? "1 Tab" : "\(normalCount) Tabs", isPrivate: false)
             }
             .padding(4)
+            .frame(height: Self.barControl)
             .glassPill()
             Spacer(minLength: 0)
             Button { isPresented = false } label: {
                 Image(systemName: "checkmark")
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 48, height: 48)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: Self.barControl, height: Self.barControl)
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("Done")
-            .buttonStyle(.borderedProminent)
-            .clipShape(Circle())
+            .glassCircle(tint: .accentColor)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        }
     }
 
     private func groupButton(title: String, isPrivate: Bool) -> some View {
@@ -111,10 +149,10 @@ struct TabSwitcher: View {
                 .font(.headline)
                 .foregroundStyle(selected ? .primary : .secondary)
                 .padding(.horizontal, 18)
-                .frame(height: 40)
+                .frame(maxHeight: .infinity)
                 .background {
                     if selected {
-                        Capsule().fill(Color.primary.opacity(0.12))
+                        Capsule().fill(Color.white.opacity(0.18))
                     }
                 }
         }

@@ -12,6 +12,9 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "TabStore")
 final class TabStore {
     var records: [TabRecord] = []
     var activeRecordID: UUID?
+    /// Tabs closed this run, most recent first (private tabs and empty
+    /// tabs excluded — no traces, nothing to reopen).
+    private(set) var recentlyClosed = RecentlyClosedTabs()
 
     @ObservationIgnored private let context: ModelContext
     @ObservationIgnored private let historyStore: HistoryStore
@@ -57,6 +60,17 @@ final class TabStore {
 
     var activeRecord: TabRecord? {
         activeRecordID.flatMap(record(for:))
+    }
+
+    /// Reopen a recently closed tab (long-press on the overview's +): a
+    /// new tab in the front, navigated to the closed URL.
+    @discardableResult
+    func reopen(_ closed: RecentlyClosedTabs.Entry) -> UUID? {
+        guard let browserURL = BrowserURL.classify(closed.url) ?? BrowserURL.parse(closed.url.absoluteString) else { return nil }
+        recentlyClosed.remove(closed)
+        let id = newTab()
+        navigateActive(to: browserURL)
+        return id
     }
 
     /// Navigate the active tab, creating one if none is active.
@@ -117,8 +131,13 @@ final class TabStore {
         liveTabs[id]?.teardownSwarmSubscriptions()
         liveTabs[id]?.resolvePendingApproval(.denied)
         liveTabs[id]?.resolvePendingSwarmApproval(.denied)
+        let closing = liveTabs[id]
         liveTabs.removeValue(forKey: id)
         if let record = record(for: id) {
+            if !record.isPrivate, let url = closing?.displayURL ?? record.url {
+                let title = closing.map(\.title).flatMap { $0.isEmpty ? nil : $0 } ?? record.title ?? ""
+                recentlyClosed.push(RecentlyClosedTabs.Entry(url: url, title: title))
+            }
             context.delete(record)
         }
         records.removeAll { $0.id == id }
