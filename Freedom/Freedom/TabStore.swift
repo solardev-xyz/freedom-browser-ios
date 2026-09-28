@@ -64,6 +64,24 @@ final class TabStore {
         (activeTab ?? ensureActiveTab()).navigate(to: browserURL)
     }
 
+    /// Context-menu "Open in New Tab" / "Open in Background": a new tab
+    /// navigated to `url`, activated or left behind the current one.
+    func open(_ url: URL, inBackground background: Bool, from opener: BrowserTab?) {
+        guard let browserURL = BrowserURL.classify(url) ?? BrowserURL.parse(url.absoluteString) else { return }
+        if !background {
+            newTab()
+            navigateActive(to: browserURL)
+            return
+        }
+        let record = TabRecord()
+        context.insert(record)
+        // Behind the opener: right after it in the strip.
+        let index = opener.flatMap { tab in records.firstIndex { $0.id == tab.recordID } }.map { $0 + 1 } ?? 0
+        records.insert(record, at: min(index, records.count))
+        save()
+        ensureLiveTab(for: record.id).navigate(to: browserURL)
+    }
+
     @discardableResult
     func newTab() -> UUID {
         let record = TabRecord()
@@ -117,6 +135,17 @@ final class TabStore {
     func captureActive() async {
         guard let id = activeRecordID else { return }
         await capture(id: id)
+    }
+
+    private func captureBackground(_ tab: BrowserTab) async {
+        guard let record = record(for: tab.recordID) else { return }
+        record.url = tab.displayURL
+        record.title = tab.title.isEmpty ? nil : tab.title
+        save()
+        if let snapshot = await tab.snapshotOffscreen() {
+            record.lastSnapshot = snapshot
+            save()
+        }
     }
 
     private func capture(id: UUID) async {
@@ -198,9 +227,19 @@ final class TabStore {
             // runs against the webview's live page.
             self.historyStore.record(url: url, title: title)
             self.faviconStore.fetchIfNeeded(for: url, webView: tab.webView)
+            // A tab loading in the background (Open in Background) is
+            // never captured by activate(); give its switcher card the
+            // title, URL and a thumbnail now, or it stays "New Tab".
+            if self.activeRecordID != tab.recordID {
+                Task { await self.captureBackground(tab) }
+            }
         }
         tab.onCreatePopup = { [weak self] configuration in
             self?.adoptPopup(configuration: configuration)
+        }
+        tab.onOpenInNewTab = { [weak self, weak tab] url, background in
+            guard let self else { return }
+            self.open(url, inBackground: background, from: tab)
         }
         tab.onRequestClose = { [weak self, weak tab] in
             guard let self, let tab else { return }
