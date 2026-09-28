@@ -13,6 +13,20 @@ extension View {
             self.background(.regularMaterial, in: .capsule)
         }
     }
+
+    /// A round glass control (the tab overview's + and Done).
+    @ViewBuilder
+    func glassCircle(tint: Color? = nil) -> some View {
+        if #available(iOS 26.0, *) {
+            if let tint {
+                self.glassEffect(.regular.tint(tint).interactive(), in: .circle)
+            } else {
+                self.glassEffect(.regular.interactive(), in: .circle)
+            }
+        } else {
+            self.background(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.regularMaterial), in: .circle)
+        }
+    }
 }
 
 /// Wraps adjacent glass surfaces so the iOS 26 light-blending engine sees

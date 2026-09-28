@@ -141,6 +141,14 @@ struct ContentView: View {
 
     private func openDebugSettingsIfRequested() {
         #if DEBUG
+        // `FREEDOM_DEBUG_SHOW=tabs` opens the tab overview after launch so a
+        // simulator run can screenshot it without a tap.
+        if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "tabs" {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                isShowingTabSwitcher = true
+            }
+        }
         guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SETTINGS"], !raw.isEmpty else { return }
         Logger(subsystem: "com.browser.Freedom", category: "DebugOpen").notice("[debug-settings] opening \(raw, privacy: .public)")
         // ens | ens:<method> | chains | chain:<id> | chain:<id>:<source>
