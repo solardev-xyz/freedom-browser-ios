@@ -22,7 +22,7 @@ struct SitePermissionPrompt: View {
                             .font(.headline)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        Text("wants to use your \(request.summary)")
+                        Text(request.sentence)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }

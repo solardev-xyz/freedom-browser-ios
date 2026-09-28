@@ -162,7 +162,7 @@ final class BrowserTab {
     /// dismissing denies once without recording; three dismissals in a
     /// row embargo the site + permission for this run.
     func requestSitePermission(
-        origin: String?, kinds: [SitePermissionKind],
+        origin: String?, kinds: [SitePermissionKind], detail: String? = nil,
         decide: @escaping (SitePermissionDecision) -> Void
     ) {
         guard let origin, !kinds.isEmpty else { decide(.block); return }
@@ -172,7 +172,7 @@ final class BrowserTab {
             return
         }
         var answered = false
-        let request = SitePermissionRequest(origin: origin, kinds: kinds) { [weak self] answer, remember in
+        let request = SitePermissionRequest(origin: origin, kinds: kinds, detail: detail) { [weak self] answer, remember in
             guard !answered else { return }
             answered = true
             switch answer {
@@ -194,6 +194,19 @@ final class BrowserTab {
             pendingPermissionRequest = request
         } else {
             permissionQueue.append(request)
+        }
+    }
+
+    /// A link the browser cannot show (mailto:, tel:, magnet:, an app
+    /// scheme): ask the current site's consent, then hand it to the
+    /// system. Remembered per site like the other permissions.
+    func requestExternalOpen(_ url: URL) {
+        let origin = webView.url.flatMap(SitePermissionStore.origin(for:)) ?? displayURL.flatMap(SitePermissionStore.origin(for:))
+        requestSitePermission(origin: origin, kinds: [.externalApps], detail: ExternalLinks.appName(for: url)) { decision in
+            guard decision == .allow else { return }
+            UIApplication.shared.open(url, options: [:]) { opened in
+                if !opened { tabLog.notice("[external] nothing handles \(url.scheme ?? "?", privacy: .public)") }
+            }
         }
     }
 
@@ -1404,6 +1417,12 @@ private final class UIDelegate: NSObject, WKUIDelegate {
             // parity; the CSP sandbox already denies popups, this is
             // the belt to its braces).
             if owner?.isOnchainApp == true { return nil }
+            // `target="_blank"` onto mailto:/tel:/an app scheme: consent
+            // and the system, not a tab.
+            if let url = navigationAction.request.url, ExternalLinks.isExternal(url) {
+                owner?.requestExternalOpen(url)
+                return nil
+            }
             return owner?.onCreatePopup?(configuration)
         }
     }
@@ -1548,6 +1567,12 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // `<a download>` and other explicit download requests.
         if navigationAction.shouldPerformDownload {
             decisionHandler(.download)
+            return
+        }
+        // A scheme the browser cannot show: never a navigation, an ask.
+        if let url = navigationAction.request.url, ExternalLinks.isExternal(url) {
+            decisionHandler(.cancel)
+            MainActor.assumeIsolated { owner?.requestExternalOpen(url) }
             return
         }
         if let url = navigationAction.request.url,
