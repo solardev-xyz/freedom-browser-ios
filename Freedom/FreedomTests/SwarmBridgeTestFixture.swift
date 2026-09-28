@@ -58,6 +58,9 @@ final class SwarmBridgeStubs {
 
     var pendingDecisions: [QueuedDecision] = []
 
+    /// Manifest discovery for `bzz://` origins; `nil` answers `.absent`.
+    var discoverManifest: ((URL) async -> SwarmManifestDiscovery)?
+
     // Messaging extension stubs.
     var sendPss: SwarmMessagingService.SendPss?
     var getAddresses: SwarmMessagingService.GetAddresses?
@@ -100,6 +103,7 @@ final class SwarmBridgeTestFixture {
     let container: ModelContainer
     let permissionStore: SwarmPermissionStore
     let feedStore: SwarmFeedStore
+    let manifestStore: SwarmManifestStore
     let publishHistoryStore: SwarmPublishHistoryStore
     let tagOwnership: TagOwnership
     let feedWriteLock: SwarmFeedWriteLock
@@ -144,6 +148,15 @@ final class SwarmBridgeTestFixture {
         self.recorder = recorder
         self.stubs = stubs
 
+        let manifestStore = SwarmManifestStore(
+            fileURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("manifests-\(UUID().uuidString).json"),
+            permissionStore: permissionStore,
+            feedStore: feedStore,
+            discover: { [stubs] url in await stubs.discoverManifest?(url) ?? .absent }
+        )
+        self.manifestStore = manifestStore
+
         // In-memory subscription pipelines: each dial hands the test a
         // pushable handle; `nodePipelineCapacity` emulates the node's
         // lurker pool refusing with close 1013.
@@ -180,6 +193,7 @@ final class SwarmBridgeTestFixture {
         let services = SwarmServices(
             permissionStore: permissionStore,
             feedStore: feedStore,
+            manifestStore: manifestStore,
             publishHistoryStore: publishHistoryStore,
             bee: BeeAPIClient(),
             publishService: SwarmPublishService(upload: { [stubs] path, body, ct, h, q in

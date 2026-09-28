@@ -5,6 +5,15 @@ import SwiftData
 
 private let log = Logger(subsystem: "com.browser.Freedom", category: "SwarmPermissionStore")
 
+/// Who is changing a grant. Manifest projections (`SwarmManifestStore`)
+/// pass `.manifest` so they don't count as the user overriding the
+/// manifest; everything else is `.user` and detaches manifest
+/// ownership of the touched projection.
+enum SwarmMutationSource {
+    case user
+    case manifest
+}
+
 /// Persisted swarm-connection grants. Mirrors `PermissionStore` (wallet)
 /// in shape — every router/bridge call hits `isConnected` on the hot
 /// path, so reads come from an in-memory `Set<String>`, writes go through
@@ -18,6 +27,9 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "SwarmPermi
 final class SwarmPermissionStore {
     @ObservationIgnored private let context: ModelContext
     @ObservationIgnored private var connectedOrigins: Set<String>
+    /// Fired after a `.user`-sourced change, with the manifest projection
+    /// key that changed (`connection`, `messagingGrant`, `autoApprove.*`).
+    @ObservationIgnored var onUserMutation: ((_ origin: String, _ projection: String) -> Void)?
 
     init(context: ModelContext) {
         self.context = context
@@ -40,7 +52,7 @@ final class SwarmPermissionStore {
         save()
     }
 
-    func revoke(origin: String) {
+    func revoke(origin: String, source: SwarmMutationSource = .user) {
         guard let existing = fetch(origin: origin) else { return }
         context.delete(existing)
         connectedOrigins.remove(origin)
@@ -50,6 +62,7 @@ final class SwarmPermissionStore {
             object: nil,
             userInfo: ["origin": origin]
         )
+        notify(origin: origin, projection: "connection", source: source)
     }
 
     func isConnected(_ origin: String) -> Bool {
@@ -73,11 +86,12 @@ final class SwarmPermissionStore {
     /// Set by the publish sheet's auto-approve toggle when the user
     /// approves with the toggle on. No-op if the origin has no grant
     /// yet — auto-approve only meaningful for connected origins.
-    func setAutoApprovePublish(origin: String, enabled: Bool) {
+    func setAutoApprovePublish(origin: String, enabled: Bool, source: SwarmMutationSource = .user) {
         guard let permission = fetch(origin: origin) else { return }
         guard permission.autoApprovePublish != enabled else { return }
         permission.autoApprovePublish = enabled
         save()
+        notify(origin: origin, projection: "autoApprove.publish", source: source)
     }
 
     /// Mirrors `isAutoApprovePublish` for the feed-write surface
@@ -89,11 +103,12 @@ final class SwarmPermissionStore {
         fetch(origin: origin)?.autoApproveFeeds ?? false
     }
 
-    func setAutoApproveFeeds(origin: String, enabled: Bool) {
+    func setAutoApproveFeeds(origin: String, enabled: Bool, source: SwarmMutationSource = .user) {
         guard let permission = fetch(origin: origin) else { return }
         guard permission.autoApproveFeeds != enabled else { return }
         permission.autoApproveFeeds = enabled
         save()
+        notify(origin: origin, projection: "autoApprove.feeds", source: source)
     }
 
     // MARK: - Messaging tier (SWIP messaging extension)
@@ -109,11 +124,24 @@ final class SwarmPermissionStore {
 
     /// No-op without a connection row — messaging requires the base
     /// connection grant first (`swarm_requestAccess`).
-    func grantMessaging(origin: String) {
+    func grantMessaging(origin: String, source: SwarmMutationSource = .user) {
         guard let permission = fetch(origin: origin) else { return }
         guard permission.messagingGrantedAt == nil else { return }
         permission.messagingGrantedAt = .now
         save()
+        notify(origin: origin, projection: "messagingGrant", source: source)
+    }
+
+    /// Drops the messaging tier (and its auto-approve) but keeps the
+    /// connection — a manifest that stops declaring `messaging`
+    /// withdraws only what it granted.
+    func revokeMessaging(origin: String, source: SwarmMutationSource = .user) {
+        guard let permission = fetch(origin: origin) else { return }
+        guard permission.messagingGrantedAt != nil else { return }
+        permission.messagingGrantedAt = nil
+        permission.autoApproveMessaging = false
+        save()
+        notify(origin: origin, projection: "messagingGrant", source: source)
     }
 
     /// Mirrors `isAutoApprovePublish` for the per-send messaging
@@ -123,11 +151,17 @@ final class SwarmPermissionStore {
         fetch(origin: origin)?.autoApproveMessaging ?? false
     }
 
-    func setAutoApproveMessaging(origin: String, enabled: Bool) {
+    func setAutoApproveMessaging(origin: String, enabled: Bool, source: SwarmMutationSource = .user) {
         guard let permission = fetch(origin: origin) else { return }
         guard permission.autoApproveMessaging != enabled else { return }
         permission.autoApproveMessaging = enabled
         save()
+        notify(origin: origin, projection: "autoApprove.messaging", source: source)
+    }
+
+    private func notify(origin: String, projection: String, source: SwarmMutationSource) {
+        guard source == .user else { return }
+        onUserMutation?(origin, projection)
     }
 
     private func fetch(origin: String) -> SwarmPermission? {

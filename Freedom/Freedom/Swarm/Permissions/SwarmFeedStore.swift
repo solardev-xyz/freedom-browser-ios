@@ -12,6 +12,9 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "SwarmFeedS
 @Observable
 final class SwarmFeedStore {
     @ObservationIgnored private let context: ModelContext
+    /// Fired after a `.user`-sourced identity creation, with the manifest
+    /// projection key (`identity`) — see `SwarmPermissionStore.onUserMutation`.
+    @ObservationIgnored var onUserMutation: ((_ origin: String, _ projection: String) -> Void)?
 
     init(context: ModelContext) {
         self.context = context
@@ -79,7 +82,8 @@ final class SwarmFeedStore {
     /// approval flows from different origins racing to the same
     /// index. Rows are never deleted, so max-derivation is stable.
     func setFeedIdentity(
-        origin: String, identityMode: SwarmFeedIdentityMode
+        origin: String, identityMode: SwarmFeedIdentityMode,
+        source: SwarmMutationSource = .user
     ) {
         if feedIdentity(origin: origin) != nil { return }
         let identity = SwarmFeedIdentity(
@@ -90,6 +94,7 @@ final class SwarmFeedStore {
         )
         context.insert(identity)
         save()
+        if source == .user { onUserMutation?(origin, "identity") }
     }
 
     private func computeNextPublisherKeyIndex() -> Int {

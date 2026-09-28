@@ -36,6 +36,7 @@ struct FreedomApp: App {
     @State private var swarmPermissionStore: SwarmPermissionStore
     @State private var swarmFeedStore: SwarmFeedStore
     @State private var swarmPublishHistoryStore: SwarmPublishHistoryStore
+    @State private var swarmManifestStore: SwarmManifestStore
     @State private var adblock: AdblockService
     @State private var adblockUpdate: AdblockUpdateService
     @Environment(\.scenePhase) private var scenePhase
@@ -159,6 +160,14 @@ struct FreedomApp: App {
             self._swarmPermissionStore = State(wrappedValue: swarmPermissions)
             self._swarmFeedStore = State(wrappedValue: feedStore)
             self._swarmPublishHistoryStore = State(wrappedValue: publishHistory)
+            let manifestFetcher = SwarmManifestFetcher(ensResolver: resolver)
+            let manifestStore = SwarmManifestStore(
+                fileURL: SwarmManifestStore.defaultFileURL(),
+                permissionStore: swarmPermissions,
+                feedStore: feedStore,
+                discover: { await manifestFetcher.discover(committedURL: $0) }
+            )
+            self._swarmManifestStore = State(wrappedValue: manifestStore)
             // Composed once; closure reads the four observables live so a
             // mode flip / sync tick / stamp purchase is reflected on the
             // next swarm_getCapabilities without rebuilding anything.
@@ -182,6 +191,7 @@ struct FreedomApp: App {
             let swarmServices = SwarmServices(
                 permissionStore: swarmPermissions,
                 feedStore: feedStore,
+                manifestStore: manifestStore,
                 publishHistoryStore: publishHistory,
                 bee: swarmBee,
                 publishService: SwarmPublishService.live(bee: swarmBee),
@@ -280,6 +290,7 @@ struct FreedomApp: App {
                 .environment(swarmPermissionStore)
                 .environment(swarmFeedStore)
                 .environment(swarmPublishHistoryStore)
+                .environment(swarmManifestStore)
                 .environment(adblock)
                 .environment(openlvSession)
                 // openlv links arrive via the custom `freedom://` scheme
