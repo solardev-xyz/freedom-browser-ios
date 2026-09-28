@@ -251,6 +251,13 @@ private struct TabCard: View {
                 .frame(height: 200)
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else if record.url == nil {
+            // A tab on the start page has no web view to snapshot: draw
+            // the start page itself (hero + wordmark), so the zoom
+            // transition morphs between matching pictures.
+            StartPagePreview()
+                .frame(height: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(.tertiarySystemBackground))
@@ -266,7 +273,37 @@ private struct TabCard: View {
     private var displayTitle: String {
         if let t = record.title, !t.isEmpty { return t }
         if let host = record.url?.host { return host }
-        return "New Tab"
+        return "Start Page"
+    }
+}
+
+/// The start page as a card: the home hero with its gradient and the
+/// wordmark, laid out like `HomePage`'s top so the page's zoom lands on
+/// a matching picture.
+private struct StartPagePreview: View {
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                Image("HomeHero")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .clipped()
+                    .overlay(
+                        LinearGradient(
+                            colors: [.black.opacity(0.35), .clear],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                Image("FreedomLogoWhite")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: geo.size.width * 0.42)
+                    .padding(.leading, geo.size.width * 0.08)
+                    .padding(.top, geo.size.height * 0.16)
+            }
+        }
     }
 }
 

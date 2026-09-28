@@ -174,8 +174,12 @@ final class TabStore {
         // re-resolve the name rather than pin the old content hash.
         record.url = tab.displayURL
         record.title = tab.title.isEmpty ? nil : tab.title
-        if let snapshot = await tab.snapshot() {
+        // A tab on the start page has no web view on screen: no snapshot
+        // (a blank one would hide the card's start-page preview).
+        if tab.hasNavigated, let snapshot = await tab.snapshot() {
             record.lastSnapshot = snapshot
+        } else if !tab.hasNavigated {
+            record.lastSnapshot = nil
         }
         save()
     }
