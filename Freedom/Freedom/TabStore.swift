@@ -137,6 +137,17 @@ final class TabStore {
         await capture(id: id)
     }
 
+    private func captureBackground(_ tab: BrowserTab) async {
+        guard let record = record(for: tab.recordID) else { return }
+        record.url = tab.displayURL
+        record.title = tab.title.isEmpty ? nil : tab.title
+        save()
+        if let snapshot = await tab.snapshotOffscreen() {
+            record.lastSnapshot = snapshot
+            save()
+        }
+    }
+
     private func capture(id: UUID) async {
         guard let tab = liveTabs[id], let record = record(for: id) else { return }
         // Persist the displayURL (ens:// when ENS-originated) so restarts
@@ -216,6 +227,12 @@ final class TabStore {
             // runs against the webview's live page.
             self.historyStore.record(url: url, title: title)
             self.faviconStore.fetchIfNeeded(for: url, webView: tab.webView)
+            // A tab loading in the background (Open in Background) is
+            // never captured by activate(); give its switcher card the
+            // title, URL and a thumbnail now, or it stays "New Tab".
+            if self.activeRecordID != tab.recordID {
+                Task { await self.captureBackground(tab) }
+            }
         }
         tab.onCreatePopup = { [weak self] configuration in
             self?.adoptPopup(configuration: configuration)

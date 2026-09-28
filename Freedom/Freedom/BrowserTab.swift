@@ -1000,6 +1000,25 @@ final class BrowserTab {
         }
     }
 
+    /// Thumbnail for a tab whose web view is not on screen (opened in
+    /// the background). WebKit paints only views that are in a window,
+    /// so the view is parked behind the app's root view for a moment,
+    /// snapshotted, and taken out again — unless it was mounted by the
+    /// tab becoming active meanwhile, in which case it is left alone.
+    func snapshotOffscreen() async -> Data? {
+        if webView.window != nil { return await snapshot() }
+        guard let window = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene }).flatMap(\.windows).first(where: \.isKeyWindow)
+        else { return nil }
+        webView.frame = window.bounds
+        window.insertSubview(webView, at: 0)
+        window.layoutIfNeeded()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let data = await snapshot()
+        if webView.superview === window { webView.removeFromSuperview() }
+        return data
+    }
+
     private func resolveAndLoad(name: String, path: String) async {
         // Paths that never reach webView.load (gates, resolve failures,
         // unsupported codecs, task cancellation) need to stop the pull
