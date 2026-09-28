@@ -25,6 +25,14 @@ struct SwarmSettingsView: View {
             }
 
             Section {
+                NavigationLink("App permissions") { SwarmManifestSettingsView() }
+            } header: {
+                Text("Apps")
+            } footer: {
+                Text("Swarm apps that declare their permissions up front, and whether you let the declaration apply or kept asking each time.")
+            }
+
+            Section {
                 LabeledContent("Status", value: swarm.status.rawValue.capitalized)
                 LabeledContent("Mode", value: settings.beeNodeMode.displayName)
                 LabeledContent("Connected peers", value: "\(swarm.peerCount)")

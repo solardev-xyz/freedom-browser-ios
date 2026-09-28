@@ -114,6 +114,12 @@ final class SwarmProviderComplianceTests: XCTestCase {
         let services = SwarmServices(
             permissionStore: permissionStore,
             feedStore: feedStore,
+            manifestStore: SwarmManifestStore(
+                fileURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("manifests-\(UUID().uuidString).json"),
+                permissionStore: permissionStore, feedStore: feedStore,
+                discover: { _ in .absent }
+            ),
             publishHistoryStore: publishHistoryStore,
             bee: BeeAPIClient(),
             publishService: SwarmPublishService(upload: { _, _, _, _, _ in
@@ -370,6 +376,12 @@ final class SwarmProviderComplianceTests: XCTestCase {
         let services = SwarmServices(
             permissionStore: permissionStore,
             feedStore: feedStore,
+            manifestStore: SwarmManifestStore(
+                fileURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("manifests-\(UUID().uuidString).json"),
+                permissionStore: permissionStore, feedStore: feedStore,
+                discover: { _ in .absent }
+            ),
             publishHistoryStore: publishHistoryStore,
             bee: BeeAPIClient(),
             publishService: SwarmPublishService(upload: { _, _, _, _, _ in

@@ -8,6 +8,9 @@ import Foundation
 struct SwarmServices {
     let permissionStore: SwarmPermissionStore
     let feedStore: SwarmFeedStore
+    /// bzz-hosted permission manifests: discovery, consent tokens and
+    /// the projection of a batch decision onto the two stores above.
+    let manifestStore: SwarmManifestStore
     /// Append-only log of every `window.swarm` publish/feed-write so the
     /// user can later browse what they uploaded and copy references back
     /// out. Bridge handlers do a two-step write (record on entry,

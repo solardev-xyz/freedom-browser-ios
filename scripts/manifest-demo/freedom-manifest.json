@@ -1,0 +1,12 @@
+{
+  "schema": "freedom-manifest/1",
+  "name": "Manifest Demo",
+  "description": "Exercises Freedom's Swarm permission manifest flow.",
+  "capabilities": {
+    "swarm": {
+      "publish": { "why": "Upload the text you type below." },
+      "feeds": { "why": "Keep a 'demo' feed pointing at the latest upload." },
+      "messaging": { "why": "Show your messaging identity." }
+    }
+  }
+}

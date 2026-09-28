@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manifest Demo</title>
+<style>
+  body { font: 16px -apple-system, system-ui; margin: 20px; color: #222; }
+  button { display: block; width: 100%; padding: 14px; margin: 8px 0; font-size: 16px; border-radius: 10px; border: 1px solid #999; background: #f4f4f4; }
+  pre { white-space: pre-wrap; word-break: break-all; background: #f0f0f0; padding: 10px; border-radius: 8px; min-height: 3em; }
+</style>
+<h2>Manifest Demo</h2>
+<p>This page ships <code>freedom-manifest.json</code> declaring publish, feeds and messaging.</p>
+<button onclick="call('swarm_requestAccess')">1. Connect (swarm_requestAccess)</button>
+<button onclick="call('swarm_publishData', { data: 'hello ' + Date.now(), contentType: 'text/plain', name: 'hello.txt' })">2. Publish text (swarm_publishData)</button>
+<button onclick="call('swarm_createFeed', { name: 'demo' })">3. Create feed “demo” (swarm_createFeed)</button>
+<button onclick="call('swarm_getMessagingIdentity')">4. Messaging identity (swarm_getMessagingIdentity)</button>
+<button onclick="call('swarm_getCapabilities')">Capabilities (public, never prompts)</button>
+<pre id="out">Ready. window.swarm: <span id="has"></span></pre>
+<script>
+  document.getElementById('has').textContent = window.swarm ? 'present' : 'MISSING';
+  async function call(method, params) {
+    const out = document.getElementById('out');
+    out.textContent = method + ' …';
+    try {
+      const result = await window.swarm.request({ method, params: params || {} });
+      out.textContent = method + ' → ' + JSON.stringify(result, null, 2);
+    } catch (e) {
+      out.textContent = method + ' ✗ ' + JSON.stringify({ code: e.code, message: e.message, data: e.data }, null, 2);
+    }
+  }
+</script>

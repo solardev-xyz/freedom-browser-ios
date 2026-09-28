@@ -279,6 +279,8 @@ struct ContentView: View {
                 SwarmFeedAccessSheet(approval: approval, details: details)
             case .swarmMessaging(let details):
                 SwarmMessagingSheet(approval: approval, details: details)
+            case .swarmManifest(let details):
+                SwarmManifestSheet(approval: approval, details: details)
             case .connect, .personalSign, .typedData,
                  .sendTransaction, .switchChain,
                  .radicleConnect, .radicleSeed, .radicleSigning:

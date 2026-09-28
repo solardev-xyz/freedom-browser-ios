@@ -47,6 +47,23 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
     /// teardown would never run.
     private weak var contentController: WKUserContentController?
     private let replies: any SwarmBridgeReplies
+    /// Methods that never touch the origin's grants — no manifest check
+    /// (desktop `PUBLIC_METHODS`).
+    private static let publicMethods: Set<String> = [
+        "swarm_getCapabilities", "swarm_readFeedEntry", "swarm_readChunk",
+        "swarm_readSingleOwnerChunk", "swarm_listFeeds", "swarm_unsubscribe",
+    ]
+    /// One manifest check per (page load, origin). A user rejection
+    /// stays cached so the page can't re-prompt until it navigates;
+    /// anything else that failed is dropped so the next call retries.
+    private var manifestGate: ManifestGate?
+
+    private struct ManifestGate {
+        let navigationKey: String
+        let origin: String
+        let eager: Bool
+        let task: Task<SwarmRouter.ErrorPayload?, Never>
+    }
 
     /// Test-friendly designated init. No WebKit side effects; production
     /// uses the convenience init below which adds message-handler
@@ -133,6 +150,11 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             )
         }
 
+        if !Self.publicMethods.contains(method),
+           let error = await ensureManifestFresh(origin: origin, eager: method == "swarm_requestAccess") {
+            return reply(id: id, error: error)
+        }
+
         switch method {
         case "swarm_requestAccess":
             await handleRequestAccess(id: id, origin: origin)
@@ -188,6 +210,71 @@ final class SwarmBridge: NSObject, WKScriptMessageHandler {
             reply(id: id, result: result)
         } catch {
             reply(id: id, error: router.errorPayload(for: error))
+        }
+    }
+
+    // MARK: - Permission manifest
+
+    /// Desktop's `ensureManifestFresh`: before any grant-touching
+    /// method, refresh the origin's manifest (discover it on
+    /// `swarm_requestAccess`) and, if it declares something new, show
+    /// the consent sheet once. Returns the error to reply with, or
+    /// `nil` to proceed.
+    private func ensureManifestFresh(origin: OriginIdentity, eager: Bool) async -> SwarmRouter.ErrorPayload? {
+        let navigationKey = host?.displayURL?.absoluteString ?? ""
+        if let gate = manifestGate, gate.navigationKey == navigationKey, gate.origin == origin.key,
+           gate.eager || !eager {
+            return await gate.task.value
+        }
+        let committedURL = host?.displayURL
+        let task = Task<SwarmRouter.ErrorPayload?, Never> { [self] in
+            await refreshManifest(origin: origin, committedURL: committedURL, eager: eager)
+        }
+        let gate = ManifestGate(navigationKey: navigationKey, origin: origin.key, eager: eager, task: task)
+        manifestGate = gate
+        let error = await task.value
+        if let error, error.code != SwarmRouter.ErrorPayload.Code.userRejected,
+           manifestGate?.task == gate.task {
+            manifestGate = nil
+        }
+        return error
+    }
+
+    private func refreshManifest(
+        origin: OriginIdentity, committedURL: URL?, eager: Bool
+    ) async -> SwarmRouter.ErrorPayload? {
+        let Code = SwarmRouter.ErrorPayload.Code.self
+        let store = services.manifestStore
+        switch await store.check(origin: origin, committedURL: committedURL, eager: eager) {
+        case .legacy, .ready:
+            return nil
+        case .unresolved:
+            return .init(code: Code.nodeUnavailable,
+                         message: "Could not refresh this app’s permission manifest.",
+                         dataReason: SwarmRouter.ErrorPayload.Reason.nodeStopped)
+        case .consent(let token, let model):
+            guard origin.isEligibleForWallet else {
+                return .init(code: Code.unauthorized, message: "Origin not permitted.", dataReason: nil)
+            }
+            guard host?.pendingSwarmApproval == nil else {
+                return .init(code: Code.resourceUnavailable,
+                             message: "Another approval is already pending.", dataReason: nil)
+            }
+            let decision = await parkAndAwait(
+                origin: origin,
+                kind: .swarmManifest(SwarmManifestConsentDetails(token: token, model: model))
+            )
+            // The sheet settles the token itself; a swipe-dismiss never
+            // reached it, so settle as a denial here (replay-safe when
+            // the sheet already did).
+            let allowed: Bool
+            if case .approved = decision {
+                allowed = true
+            } else {
+                allowed = (try? store.decide(token: token, outcome: .deny))?.allowed ?? false
+            }
+            return allowed ? nil : .init(code: Code.userRejected,
+                                         message: "User rejected the request.", dataReason: nil)
         }
     }
 

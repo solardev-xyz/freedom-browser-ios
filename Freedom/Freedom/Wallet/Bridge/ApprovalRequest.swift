@@ -47,6 +47,11 @@ struct ApprovalRequest: Identifiable {
         /// prompt, and per-send consent for `swarm_sendPss` /
         /// `swarm_sendGsoc` when auto-approve is off.
         case swarmMessaging(SwarmMessagingDetails)
+        /// A bzz-hosted app's permission manifest declares capabilities
+        /// the user hasn't acknowledged yet. The sheet settles the
+        /// consent token on `SwarmManifestStore` itself (allow all /
+        /// ask each time / deny) before resolving the continuation.
+        case swarmManifest(SwarmManifestConsentDetails)
         /// `radicle_requestAccess` — per-origin connection grant to the
         /// embedded Radicle node.
         case radicleConnect
@@ -189,6 +194,13 @@ struct SwarmMessagingDetails: Equatable {
 /// The raw bytes never reach the sheet — the bridge keeps the data in
 /// its handler's local scope and uploads it after the user approves
 /// (or auto-approve fires). Only the user-visible summary lives here.
+/// Consent for a manifest diff: the model the sheet renders plus the
+/// opaque, short-lived token `SwarmManifestStore.decide` needs.
+struct SwarmManifestConsentDetails: Equatable {
+    let token: String
+    let model: SwarmManifestConsentModel
+}
+
 struct SwarmPublishDetails: Equatable {
     /// Total bytes the dapp wants to upload (data payload, or sum of
     /// all file `bytes` fields in files mode).
