@@ -9,6 +9,8 @@ import WebKit
 /// rest are unsupported in WKWebView.
 enum SitePermissionKind: String, CaseIterable, Codable, Sendable, Identifiable {
     case camera, microphone, motion
+    /// Opening links in other apps (mailto:, tel:, magnet:, app schemes).
+    case externalApps
 
     var id: String { rawValue }
 
@@ -17,6 +19,7 @@ enum SitePermissionKind: String, CaseIterable, Codable, Sendable, Identifiable {
         case .camera: "Camera"
         case .microphone: "Microphone"
         case .motion: "Motion & orientation"
+        case .externalApps: "Open other apps"
         }
     }
 
@@ -25,6 +28,7 @@ enum SitePermissionKind: String, CaseIterable, Codable, Sendable, Identifiable {
         case .camera: "camera.fill"
         case .microphone: "mic.fill"
         case .motion: "gyroscope"
+        case .externalApps: "arrow.up.forward.app"
         }
     }
 
@@ -50,10 +54,16 @@ struct SitePermissionRequest: Identifiable {
     let id = UUID()
     let origin: String
     let kinds: [SitePermissionKind]
+    /// For `.externalApps`: the app the link would open ("Mail").
+    var detail: String? = nil
     let respond: (Answer, _ remember: Bool) -> Void
 
-    var summary: String {
-        kinds.map(\.label).joined(separator: " and ").lowercased()
+    /// The prompt's sentence after the site name.
+    var sentence: String {
+        if kinds == [.externalApps] {
+            return "wants to open \(detail ?? "another app")"
+        }
+        return "wants to use your " + kinds.map(\.label).joined(separator: " and ").lowercased()
     }
 }
 
