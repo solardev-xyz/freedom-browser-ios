@@ -36,8 +36,8 @@ let package = Package(
         // `../freedom-mobile-ffi`.
         .binaryTarget(
             name: "FreedomMobile",
-            url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.12.2/FreedomMobile.xcframework.zip",
-            checksum: "a9b56239d3bfa8cba5cfa054f21de5d5e6ced83f774b1010d0f7119cb1a98915"
+            url: "https://github.com/solardev-xyz/freedom-mobile-ffi/releases/download/v0.12.3/FreedomMobile.xcframework.zip",
+            checksum: "baa16483e87949cb3c59e30da898ae7872933ae77fbc5612a13587e6fb817a51"
         ),
         .target(
             name: "SwarmKit",
