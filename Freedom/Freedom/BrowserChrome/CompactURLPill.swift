@@ -5,6 +5,7 @@ struct CompactURLPill: View {
     let trust: ENSTrust?
     let displayURL: URL?
     var onchain: OnchainAppProvenance? = nil
+    var isPrivate: Bool = false
     let onTap: () -> Void
 
     var body: some View {
@@ -12,6 +13,10 @@ struct CompactURLPill: View {
             HStack(spacing: 6) {
                 if let trust {
                     TrustShield(trust: trust, onchain: onchain)
+                        .frame(width: 22, height: 22)
+                } else if isPrivate {
+                    Image(systemName: "eye.slash.fill")
+                        .foregroundStyle(.secondary)
                         .frame(width: 22, height: 22)
                 }
                 Text(displayURL?.hostOrAbsolute ?? URLPill.placeholder)

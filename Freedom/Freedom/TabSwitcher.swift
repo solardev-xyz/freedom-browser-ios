@@ -4,15 +4,21 @@ import UIKit
 struct TabSwitcher: View {
     @Environment(TabStore.self) private var tabStore
     @Binding var isPresented: Bool
+    /// Which group the grid shows — Safari's bottom switch. Starts on
+    /// the active tab's group.
+    @State private var showingPrivate = false
 
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: 16)]
+
+    private var shown: [TabRecord] { tabStore.records.filter { $0.isPrivate == showingPrivate } }
+    private var normalCount: Int { tabStore.records.filter { !$0.isPrivate }.count }
 
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(tabStore.records, id: \.id) { record in
+                        ForEach(shown, id: \.id) { record in
                             TabCard(
                                 record: record,
                                 isActive: record.id == tabStore.activeRecordID,
@@ -35,37 +41,84 @@ struct TabSwitcher: View {
                     // captureActive then runs in parallel effectively,
                     // refreshing the card's snapshot (otherwise only taken
                     // on switch-away or background).
+                    showingPrivate = tabStore.activeRecord?.isPrivate ?? false
                     if let active = tabStore.activeRecordID {
                         proxy.scrollTo(active, anchor: .center)
                     }
                     await tabStore.captureActive()
                 }
             }
-            .navigationTitle("Tabs")
+            .navigationTitle(showingPrivate ? "Private" : "Tabs")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { isPresented = false }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        tabStore.newTab()
-                        isPresented = false
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                bottomBar
             }
             .overlay {
-                if tabStore.records.isEmpty {
+                if shown.isEmpty {
                     ContentUnavailableView {
-                        Label("No tabs", systemImage: "square.dashed")
+                        Label(showingPrivate ? "No private tabs" : "No tabs", systemImage: showingPrivate ? "eye.slash" : "square.dashed")
                     } description: {
-                        Text("Tap + to open a new tab.")
+                        Text(showingPrivate
+                            ? "Private tabs keep no history, cookies or logins and are gone after a restart."
+                            : "Tap + to open a tab.")
                     }
                 }
             }
         }
+    }
+
+    /// Safari's tab-overview bar: + (a tab in the shown group), the
+    /// Private / N Tabs group switch, Done.
+    private var bottomBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                tabStore.newTab(isPrivate: showingPrivate)
+                isPresented = false
+            } label: {
+                Image(systemName: "plus")
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 48, height: 48)
+            }
+            .accessibilityLabel(showingPrivate ? "New private tab" : "New tab")
+            .glassPill()
+            Spacer(minLength: 0)
+            HStack(spacing: 0) {
+                groupButton(title: "Private", isPrivate: true)
+                groupButton(title: normalCount == 1 ? "1 Tab" : "\(normalCount) Tabs", isPrivate: false)
+            }
+            .padding(4)
+            .glassPill()
+            Spacer(minLength: 0)
+            Button { isPresented = false } label: {
+                Image(systemName: "checkmark")
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 48, height: 48)
+            }
+            .accessibilityLabel("Done")
+            .buttonStyle(.borderedProminent)
+            .clipShape(Circle())
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private func groupButton(title: String, isPrivate: Bool) -> some View {
+        let selected = showingPrivate == isPrivate
+        return Button {
+            withAnimation(.snappy(duration: 0.2)) { showingPrivate = isPrivate }
+        } label: {
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(selected ? .primary : .secondary)
+                .padding(.horizontal, 18)
+                .frame(height: 40)
+                .background {
+                    if selected {
+                        Capsule().fill(Color.primary.opacity(0.12))
+                    }
+                }
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -98,7 +151,18 @@ private struct TabCard: View {
             .overlay {
                 if isActive {
                     RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                        .strokeBorder(record.isPrivate ? Color.purple : Color.accentColor, lineWidth: 2)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if record.isPrivate {
+                    Image(systemName: "eye.slash.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(Color.purple.opacity(0.85), in: Circle())
+                        .padding(6)
+                        .accessibilityLabel("Private tab")
                 }
             }
             Text(displayTitle)

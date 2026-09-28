@@ -457,6 +457,7 @@ struct ContentView: View {
                         trust: active?.currentTrust,
                         displayURL: active?.displayURL,
                         onchain: active?.currentOnchain,
+                        isPrivate: active?.isPrivate == true,
                         onTap: expandFromCompact
                     )
                     .transition(.opacity)
@@ -468,6 +469,7 @@ struct ContentView: View {
                         isFocused: $addressFocused,
                         trust: active?.currentTrust,
                         onchain: active?.currentOnchain,
+                        isPrivate: active?.isPrivate == true,
                         isLoading: active?.isLoading == true,
                         progress: active?.progress ?? 0,
                         displayURL: active?.displayURL,
@@ -495,7 +497,8 @@ struct ContentView: View {
                         onWallet: { isShowingWallet = true },
                         onNodes: { isShowingNodesDrawer = true },
                         onSettings: { isShowingSettings = true },
-                        onDownloads: { isShowingDownloads = true }
+                        onDownloads: { isShowingDownloads = true },
+                        onNewPrivateTab: { tabStore.newTab(isPrivate: true) }
                     )
                     .equatable()
                     // iOS 26's `.buttonStyle(.glass)` reserves a slightly
@@ -862,8 +865,9 @@ struct ContentView: View {
                 isBookmark: true
             ))
         }
-        // Then open-tab URLs the user hasn't visited via history yet.
-        for record in tabStore.records {
+        // Then open-tab URLs the user hasn't visited via history yet
+        // (private tabs excluded — no autocomplete traces).
+        for record in tabStore.records where !record.isPrivate {
             guard let url = record.url, !seen.contains(url) else { continue }
             let title = record.title ?? url.absoluteString
             guard matches(title: title, url: url) else { continue }

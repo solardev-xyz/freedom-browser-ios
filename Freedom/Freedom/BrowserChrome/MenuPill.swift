@@ -29,6 +29,7 @@ struct MenuPill: View, Equatable {
     let onNodes: () -> Void
     let onSettings: () -> Void
     let onDownloads: () -> Void
+    let onNewPrivateTab: () -> Void
 
     /// Data-only equality: the closures defeat SwiftUI's automatic
     /// diffing, so without this the pill re-evaluates on EVERY
@@ -69,6 +70,9 @@ struct MenuPill: View, Equatable {
                 }
                 Button(action: onNewTab) {
                     Label("New tab", systemImage: "plus.square")
+                }
+                Button(action: onNewPrivateTab) {
+                    Label("New private tab", systemImage: "eye.slash")
                 }
             }
 
