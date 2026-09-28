@@ -277,32 +277,21 @@ private struct TabCard: View {
     }
 }
 
-/// The start page as a card: the home hero with its gradient and the
-/// wordmark, laid out like `HomePage`'s top so the page's zoom lands on
-/// a matching picture.
+/// The start page as a card: the real `HomePage`, laid out at screen
+/// size and scaled into the card (live Recent / Explore rows included),
+/// so the page's zoom lands on the same picture. Not interactive.
 private struct StartPagePreview: View {
     var body: some View {
         GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                Image("HomeHero")
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .clipped()
-                    .overlay(
-                        LinearGradient(
-                            colors: [.black.opacity(0.35), .clear],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                Image("FreedomLogoWhite")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: geo.size.width * 0.42)
-                    .padding(.leading, geo.size.width * 0.08)
-                    .padding(.top, geo.size.height * 0.16)
-            }
+            let screen = UIScreen.main.bounds.size
+            let scale = geo.size.width / max(screen.width, 1)
+            HomePage(onNavigate: { _ in })
+                .frame(width: screen.width, height: screen.height)
+                .scaleEffect(scale, anchor: .topLeading)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                .clipped()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
     }
 }
