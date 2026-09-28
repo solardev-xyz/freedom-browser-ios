@@ -3,9 +3,14 @@ import UIKit
 
 struct TabSwitcher: View {
     @Environment(TabStore.self) private var tabStore
-    @Binding var isPresented: Bool
-    /// Which group the grid shows — Safari's bottom switch. Starts on
-    /// the active tab's group.
+    /// The zoom transition's namespace: every card is a transition source.
+    let namespace: Namespace.ID
+    /// Changes when the overview is revealed (see `TabsRoot`).
+    let revealToken: Int
+    /// Bring the page up (a card was picked, + tapped, Done).
+    let onOpen: () -> Void
+    /// Which group the grid shows — Safari's bottom switch. Follows the
+    /// active tab's group whenever the overview is revealed.
     @State private var showingPrivate = false
 
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: 16)]
@@ -14,76 +19,68 @@ struct TabSwitcher: View {
     private var normalCount: Int { tabStore.records.filter { !$0.isPrivate }.count }
 
     var body: some View {
-        NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(shown, id: \.id) { record in
-                            TabCard(
-                                record: record,
-                                isActive: record.id == tabStore.activeRecordID,
-                                onActivate: {
-                                    tabStore.activate(record.id)
-                                    isPresented = false
-                                }
-                            )
-                            .id(record.id)
-                        }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(shown, id: \.id) { record in
+                        TabCard(
+                            record: record,
+                            isActive: record.id == tabStore.activeRecordID,
+                            namespace: namespace,
+                            onActivate: {
+                                tabStore.activate(record.id)
+                                onOpen()
+                            }
+                        )
+                        .id(record.id)
                     }
-                    .padding()
-                    .animation(.spring, value: tabStore.records.count)
                 }
-                .scrollContentBackground(.hidden)
-                .task {
-                    // Land the viewport on the active card — Safari-style —
-                    // so users with many tabs don't have to hunt for the one
-                    // they're currently viewing. Scroll is synchronous and
-                    // runs first so the position is right from frame one;
-                    // captureActive then runs in parallel effectively,
-                    // refreshing the card's snapshot (otherwise only taken
-                    // on switch-away or background).
-                    showingPrivate = tabStore.activeRecord?.isPrivate ?? false
-                    if let active = tabStore.activeRecordID {
-                        proxy.scrollTo(active, anchor: .center)
-                    }
-                    await tabStore.captureActive()
-                }
+                .padding(.horizontal)
+                .padding(.top, 12)
+                .animation(.spring, value: tabStore.records.count)
             }
-            .navigationTitle(showingPrivate ? "Private" : "Tabs")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
-            // Safari's overview sits on a frosted version of the home
-            // screen; ours on the home page's hero — same idea, our brand.
-            .background {
-                Image("HomeHero")
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: 40, opaque: true)
-                    .overlay(Color.black.opacity(0.45))
-                    .ignoresSafeArea()
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                bottomBar
-            }
-            // Dark scheme for everything on the frosted hero, the bottom
-            // bar included (it is outside the inset's content otherwise).
-            .environment(\.colorScheme, .dark)
-            .overlay {
-                if shown.isEmpty {
-                    ContentUnavailableView {
-                        Label(showingPrivate ? "No private tabs" : "No tabs", systemImage: showingPrivate ? "eye.slash" : "square.dashed")
-                    } description: {
-                        Text(showingPrivate
-                            ? "Private tabs keep no history, cookies or logins and are gone after a restart."
-                            : "Tap + to open a tab.")
-                    }
+            .scrollContentBackground(.hidden)
+            .onAppear { reveal(proxy) }
+            .onChange(of: revealToken) { _, _ in reveal(proxy) }
+        }
+        // Safari's overview sits on a frosted version of the home
+        // screen; ours on the home page's hero — same idea, our brand.
+        .background {
+            Image("HomeHero")
+                .resizable()
+                .scaledToFill()
+                .blur(radius: 40, opaque: true)
+                .overlay(Color.black.opacity(0.45))
+                .ignoresSafeArea()
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            bottomBar
+        }
+        .overlay {
+            if shown.isEmpty {
+                ContentUnavailableView {
+                    Label(showingPrivate ? "No private tabs" : "No tabs", systemImage: showingPrivate ? "eye.slash" : "square.dashed")
+                } description: {
+                    Text(showingPrivate
+                        ? "Private tabs keep no history, cookies or logins and are gone after a restart."
+                        : "Tap + to open a tab.")
                 }
             }
         }
+        // Dark scheme for everything on the frosted hero, the bottom bar
+        // included.
+        .environment(\.colorScheme, .dark)
     }
 
-    /// Safari's tab-overview bar: + (a tab in the shown group), the
-    /// Private / N Tabs group switch, Done.
+    /// Land on the active tab: its group, and its card centred (Safari)
+    /// so users with many tabs don't hunt for the one they were on.
+    private func reveal(_ proxy: ScrollViewProxy) {
+        showingPrivate = tabStore.activeRecord?.isPrivate ?? false
+        if let active = tabStore.activeRecordID {
+            proxy.scrollTo(active, anchor: .center)
+        }
+    }
+
     private static let barControl: CGFloat = 52
 
     private var bottomBar: some View {
@@ -99,7 +96,7 @@ struct TabSwitcher: View {
                     ForEach(tabStore.recentlyClosed.entries) { entry in
                         Button {
                             tabStore.reopen(entry)
-                            isPresented = false
+                            onOpen()
                         } label: {
                             Label(entry.displayTitle, systemImage: "arrow.uturn.backward")
                         }
@@ -111,7 +108,7 @@ struct TabSwitcher: View {
                     .frame(width: Self.barControl, height: Self.barControl)
             } primaryAction: {
                 tabStore.newTab(isPrivate: showingPrivate)
-                isPresented = false
+                onOpen()
             }
             .tint(.white)
             .accessibilityLabel(showingPrivate ? "New private tab" : "New tab")
@@ -125,7 +122,11 @@ struct TabSwitcher: View {
             .frame(height: Self.barControl)
             .glassPill()
             Spacer(minLength: 0)
-            Button { isPresented = false } label: {
+            Button {
+                // Done with nothing to show: open a fresh tab (Safari).
+                if tabStore.activeRecordID == nil { tabStore.newTab(isPrivate: showingPrivate) }
+                onOpen()
+            } label: {
                 Image(systemName: "checkmark")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(.white)
@@ -163,6 +164,7 @@ struct TabSwitcher: View {
 private struct TabCard: View {
     let record: TabRecord
     let isActive: Bool
+    let namespace: Namespace.ID
     let onActivate: () -> Void
     @Environment(TabStore.self) private var tabStore
 
@@ -203,6 +205,9 @@ private struct TabCard: View {
                         .accessibilityLabel("Private tab")
                 }
             }
+            // The zoom transition's source: the page grows out of, and
+            // shrinks back into, this thumbnail.
+            .matchedTransitionSource(id: record.id, in: namespace)
             Text(displayTitle)
                 .font(.caption)
                 .foregroundStyle(.primary)
@@ -246,6 +251,13 @@ private struct TabCard: View {
                 .frame(height: 200)
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else if record.url == nil {
+            // A tab on the start page has no web view to snapshot: draw
+            // the start page itself (hero + wordmark), so the zoom
+            // transition morphs between matching pictures.
+            StartPagePreview()
+                .frame(height: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(.tertiarySystemBackground))
@@ -261,7 +273,26 @@ private struct TabCard: View {
     private var displayTitle: String {
         if let t = record.title, !t.isEmpty { return t }
         if let host = record.url?.host { return host }
-        return "New Tab"
+        return "Start Page"
+    }
+}
+
+/// The start page as a card: the real `HomePage`, laid out at screen
+/// size and scaled into the card (live Recent / Explore rows included),
+/// so the page's zoom lands on the same picture. Not interactive.
+private struct StartPagePreview: View {
+    var body: some View {
+        GeometryReader { geo in
+            let screen = UIScreen.main.bounds.size
+            let scale = geo.size.width / max(screen.width, 1)
+            HomePage(onNavigate: { _ in })
+                .frame(width: screen.width, height: screen.height)
+                .scaleEffect(scale, anchor: .topLeading)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                .clipped()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
     }
 }
 
