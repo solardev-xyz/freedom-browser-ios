@@ -71,13 +71,29 @@ struct TabSwitcher: View {
     /// Private / N Tabs group switch, Done.
     private var bottomBar: some View {
         HStack(spacing: 12) {
-            Button {
-                tabStore.newTab(isPrivate: showingPrivate)
-                isPresented = false
+            // Tap: a new tab in the shown group. Long-press: the tabs
+            // closed this run, to reopen (Safari hides it here too).
+            Menu {
+                Section("Recently closed") {
+                    if tabStore.recentlyClosed.isEmpty {
+                        Text("Nothing to reopen")
+                    }
+                    ForEach(tabStore.recentlyClosed.entries) { entry in
+                        Button {
+                            tabStore.reopen(entry)
+                            isPresented = false
+                        } label: {
+                            Label(entry.displayTitle, systemImage: "arrow.uturn.backward")
+                        }
+                    }
+                }
             } label: {
                 Image(systemName: "plus")
                     .font(.title3.weight(.semibold))
                     .frame(width: 48, height: 48)
+            } primaryAction: {
+                tabStore.newTab(isPrivate: showingPrivate)
+                isPresented = false
             }
             .accessibilityLabel(showingPrivate ? "New private tab" : "New tab")
             .glassPill()
