@@ -204,7 +204,12 @@ struct SendReviewView: View {
                 valueWei: txParams.value,
                 data: txParams.data,
                 quote: quote,
-                on: chain
+                on: chain,
+                record: WalletTransactionContext(
+                    kind: .walletSend, toAddress: recipient.asString(),
+                    assetAddress: token.address?.asString(), assetSymbol: token.symbol,
+                    assetDecimals: token.decimals, amount: amount
+                )
             )
             stage = .inFlight(hash: hash, outcome: .pending)
             confirmationTask = Task { await awaitConfirmation(hash: hash) }

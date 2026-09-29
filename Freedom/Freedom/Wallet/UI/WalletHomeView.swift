@@ -12,6 +12,7 @@ struct WalletHomeView: View {
     @Environment(ENSResolver.self) private var ensResolver
     @Environment(TabStore.self) private var tabStore
     @Environment(OpenLVWalletSession.self) private var openlvSession
+    @Environment(WalletTransactionHistoryStore.self) private var txHistory
 
     @AppStorage(WalletDefaults.activeChainID) private var activeChainID: Int = Chain.defaultChain.id
 
@@ -74,6 +75,7 @@ struct WalletHomeView: View {
                 chainPicker
                 assetsCard
                 sendReceiveButtons
+                activityRow
                 connectBrowserRow
                 activeTabSiteCard
             }
@@ -113,6 +115,34 @@ struct WalletHomeView: View {
             }
             .buttonStyle(PrimaryActionStyle())
         }
+    }
+
+    /// Desktop's payment history: every transaction this wallet
+    /// broadcast, with its status.
+    private var activityRow: some View {
+        NavigationLink {
+            WalletActivityView()
+        } label: {
+            HStack {
+                Label("Activity", systemImage: "clock.arrow.circlepath")
+                Spacer()
+                if txHistory.pendingCount > 0 {
+                    Text("\(txHistory.pendingCount) pending")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                } else if let latest = txHistory.entries.first {
+                    Text(SwarmPublishHistoryFormatting.relativeTime(latest.createdAt))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
     }
 
     /// Openlv remote signing: scan the desktop browser's QR and approve
