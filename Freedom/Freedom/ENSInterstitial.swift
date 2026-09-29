@@ -205,6 +205,7 @@ private struct ConflictGroups: View {
     }
 
     private func labelFor(_ group: ENSConflictGroup) -> String {
+        if let value = group.value { return value }
         if let reason = group.reason {
             switch reason {
             case .noResolver: return "No resolver registered"

@@ -19,7 +19,7 @@ final class TabStore {
     @ObservationIgnored private let context: ModelContext
     @ObservationIgnored private let historyStore: HistoryStore
     @ObservationIgnored private let faviconStore: FaviconStore
-    @ObservationIgnored private let ensResolver: ENSResolver
+    @ObservationIgnored private let ensResolver: any ENSResolving
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private let wallet: WalletServices
     @ObservationIgnored private let swarm: SwarmServices
@@ -32,7 +32,7 @@ final class TabStore {
         context: ModelContext,
         historyStore: HistoryStore,
         faviconStore: FaviconStore,
-        ensResolver: ENSResolver,
+        ensResolver: any ENSResolving,
         settings: SettingsStore,
         wallet: WalletServices,
         swarm: SwarmServices,

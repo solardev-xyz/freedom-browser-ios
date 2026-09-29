@@ -25,9 +25,12 @@ extension URL {
     var ensName: String? {
         guard let lowered = host(percentEncoded: false)?.lowercased(), !lowered.isEmpty else { return nil }
         if NameSystem.navigableSuffixes.contains(where: lowered.hasSuffix) { return lowered }
+        // A Tezos Domains host on a content scheme is a name too; the
+        // shared `ContentNameResolver` routes it to Tezos.
+        if TezosDomains.isName(lowered), ["ipfs", "ipns", "bzz", "tez"].contains(scheme?.lowercased() ?? "") { return lowered }
         switch scheme?.lowercased() {
         case "ens":
-            return NameSystem.isPotentialEnsName(lowered) ? lowered : nil
+            return NameSystem.isPotentialEnsName(lowered) && !TezosDomains.isName(lowered) ? lowered : nil
         case "bzz", "ipfs":
             guard NameSystem.isPotentialEnsName(lowered),
                   port == nil,
