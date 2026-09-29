@@ -8,6 +8,7 @@ struct SendFlowView: View {
     @Environment(ChainRegistry.self) private var chains
     @Environment(TransactionService.self) private var txService
     @Environment(ENSResolver.self) private var ensResolver
+    @Environment(WalletBalanceStore.self) private var balances
 
     /// Chain + asset are local @State, defaulted from the caller. Switching
     /// either via the picker doesn't write back to `WalletDefaults.activeChainID`
@@ -33,7 +34,7 @@ struct SendFlowView: View {
         case idle
         case invalid(message: String)
         case resolving(name: String)
-        case resolved(EthereumAddress, ensName: ENSReverseResolution, reverseInFlight: Bool)
+        case resolved(EthereumAddress, ensName: ENSReverseResolution, reverseInFlight: Bool, note: String? = nil)
         case resolveFailed(message: String)
     }
 
@@ -60,12 +61,12 @@ struct SendFlowView: View {
     }
 
     private var resolvedRecipient: EthereumAddress? {
-        if case .resolved(let address, _, _) = recipientState { return address }
+        if case .resolved(let address, _, _, _) = recipientState { return address }
         return nil
     }
 
     private var resolvedENSName: ENSReverseResolution {
-        if case .resolved(_, let name, _) = recipientState { return name }
+        if case .resolved(_, let name, _, _) = recipientState { return name }
         return .none
     }
 
@@ -162,7 +163,7 @@ struct SendFlowView: View {
                 ProgressView().controlSize(.small)
                 Text("Resolving \(name)…").font(.caption).foregroundStyle(.secondary)
             }
-        case .resolved(let address, let ensName, let reverseInFlight):
+        case .resolved(let address, let ensName, let reverseInFlight, let note):
             let inputIsHex = Hex.isAddressShape(recipientInput.trimmingCharacters(in: .whitespaces))
             if inputIsHex {
                 if reverseInFlight {
@@ -178,6 +179,9 @@ struct SendFlowView: View {
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
+                if let note {
+                    Text(note).font(.caption).foregroundStyle(.orange)
+                }
             }
         }
     }
@@ -316,12 +320,15 @@ struct SendFlowView: View {
         if Task.isCancelled { return }
         let chainID = chain.id
         do {
-            let address = try await ensResolver.resolveAddress(name, chainID: chainID)
+            let resolver = ensResolver
+            let outcome = try await RecipientNameResolution.resolve(name: name, chain: chain) { name, chainID in
+                try await resolver.resolveAddress(name, chainID: chainID)
+            }
             if Task.isCancelled || chain.id != chainID { return }
             // The user typed the name themselves and we forward-resolved
             // it — that's the strongest possible verification, treat as
             // `.verified` regardless of method.
-            recipientState = .resolved(address, ensName: .verified(name: name), reverseInFlight: false)
+            recipientState = .resolved(outcome.address, ensName: .verified(name: name), reverseInFlight: false, note: outcome.note)
             await refreshQuoteIfReady()
         } catch {
             if Task.isCancelled || chain.id != chainID { return }
@@ -417,15 +424,46 @@ struct SendFlowView: View {
 
     // MARK: - Balance fetch (for Max button + From row)
 
+    /// The cached balance shows at once; the store refreshes it silently.
     private func refreshBalance() async {
         guard let derived = try? vault.signingKey(at: .mainUser).ethereumAddress else {
             balance = nil
             return
         }
-        let fetcher = TokenBalanceFetcher(walletRPC: chains.walletRPC)
-        let result = await fetcher.fetch(
-            holder: EthereumAddress(derived), chain: chain, tokens: [asset]
-        )
-        balance = result[asset]
+        if balances.holder == derived, let cached = balances.balance(of: asset, on: chain) {
+            balance = cached
+        }
+        let asset = self.asset
+        let chain = self.chain
+        if let result = await balances.refresh(holder: derived, chain: chain, tokens: TokenRegistry.tokens(for: chain)),
+           self.asset == asset, self.chain == chain {
+            balance = result[asset] ?? balance
+        }
+    }
+}
+
+
+/// Which address a typed name sends to on the chosen chain. ENS keeps a
+/// per-chain address record (ENSIP-11); most names only ever set their
+/// Ethereum address, so on another EVM chain an empty chain record falls
+/// back to that address, with a note the user sees. Contract-backed
+/// systems (WNS / GNS) have no per-chain record at all and stay refused
+/// off mainnet, as on desktop. Desktop itself never falls back; iOS does
+/// by product decision (2026-09-29).
+enum RecipientNameResolution {
+    struct Outcome: Equatable {
+        let address: EthereumAddress
+        let note: String?
+    }
+
+    typealias Lookup = (_ name: String, _ chainID: Int) async throws -> EthereumAddress
+
+    static func resolve(name: String, chain: Chain, lookup: Lookup) async throws -> Outcome {
+        do {
+            return Outcome(address: try await lookup(name, chain.id), note: nil)
+        } catch ENSResolutionError.notFound(.emptyAddress, _) where chain.id != Chain.mainnetID && NameSystem.forName(name) == .ens {
+            let address = try await lookup(name, Chain.mainnetID)
+            return Outcome(address: address, note: "No \(chain.displayName) address on this name — using its Ethereum address.")
+        }
     }
 }
