@@ -222,10 +222,10 @@ final class TransactionServiceTests: XCTestCase {
     func testAwaitConfirmationReturnsBlockNumberWhenSeen() async throws {
         let stub = StubRPC()
         stub.responses = [
-            "eth_getTransactionByHash": [
+            "eth_getTransactionReceipt": [
                 try rpcResult(NSNull()),             // not yet seen
                 try rpcResult(NSNull()),             // still pending
-                try rpcResult(["blockNumber": "0x7b"]),  // 123
+                try rpcResult(["blockNumber": "0x7b", "status": "0x1"]),  // 123
             ],
         ]
         let vault = try await makeUnlockedVault()
@@ -245,7 +245,7 @@ final class TransactionServiceTests: XCTestCase {
         // Always-null responses (20 of them, well beyond the ~10 polls
         // the short timeout will fit).
         stub.responses = [
-            "eth_getTransactionByHash": Array(repeating: try rpcResult(NSNull()), count: 20),
+            "eth_getTransactionReceipt": Array(repeating: try rpcResult(NSNull()), count: 20),
         ]
         let vault = try await makeUnlockedVault()
         let service = makeService(vault: vault, stub: stub)
@@ -259,6 +259,29 @@ final class TransactionServiceTests: XCTestCase {
             )
             XCTFail("expected confirmationTimeout")
         } catch TransactionService.Error.confirmationTimeout {
+            // expected
+        }
+    }
+
+    func testAwaitConfirmationRejectsARevertedTransaction() async throws {
+        let stub = StubRPC()
+        stub.responses = [
+            "eth_getTransactionReceipt": [
+                try rpcResult(["blockNumber": "0x7b", "status": "0x0"]),
+            ],
+        ]
+        let vault = try await makeUnlockedVault()
+        let service = makeService(vault: vault, stub: stub)
+
+        do {
+            _ = try await service.awaitConfirmation(
+                hash: "0xaaa",
+                on: .gnosis,
+                pollInterval: .milliseconds(5),
+                timeout: .milliseconds(500)
+            )
+            XCTFail("a mined-but-reverted transaction is not a confirmation")
+        } catch TransactionService.Error.transactionReverted {
             // expected
         }
     }
