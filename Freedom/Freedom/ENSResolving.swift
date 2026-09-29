@@ -7,6 +7,12 @@ import Foundation
 @MainActor
 protocol ENSResolving: AnyObject {
     func resolveContent(_ name: String) async throws -> ENSResolvedContent
+    /// Content or a web URL to navigate to (Tezos Domains HTTP records).
+    /// A protocol *requirement*, not just an extension method: the tab
+    /// holds its resolver as `any ENSResolving`, and an extension method
+    /// on an existential dispatches statically to the default, which
+    /// would silently bypass `ContentNameResolver`'s implementation.
+    func resolveName(_ name: String) async throws -> NameResolution
 }
 
 extension ENSResolver: ENSResolving {}

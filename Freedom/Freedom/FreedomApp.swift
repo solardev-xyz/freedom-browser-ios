@@ -98,7 +98,11 @@ struct FreedomApp: App {
             myotisInstance.onAvailabilityChange = { [weak resolver] _, _ in
                 resolver?.sweepResultCaches()
             }
-            let favicons = FaviconStore(context: container.mainContext, ensResolver: resolver)
+            // Every name the browser navigates goes through one resolver:
+            // `.tez` to Tezos Domains, the rest to ENS (desktop's
+            // content-name-resolver).
+            let nameResolver = ContentNameResolver(ens: resolver, tezos: TezosDomainsResolver())
+            let favicons = FaviconStore(context: container.mainContext, ensResolver: nameResolver)
             self._historyStore = State(wrappedValue: history)
             self._bookmarkStore = State(wrappedValue: bookmarks)
             self._faviconStore = State(wrappedValue: favicons)
@@ -168,7 +172,7 @@ struct FreedomApp: App {
             self._swarmPermissionStore = State(wrappedValue: swarmPermissions)
             self._swarmFeedStore = State(wrappedValue: feedStore)
             self._swarmPublishHistoryStore = State(wrappedValue: publishHistory)
-            let manifestFetcher = SwarmManifestFetcher(ensResolver: resolver)
+            let manifestFetcher = SwarmManifestFetcher(ensResolver: nameResolver)
             let manifestStore = SwarmManifestStore(
                 fileURL: SwarmManifestStore.defaultFileURL(),
                 permissionStore: swarmPermissions,
@@ -252,7 +256,7 @@ struct FreedomApp: App {
                 context: container.mainContext,
                 historyStore: history,
                 faviconStore: favicons,
-                ensResolver: resolver,
+                ensResolver: nameResolver,
                 settings: settings,
                 wallet: wallet,
                 swarm: swarmServices,

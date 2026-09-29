@@ -12,6 +12,9 @@ enum BrowserURL: Hashable {
     /// bookmark of `bzz://vitalik.eth/blog/post1?q=1#anchor` reaches
     /// `/blog/post1?q=1#anchor` on the resolved transport, not root.
     case ens(name: String, path: String = "")
+    /// Tezos Domains name (`name.tez`), resolved on Tezos to a website
+    /// record. Same tail shape as `.ens`; displays as `tez://name`.
+    case tez(name: String, path: String = "")
     /// Contract-hosted app (ERC-8244). `path` is the same percent-encoded
     /// tail shape as `.ens`; the app's client-side router sees it.
     case onchain(app: OnchainAppRef, path: String = "")
@@ -24,24 +27,47 @@ enum BrowserURL: Hashable {
         case .bzz(let u), .ipfs(let u), .ipns(let u), .web(let u): return u
         case .onchain(let app, let path): return app.displayURL(tail: path)
         case .ens(let name, let path):
-            // Empty path emits `ens://name` to preserve the historical
-            // display form. Non-empty path is normalized to start with
-            // `/` so the URL parses regardless of how callers stored it.
-            let suffix: String
-            if path.isEmpty {
-                suffix = ""
-            } else if path.hasPrefix("/") || path.hasPrefix("?") || path.hasPrefix("#") {
-                suffix = path
-            } else {
-                suffix = "/" + path
-            }
-            return URL(string: "ens://\(name)\(suffix)")!
+            return URL(string: "ens://\(name)\(Self.suffix(path))")!
+        case .tez(let name, let path):
+            return URL(string: "tez://\(name)\(Self.suffix(path))")!
+        }
+    }
+
+    /// Empty path emits `scheme://name` to preserve the historical
+    /// display form. Non-empty path is normalized to start with `/` so
+    /// the URL parses regardless of how callers stored it.
+    private static func suffix(_ path: String) -> String {
+        if path.isEmpty { return "" }
+        if path.hasPrefix("/") || path.hasPrefix("?") || path.hasPrefix("#") { return path }
+        return "/" + path
+    }
+
+    /// A name the tab resolves before loading (ENS family or Tezos Domains).
+    var isName: Bool {
+        switch self {
+        case .ens, .tez: true
+        default: false
+        }
+    }
+
+    /// The name behind `.ens` / `.tez`, else nil.
+    var name: String? {
+        switch self {
+        case .ens(let name, _), .tez(let name, _): name
+        default: nil
         }
     }
 
     /// Wrap an already-valid URL in the right case based on its scheme.
     /// Returns nil if the scheme isn't one we know.
     static func classify(_ url: URL) -> BrowserURL? {
+        // A `.tez` host is a Tezos Domains name on any scheme the browser
+        // resolves names for (`tez://`, a content scheme, https typed by
+        // hand). `ens://name.tez` is deliberately not a name: .tez isn't ENS.
+        if let host = url.host(percentEncoded: false)?.lowercased(), TezosDomains.isName(host),
+           let scheme = url.scheme?.lowercased(), ["tez", "ipfs", "ipns", "bzz", "http", "https"].contains(scheme) {
+            return .tez(name: host, path: extractTail(url))
+        }
         // A `.eth` hostname has no DNS equivalent — route through ENS
         // regardless of the codec scheme the URL was stored under.
         // Without this, a restored tab / bookmark / history entry of
@@ -61,7 +87,8 @@ enum BrowserURL: Hashable {
         case "http", "https":
             return .web(url)
         case "ens":
-            guard let host = url.host?.lowercased() else { return nil }
+            // `.tez` is not ENS (desktop rejects `ens://name.tez` too).
+            guard let host = url.host?.lowercased(), !TezosDomains.isName(host) else { return nil }
             return .ens(name: host, path: extractTail(url))
         default: return nil
         }
@@ -96,7 +123,8 @@ enum BrowserURL: Hashable {
         if trimmed.lowercased().hasPrefix("ens://") {
             let tail = trimmed.dropFirst("ens://".count)
             let name = tail.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
-            guard !name.isEmpty, !name.contains(" "), NameSystem.isPotentialEnsName(name) else { return nil }
+            guard !name.isEmpty, !name.contains(" "), NameSystem.isPotentialEnsName(name),
+                  !TezosDomains.isName(name) else { return nil }
             return .ens(name: name.lowercased(), path: String(tail.dropFirst(name.count)))
         }
 
@@ -108,9 +136,13 @@ enum BrowserURL: Hashable {
         // (case-insensitive), optionally with a path tail. Handled before
         // the generic hostname branch because a non-ASCII label
         // (`🦇.eth/blog`) doesn't survive the `https://` round-trip.
+        // A bare `name.tez` is a Tezos Domains name the same way.
         if !trimmed.contains(" ") {
             let host = trimmed.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
             let lowerHost = host.lowercased()
+            if TezosDomains.isName(lowerHost) {
+                return .tez(name: lowerHost, path: String(trimmed.dropFirst(host.count)))
+            }
             if NameSystem.navigableSuffixes.contains(where: lowerHost.hasSuffix),
                NameSystem.isPotentialEnsName(lowerHost) {
                 return .ens(name: lowerHost, path: String(trimmed.dropFirst(host.count)))
