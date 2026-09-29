@@ -6,6 +6,8 @@ import Foundation
 struct OriginIdentity: Equatable, Hashable, Sendable {
     enum Scheme: String, Sendable {
         case ens, bzz, ipfs, ipns, rad, https, http, other
+        /// Tezos Domains name (`name.tez`), keyed bare like `.ens`.
+        case tez
         /// Contract-hosted app (ERC-8244), keyed `web3://<addr>[:<chainId>]`.
         case web3
         /// A remote browser connected over an openlv session (QR scan /
@@ -25,7 +27,7 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
     /// as desktop's name-host carve-out.
     var isEligibleForWallet: Bool {
         switch scheme {
-        case .https, .ens, .bzz, .web3: return true
+        case .https, .ens, .bzz, .web3, .tez: return true
         case .http:
             #if DEBUG
             // Dev harnesses (swarm-kit test centers, wallet test pages)
@@ -57,6 +59,7 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
     var displayString: String {
         switch scheme {
         case .ens: return "ens://\(key)"
+        case .tez: return "tez://\(key)"
         case .openlv: return "Connected browser"
         default: return key
         }
@@ -66,6 +69,7 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
     var schemeDisplayLabel: String {
         switch scheme {
         case .ens: return "via Swarm (ENS name)"
+        case .tez: return "Tezos Domains name"
         case .bzz: return "Swarm content-address"
         case .https: return "Web over HTTPS"
         case .http: return "Web over HTTP"
@@ -99,11 +103,20 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
         // quirk. Splitting on /, ?, AND # collapses hash-routed SPAs
         // (`name.eth#/swap`) and share-link queries to the canonical bare name.
         if trimmed.range(
-            of: #"^[a-z0-9-]+\.(eth|box|wei|gwei)"#,
+            of: #"^[a-z0-9-]+\.(eth|box|wei|gwei|tez)"#,
             options: [.regularExpression, .caseInsensitive]
         ) != nil {
             let host = trimmed.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
-            return .init(key: host.lowercased(), scheme: .ens)
+            return .init(key: host.lowercased(), scheme: TezosDomains.isName(host) ? .tez : .ens)
+        }
+
+        // `tez://name.tez/...` (the tab's display form for a Tezos Domains
+        // page) keys like the bare name, as `ens://` does for ENS.
+        if trimmed.lowercased().hasPrefix("tez://") {
+            let tail = trimmed.dropFirst("tez://".count)
+            let name = tail.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
+            guard TezosDomains.isName(name) else { return nil }
+            return .init(key: name.lowercased(), scheme: .tez)
         }
 
         // Contract-hosted apps: friendly or canonical form, either way
@@ -141,6 +154,9 @@ struct OriginIdentity: Equatable, Hashable, Sendable {
                 // desktop's separate no-carve-out rad branch.
                 if enumCase != .rad, isEnsHost(ref) {
                     return .init(key: ref.lowercased(), scheme: .ens)
+                }
+                if enumCase != .rad, TezosDomains.isName(ref) {
+                    return .init(key: ref.lowercased(), scheme: .tez)
                 }
                 return .init(key: "\(name)://\(ref)", scheme: enumCase)
             }

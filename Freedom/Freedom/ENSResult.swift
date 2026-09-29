@@ -28,6 +28,10 @@ struct ENSResolvedContent {
     let contentRef: String
     let codec: ENSContentCodec
     let trust: ENSTrust
+    /// Path embedded in a published website URI (Tezos Domains
+    /// `ipfs://<cid>/site`): the scheme handler prepends it to every
+    /// request under the name. Empty for ENS contenthashes.
+    var basePath: String = ""
 }
 
 enum ENSNotFoundReason {
@@ -50,6 +54,9 @@ struct ENSConflictGroup: Equatable {
     let resolvedData: Data?
     let reason: ENSNotFoundReason?
     let hosts: [String]
+    /// A human-readable answer (a Tezos website record is a URI, not
+    /// contenthash bytes); shown instead of `resolvedData` when set.
+    var value: String? = nil
 }
 
 enum ENSResolutionError: Error {

@@ -229,7 +229,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
             )
             return
         }
-        guard let gatewayPath = Self.gatewayStylePath(for: originalURL, resolvedTo: resolved.contentRef) else {
+        guard let gatewayPath = Self.gatewayStylePath(for: originalURL, resolvedTo: resolved.contentRef, basePath: resolved.basePath) else {
             task.didFailWithError(URLError(.badURL))
             return
         }
@@ -360,7 +360,7 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
     /// replaced by the resolved CID for the non-nested branch — so
     /// `ipfs://vitalik.eth/foo` with `resolvedTo: <cid>` becomes
     /// `/ipfs/<cid>/foo`. The nested-fetch branch is unaffected.
-    static func gatewayStylePath(for url: URL, resolvedTo contentRef: String? = nil) -> String? {
+    static func gatewayStylePath(for url: URL, resolvedTo contentRef: String? = nil, basePath: String = "") -> String? {
         guard let scheme = url.scheme?.lowercased(),
               scheme == "ipfs" || scheme == "ipns",
               let host = url.host else { return nil }
@@ -373,7 +373,9 @@ final class IpfsSchemeHandler: NSObject, WKURLSchemeHandler {
         if path.hasPrefix("/ipfs/") || path.hasPrefix("/ipns/") {
             return path
         }
-        return "/\(scheme)/\(contentRef ?? host)\(path)"
+        // A Tezos Domains website published at `ipfs://<cid>/site` serves
+        // `name.tez/page` from `/ipfs/<cid>/site/page`.
+        return "/\(scheme)/\(contentRef ?? host)\(basePath)\(path)"
     }
 
     /// Build an `HTTPURLResponse` whose URL is the original `ipfs://`

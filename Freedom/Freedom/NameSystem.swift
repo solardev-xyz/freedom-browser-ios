@@ -13,12 +13,16 @@ enum NameSystem: String, Equatable, Sendable, CaseIterable {
     case ens
     case wns
     case gns
+    /// Tezos Domains (`.tez`) — resolved on Tezos, never through ENS;
+    /// listed here so a trust result can name its system.
+    case tezos
 
     var label: String {
         switch self {
         case .ens: "ENS"
         case .wns: "WNS"
         case .gns: "GNS"
+        case .tezos: "Tezos Domains"
         }
     }
 
@@ -26,7 +30,7 @@ enum NameSystem: String, Equatable, Sendable, CaseIterable {
     /// resolves through the ENS Universal Resolver instead.
     var contractAddress: EthereumAddress? {
         switch self {
-        case .ens: nil
+        case .ens, .tezos: nil
         case .wns: "0x0000000000696760E15f265e828DB644A0c242EB"
         case .gns: "0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6"
         }
@@ -49,6 +53,13 @@ enum NameSystem: String, Equatable, Sendable, CaseIterable {
         let lower = host.lowercased()
         return lower.hasSuffix(".eth") || lower.hasSuffix(".box")
             || lower.hasSuffix(".wei") || lower.hasSuffix(".gwei")
+    }
+
+    /// Desktop's `isDwebNameHost`: an Ethereum name or a Tezos Domains
+    /// name — hosts that key permissions by name and that a published
+    /// website record must never point back at.
+    static func isDwebName(_ host: some StringProtocol) -> Bool {
+        isSupportedName(host) || TezosDomains.isName(host)
     }
 
     /// Suffixes the browser routes through name resolution (address bar,

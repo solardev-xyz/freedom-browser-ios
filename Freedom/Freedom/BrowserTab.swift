@@ -265,7 +265,7 @@ final class BrowserTab {
     /// transitions on `BrowserTab` itself.
     private(set) var activeIpfsTopLevelPath: String?
 
-    @ObservationIgnored private let ensResolver: ENSResolver
+    @ObservationIgnored private let ensResolver: any ENSResolving
     @ObservationIgnored private let settings: SettingsStore
     @ObservationIgnored private let adblock: AdblockService
     @ObservationIgnored private let ipfs: IPFSNode
@@ -308,7 +308,7 @@ final class BrowserTab {
         recordID: UUID = UUID(),
         isPrivate: Bool = false,
         popupConfiguration: WKWebViewConfiguration? = nil,
-        ensResolver: ENSResolver,
+        ensResolver: any ENSResolving,
         settings: SettingsStore,
         wallet: WalletServices,
         swarm: SwarmServices,
@@ -626,8 +626,7 @@ final class BrowserTab {
     /// web/hash entry: `bzz://name.eth/…`, `ipfs://name.eth/…`,
     /// `ipns://name.eth/…` and the `ens://` form all classify as `.ens`.
     static func ensNameToReverify(_ url: URL) -> String? {
-        guard case .ens(let name, _)? = BrowserURL.classify(url) else { return nil }
-        return name
+        BrowserURL.classify(url)?.name
     }
 
     /// Desktop #86: Back/Forward restored an ENS-backed page. Re-run
@@ -684,7 +683,7 @@ final class BrowserTab {
         switch browserURL {
         case .bzz(let target), .ipfs(let target), .ipns(let target), .web(let target):
             loadInWebView(target)
-        case .ens(let name, let path):
+        case .ens(let name, let path), .tez(let name, let path):
             ensStatus = .resolving(name: name, url: browserURL.url)
             activeResolveTask = Task { await resolveAndLoad(name: name, path: path) }
         case .onchain(let app, let path):
@@ -994,7 +993,7 @@ final class BrowserTab {
         // re-resolve. Without `classify`, `bzz://vitalik.eth/blog`
         // would lose `/blog` on pull-to-refresh.
         switch url.flatMap(BrowserURL.classify) {
-        case .ens(_, _)?, .onchain(_, _)?:
+        case .ens(_, _)?, .tez(_, _)?, .onchain(_, _)?:
             // Onchain apps re-fetch `html()` too, so a redeployed
             // contract (or changed bytes) is picked up and re-gated.
             navigate(to: BrowserURL.classify(url!)!)
@@ -1060,7 +1059,19 @@ final class BrowserTab {
 
         let result: ENSResolvedContent
         do {
-            result = try await ensResolver.resolveContent(name)
+            switch try await ensResolver.resolveName(name) {
+            case .content(let content):
+                result = content
+            case .web(let target, _):
+                // A Tezos Domains HTTP(S) website record: navigate to it
+                // directly, as desktop does; the page is ordinary web.
+                if Task.isCancelled { return }
+                ensStatus = .idle
+                currentTrust = nil
+                handedToWebView = true
+                loadInWebView(target)
+                return
+            }
         } catch ENSResolutionError.conflict(let groups, let trust) {
             if Task.isCancelled { return }
             ensStatus = .idle
@@ -1580,7 +1591,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
            Self.shouldInterceptForENS(navigationAction.navigationType),
            !Self.isSameDocumentFragmentNav(target: url, current: webView.url),
            let browserURL = BrowserURL.classify(url),
-           case .ens = browserURL
+           browserURL.isName
         {
             decisionHandler(.cancel)
             MainActor.assumeIsolated { owner?.navigate(to: browserURL) }
@@ -1785,6 +1796,14 @@ enum ENSErrorFormatting {
             return "Your custom Ethereum RPC is unreachable or invalid. Check Settings → Custom RPC."
         case ENSResolutionError.notImplemented:
             return "ENS resolution not implemented."
+        case TezosDomainsError.notFound(let reason):
+            return "Tezos Domains: \(reason)."
+        case TezosDomainsError.unsupported(let reason):
+            return "This .tez name publishes a website record Freedom can't follow (\(reason))."
+        case TezosDomainsError.unavailable(let reason):
+            return "Couldn't reach the Tezos RPC providers (\(reason)). Check your network."
+        case TezosDomainsError.notContent:
+            return "This .tez name points at a regular website, not IPFS content."
         case OnchainAppError.unknownChain(let chainID):
             return "Chain \(chainID) isn't in your wallet's chain list. Add it in Wallet → Networks, then try again."
         case OnchainAppError.unreachable:

@@ -8,7 +8,7 @@ enum ExternalLinks {
     /// Schemes the browser renders or routes itself; anything else is an
     /// external app. `freedom` is the app's own link scheme (OpenLV).
     static let browserSchemes: Set<String> = [
-        "http", "https", "bzz", "ipfs", "ipns", "ens", "rad", "web3", "freedom",
+        "http", "https", "bzz", "ipfs", "ipns", "ens", "tez", "rad", "web3", "freedom",
         "about", "blob", "data", "javascript", "file",
     ]
 
