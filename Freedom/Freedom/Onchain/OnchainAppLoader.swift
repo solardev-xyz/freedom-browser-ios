@@ -52,7 +52,7 @@ final class OnchainAppLoader {
                 context: RoutingContext(origin: app.permissionKey),
                 options: .init(rejectNull: true, directOnly: Self.debugForceDirect)
             )
-        } catch WalletRPC.Error.rpc(_, let message) {
+        } catch WalletRPC.Error.rpc(_, let message, _) {
             // A revert (verified or from an endpoint) is the contract's
             // answer: not an app.
             throw OnchainAppError.notAnApp(detail: message)

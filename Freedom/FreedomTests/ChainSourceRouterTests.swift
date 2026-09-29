@@ -134,7 +134,7 @@ final class ChainSourceRouterTests: XCTestCase {
                 on: .mainnet
             )
             XCTFail("expected rpc error")
-        } catch let WalletRPC.Error.rpc(code, message) {
+        } catch let WalletRPC.Error.rpc(code, message, _) {
             XCTAssertEqual(code, 3)
             XCTAssertTrue(message.contains("execution reverted"))
         }

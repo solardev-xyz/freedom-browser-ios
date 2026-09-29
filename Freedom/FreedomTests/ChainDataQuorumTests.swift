@@ -116,7 +116,7 @@ final class ChainDataQuorumTests: XCTestCase {
         do {
             _ = try await router(transport, order: [.quorum, .direct]).request(chainID: 1, method: "eth_call", params: call)
             XCTFail("expected revert")
-        } catch WalletRPC.Error.rpc(let code, _) {
+        } catch WalletRPC.Error.rpc(let code, _, _) {
             XCTAssertEqual(code, 3)
         }
         XCTAssertEqual(transport.hits.count, 3, "no direct request after a verified revert")
