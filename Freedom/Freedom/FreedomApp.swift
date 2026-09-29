@@ -141,6 +141,10 @@ struct FreedomApp: App {
             self._transactionService = State(wrappedValue: txService)
             self._beeIdentity = State(wrappedValue: BeeIdentityCoordinator(settings: settings))
             let swarmInstance = SwarmNode()
+            // Ant's Gnosis reads and broadcasts go through the same
+            // chain-data router as the wallet (desktop PR #419 parity)
+            // instead of the pinned RPC in `BeeBootConfig`.
+            swarmInstance.chainTransport = AntChainBridge(router: registry.walletRPC.router).transport
             self._swarm = State(wrappedValue: swarmInstance)
             let ipfsInstance = IPFSNode()
             self._ipfs = State(wrappedValue: ipfsInstance)

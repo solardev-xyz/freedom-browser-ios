@@ -61,6 +61,7 @@ ChainDataRouter.request(chainID:method:params:context:options:)
 - **Dapp bridge**: `eth_blockNumber`, `eth_getBalance`, `eth_call` are interactive reads.
 - **Wallet**: balances, token balances, nonce, gas estimate, receipts through `WalletRPC`; broadcast and fee quote through the router.
 - **Trust sheet** (`TrustShield`): direct answers show the endpoint, the agreement attempted and any dissent.
+- **Swarm node** (`AntChainBridge`, [ant-chain-bridge.md](ant-chain-bridge.md)): ant's Gnosis reads as background work (`Options.background`, `directTimeout`, `rankError`) and its broadcasts through `broadcast`.
 
 ## Settings
 

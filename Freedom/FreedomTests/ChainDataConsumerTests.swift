@@ -90,7 +90,7 @@ final class ChainDataConsumerTests: XCTestCase {
             XCTFail("expected failure")
         } catch WalletRPC.Error.allProvidersFailed(let errors) {
             XCTAssertEqual(errors.count, 2)
-            guard case WalletRPC.Error.rpc(let code, let message)? = errors.first as? WalletRPC.Error else {
+            guard case WalletRPC.Error.rpc(let code, let message, _)? = errors.first as? WalletRPC.Error else {
                 return XCTFail("expected the node's JSON-RPC error")
             }
             XCTAssertEqual(code, -32000)
