@@ -38,6 +38,7 @@ struct FreedomApp: App {
     @State private var swarmPublishHistoryStore: SwarmPublishHistoryStore
     @State private var swarmManifestStore: SwarmManifestStore
     @State private var walletTransactionHistory: WalletTransactionHistoryStore
+    @State private var walletBalances: WalletBalanceStore
     @State private var adblock: AdblockService
     @State private var adblockUpdate: AdblockUpdateService
     @Environment(\.scenePhase) private var scenePhase
@@ -124,6 +125,7 @@ struct FreedomApp: App {
             let autoApprove = AutoApproveStore(context: container.mainContext)
             let txService = TransactionService(vault: vault, registry: registry)
             let txHistory = WalletTransactionHistoryStore(context: container.mainContext)
+            self._walletBalances = State(wrappedValue: WalletBalanceStore(registry: registry))
             txService.history = txHistory
             self._walletTransactionHistory = State(wrappedValue: txHistory)
             let wallet = WalletServices(
@@ -294,6 +296,7 @@ struct FreedomApp: App {
                 .environment(chainStore)
                 .environment(transactionService)
                 .environment(walletTransactionHistory)
+                .environment(walletBalances)
                 .environment(permissionStore)
                 .environment(autoApproveStore)
                 .environment(beeIdentity)

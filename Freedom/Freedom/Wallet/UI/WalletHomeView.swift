@@ -13,6 +13,7 @@ struct WalletHomeView: View {
     @Environment(TabStore.self) private var tabStore
     @Environment(OpenLVWalletSession.self) private var openlvSession
     @Environment(WalletTransactionHistoryStore.self) private var txHistory
+    @Environment(WalletBalanceStore.self) private var balances
 
     @AppStorage(WalletDefaults.activeChainID) private var activeChainID: Int = Chain.defaultChain.id
 
@@ -88,7 +89,7 @@ struct WalletHomeView: View {
         // gesture-arbiter conflict with drag-to-dismiss that cancels the
         // refresh task. Refresh is button-driven instead (see balanceCard).
         .task(id: activeChainID) {
-            await refreshAssets()
+            await refreshAssets(force: false)
         }
         // Re-runs whenever the address changes (vault create / wipe / import) —
         // can't dedup by `primaryName != .none` because that's stale across rotations.
@@ -194,13 +195,17 @@ struct WalletHomeView: View {
                 Text("Assets").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    Task { await refreshAssets() }
+                    Task { await refreshAssets(force: true) }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption.weight(.semibold))
+                    if balances.isRefreshing(activeChain) {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption.weight(.semibold))
+                    }
                 }
                 .buttonStyle(.borderless)
-                .disabled(assetsState == .loading)
+                .disabled(balances.isRefreshing(activeChain))
                 .accessibilityLabel("Refresh balances")
             }
             assetsCardBody
@@ -289,7 +294,10 @@ struct WalletHomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private func refreshAssets() async {
+    /// Cached balances show at once; the network refresh is silent
+    /// unless nothing is cached yet. `force` skips the store's
+    /// minimum-interval reuse (the refresh button).
+    private func refreshAssets(force: Bool) async {
         let addressString: String
         do {
             addressString = try vault.signingKey(at: .mainUser).ethereumAddress
@@ -304,25 +312,33 @@ struct WalletHomeView: View {
         balanceRefreshGeneration += 1
         let generation = balanceRefreshGeneration
         let chain = activeChain
+        let tokens = TokenRegistry.tokens(for: chain)
 
         self.address = addressString
-        assetsState = .loading
-        let fetcher = TokenBalanceFetcher(walletRPC: chains.walletRPC)
-        let tokens = TokenRegistry.tokens(for: chain)
-        let result = await fetcher.fetch(
-            holder: EthereumAddress(addressString),
-            chain: chain,
-            tokens: tokens
+        if balances.holder == addressString, let cached = balances.balances(on: chain) {
+            assetsState = .loaded(Self.entries(from: cached, tokens: tokens))
+        } else {
+            assetsState = .loading
+        }
+        let result = await balances.refresh(
+            holder: addressString, chain: chain, tokens: tokens, minInterval: force ? 0 : WalletBalanceStore.defaultMinInterval
         )
         guard generation == balanceRefreshGeneration else { return }
-        // Preserve the registry's declared order (native first); skip
-        // missing entries (call failed) and zero balances per the
-        // "empty wallet stays empty" UI rule.
-        let entries: [AssetEntry] = tokens.compactMap { token in
+        if let result {
+            assetsState = .loaded(Self.entries(from: result, tokens: tokens))
+        } else if case .loading = assetsState {
+            assetsState = .failed
+        }
+    }
+
+    /// Preserve the registry's declared order (native first); skip
+    /// missing entries (call failed) and zero balances per the
+    /// "empty wallet stays empty" UI rule.
+    private static func entries(from result: [Token: BigUInt], tokens: [Token]) -> [AssetEntry] {
+        tokens.compactMap { token in
             guard let balance = result[token], balance > 0 else { return nil }
             return AssetEntry(token: token, balance: balance)
         }
-        assetsState = .loaded(entries)
     }
 
 }

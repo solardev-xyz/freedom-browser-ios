@@ -12,6 +12,7 @@ struct AssetPickerView: View {
     @Environment(Vault.self) private var vault
     @Environment(ChainRegistry.self) private var chains
     @Environment(ChainStore.self) private var chainStore
+    @Environment(WalletBalanceStore.self) private var balances
     @Environment(\.dismiss) private var dismiss
 
     @Binding var selectedChain: Chain
@@ -78,25 +79,39 @@ struct AssetPickerView: View {
         .buttonStyle(.plain)
     }
 
+    /// Cached balances render immediately; each chain is then refreshed
+    /// silently (the store skips chains fetched moments ago).
     private func load() async {
         guard let derived = try? vault.signingKey(at: .mainUser).ethereumAddress else {
             isLoading = false
             return
         }
-        let holder = EthereumAddress(derived)
-        let fetcher = TokenBalanceFetcher(walletRPC: chains.walletRPC)
+        let chains = chainStore.allChains()
+        if balances.holder == derived {
+            let cached = collect(chains) { balances.balances(on: $0) }
+            if !cached.isEmpty {
+                entries = cached
+                isLoading = false
+            }
+        }
+        var fresh: [Chain: [Token: BigUInt]] = [:]
+        for chain in chains {
+            fresh[chain] = await balances.refresh(holder: derived, chain: chain)
+        }
+        entries = collect(chains) { fresh[$0] ?? balances.balances(on: $0) }
+        isLoading = false
+    }
 
+    private func collect(_ chains: [Chain], _ balances: (Chain) -> [Token: BigUInt]?) -> [Entry] {
         var collected: [Entry] = []
-        for chain in chainStore.allChains() {
-            let tokens = TokenRegistry.tokens(for: chain)
-            let balances = await fetcher.fetch(holder: holder, chain: chain, tokens: tokens)
-            for token in tokens {
-                if let balance = balances[token], balance > 0 {
+        for chain in chains {
+            guard let known = balances(chain) else { continue }
+            for token in TokenRegistry.tokens(for: chain) {
+                if let balance = known[token], balance > 0 {
                     collected.append(Entry(chain: chain, token: token, balance: balance))
                 }
             }
         }
-        self.entries = collected
-        self.isLoading = false
+        return collected
     }
 }
