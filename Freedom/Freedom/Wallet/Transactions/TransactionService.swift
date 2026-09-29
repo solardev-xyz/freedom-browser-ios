@@ -35,6 +35,9 @@ final class TransactionService {
     @ObservationIgnored let registry: ChainRegistry
     @ObservationIgnored let nonceTracker: NonceTracker
     @ObservationIgnored let gasOracle: GasOracle
+    /// Where broadcasts are recorded (desktop's tx-recorder). Optional so
+    /// the service stays constructible without a store in tests.
+    @ObservationIgnored var history: WalletTransactionHistoryStore?
 
     init(vault: Vault, registry: ChainRegistry) {
         self.vault = vault
@@ -148,7 +151,8 @@ final class TransactionService {
         valueWei: BigUInt,
         data: Data,
         quote: Quote,
-        on chain: Chain
+        on chain: Chain,
+        record context: WalletTransactionContext? = nil
     ) async throws -> String {
         let account = try vault.signingAccount()
 
@@ -180,6 +184,14 @@ final class TransactionService {
                 on: chain
             )
             nonceTracker.markSent(address: quote.from.asString(), on: chain, usedNonce: quote.nonce)
+            if let context, let history {
+                // Best-effort ledger: the broadcast already happened.
+                let row = history.record(txHash: hash, chainID: chain.id, from: quote.from.asString(), context: context)
+                let rpc = registry.walletRPC
+                history.track(row, pollInterval: chain.pollInterval) { hash, _ in
+                    try await rpc.getTransactionReceipt(hash: hash, on: chain)
+                }
+            }
             return hash
         } catch {
             nonceTracker.invalidate(address: quote.from.asString(), on: chain)

@@ -38,6 +38,8 @@ struct FreedomApp: App {
     @State private var swarmPublishHistoryStore: SwarmPublishHistoryStore
     @State private var swarmManifestStore: SwarmManifestStore
     @State private var swarmUserPublisher: SwarmUserPublisher
+    @State private var walletTransactionHistory: WalletTransactionHistoryStore
+    @State private var walletBalances: WalletBalanceStore
     @State private var adblock: AdblockService
     @State private var adblockUpdate: AdblockUpdateService
     @Environment(\.scenePhase) private var scenePhase
@@ -49,7 +51,7 @@ struct FreedomApp: App {
                 for: TabRecord.self, HistoryEntry.self, Bookmark.self, Favicon.self,
                 DappPermission.self, AutoApproveRule.self,
                 SwarmPermission.self, SwarmFeedRecord.self, SwarmFeedIdentity.self,
-                SwarmPublishHistoryRecord.self, RadiclePermission.self,
+                SwarmPublishHistoryRecord.self, RadiclePermission.self, WalletTransactionRecord.self,
                 ChainRecord.self
             )
             self.modelContainer = container
@@ -123,6 +125,10 @@ struct FreedomApp: App {
             let permissions = PermissionStore(context: container.mainContext)
             let autoApprove = AutoApproveStore(context: container.mainContext)
             let txService = TransactionService(vault: vault, registry: registry)
+            let txHistory = WalletTransactionHistoryStore(context: container.mainContext)
+            self._walletBalances = State(wrappedValue: WalletBalanceStore(registry: registry))
+            txService.history = txHistory
+            self._walletTransactionHistory = State(wrappedValue: txHistory)
             let wallet = WalletServices(
                 vault: vault,
                 chainRegistry: registry,
@@ -296,6 +302,8 @@ struct FreedomApp: App {
                 .environment(chainRegistry)
                 .environment(chainStore)
                 .environment(transactionService)
+                .environment(walletTransactionHistory)
+                .environment(walletBalances)
                 .environment(permissionStore)
                 .environment(autoApproveStore)
                 .environment(beeIdentity)
@@ -320,6 +328,7 @@ struct FreedomApp: App {
                 }
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
+                .task { await repollPendingTransactions() }
                 .task { startIpfsIfNeeded() }
                 .task { startMyotisIfNeeded() }
                 .task { await debugResolveIfRequested() }
@@ -409,6 +418,17 @@ struct FreedomApp: App {
             try? await Task.sleep(nanoseconds: 30_000_000_000)
         }
         #endif
+    }
+
+    /// Desktop `repollPending`: a transaction left pending by an earlier
+    /// run gets one receipt lookup at launch.
+    private func repollPendingTransactions() async {
+        let rpc = chainRegistry.walletRPC
+        let store = chainStore
+        await walletTransactionHistory.repollPending { hash, chainID in
+            guard let chain = store.chain(id: chainID) else { return nil }
+            return try await rpc.getTransactionReceipt(hash: hash, on: chain)
+        }
     }
 
     /// Smoke-test hook (DEBUG builds only): `FREEDOM_DEBUG_ACCOUNT=<chainId>:<address>`

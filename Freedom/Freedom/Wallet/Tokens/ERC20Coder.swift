@@ -20,6 +20,19 @@ enum ERC20Coder {
         return try encoder.encoded()
     }
 
+    /// Selector `0xa9059cbb` || ABI(address, uint256) → `(to, amount)`;
+    /// nil for any other calldata. Lets a dapp's `eth_sendTransaction`
+    /// be recorded as the token transfer the user sees.
+    static func decodeTransfer(data: Data) -> (to: EthereumAddress, amount: BigUInt)? {
+        guard data.count == 4 + 64, data.prefix(4) == Data([0xa9, 0x05, 0x9c, 0xbb]) else { return nil }
+        let words = data.dropFirst(4)
+        let addressWord = words.prefix(32)
+        guard addressWord.prefix(12).allSatisfy({ $0 == 0 }) else { return nil }
+        let address = EthereumAddress("0x" + addressWord.suffix(20).map { String(format: "%02x", $0) }.joined())
+        let amount = BigUInt(Data(words.suffix(32)))
+        return (address, amount)
+    }
+
     /// `eth_call` returns the uint256 balance ABI-encoded as a single
     /// 32-byte word. Returns nil on malformed input — callers treat that
     /// as "balance unavailable for this token", not as zero.

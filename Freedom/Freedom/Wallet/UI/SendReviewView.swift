@@ -15,6 +15,7 @@ struct SendReviewView: View {
     let token: Token
 
     @Environment(TransactionService.self) private var txService
+    @Environment(TabStore.self) private var tabStore
     @Environment(\.closeWalletSheet) private var closeWalletSheet
 
     @State private var stage: Stage = .form(isBroadcasting: false)
@@ -175,9 +176,13 @@ struct SendReviewView: View {
         }
     }
 
+    /// Opens in Freedom's own tab, not Safari (same as the Activity detail).
     private func explorerLink(_ hash: String) -> some View {
-        Link(destination: chain.explorerURL(forTx: hash)) {
-            Label("View on \(chain.displayName) explorer", systemImage: "arrow.up.forward.app")
+        Button {
+            tabStore.open(chain.explorerURL(forTx: hash), inBackground: false, from: nil)
+            closeWalletSheet()
+        } label: {
+            Label("View on \(chain.displayName) explorer", systemImage: "safari")
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
                 .background(Color(.secondarySystemBackground))
@@ -204,7 +209,12 @@ struct SendReviewView: View {
                 valueWei: txParams.value,
                 data: txParams.data,
                 quote: quote,
-                on: chain
+                on: chain,
+                record: WalletTransactionContext(
+                    kind: .walletSend, toAddress: recipient.asString(),
+                    assetAddress: token.address?.asString(), assetSymbol: token.symbol,
+                    assetDecimals: token.decimals, amount: amount
+                )
             )
             stage = .inFlight(hash: hash, outcome: .pending)
             confirmationTask = Task { await awaitConfirmation(hash: hash) }

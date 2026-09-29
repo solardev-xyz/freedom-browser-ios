@@ -218,4 +218,20 @@ struct WalletRPC {
     func getTransaction(hash: String, on chain: Chain) async throws -> TransactionInfo? {
         try await callOptional("eth_getTransactionByHash", params: [hash], on: chain)
     }
+
+    /// The fields the transaction history keeps from `eth_getTransactionReceipt`.
+    struct TransactionReceipt: Decodable, Equatable {
+        /// `0x1` success, `0x0` reverted (post-Byzantium).
+        let status: String?
+        let blockNumber: String?
+        let gasUsed: String?
+        let effectiveGasPrice: String?
+
+        var succeeded: Bool { status?.lowercased() == "0x1" }
+    }
+
+    /// `null` while the transaction is still in the mempool.
+    func getTransactionReceipt(hash: String, on chain: Chain) async throws -> TransactionReceipt? {
+        try await callOptional("eth_getTransactionReceipt", params: [hash], on: chain)
+    }
 }

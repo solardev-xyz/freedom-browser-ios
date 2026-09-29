@@ -391,7 +391,11 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
                 valueWei: decoded.valueWei,
                 data: decoded.data,
                 quote: quote,
-                on: chain
+                on: chain,
+                record: .describing(
+                    kind: .dappSend, to: decoded.to, valueWei: decoded.valueWei, data: decoded.data,
+                    chain: chain, tokens: TokenRegistry.tokens(for: chain), origin: origin.key
+                )
             )
             permissionStore.touchLastUsed(origin: origin.key)
             reply(id: id, result: hash)
