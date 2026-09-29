@@ -85,7 +85,7 @@ final class WalletRPCTests: XCTestCase {
         do {
             let _: String = try await rpc.call("eth_blockNumber", params: [String](), on: .gnosis)
             XCTFail("expected .rpc error")
-        } catch WalletRPC.Error.rpc(let code, let message) {
+        } catch WalletRPC.Error.rpc(let code, let message, _) {
             XCTAssertEqual(code, -32602)
             XCTAssertEqual(message, "invalid params")
             XCTAssertEqual(stub.callLog, [gnosisURLs[0]])
@@ -105,7 +105,7 @@ final class WalletRPCTests: XCTestCase {
         do {
             let _: String = try await rpc.call("eth_call", params: [String](), on: .gnosis)
             XCTFail("expected .rpc error")
-        } catch WalletRPC.Error.rpc(let code, _) {
+        } catch WalletRPC.Error.rpc(let code, _, _) {
             XCTAssertEqual(code, 3)
             XCTAssertEqual(stub.callLog, [gnosisURLs[0]])
         }

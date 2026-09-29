@@ -8,8 +8,9 @@ import Foundation
 struct WalletRPC {
     enum Error: Swift.Error, LocalizedError {
         /// Protocol-deterministic answer from a provider — execution
-        /// revert (`error.data` populated) or `-32602 invalid params`.
-        case rpc(code: Int, message: String)
+        /// revert (`data` carries the EIP-474 payload when the endpoint
+        /// sent one) or `-32602 invalid params`.
+        case rpc(code: Int, message: String, data: String? = nil)
         /// Sender can't cover `value + gas`. Deterministic — every
         /// provider rejects the same way.
         case insufficientFunds(message: String)
@@ -26,7 +27,7 @@ struct WalletRPC {
 
         var errorDescription: String? {
             switch self {
-            case .rpc(let code, let message):
+            case .rpc(let code, let message, _):
                 return "RPC \(code): \(message)"
             case .insufficientFunds(let message):
                 return message

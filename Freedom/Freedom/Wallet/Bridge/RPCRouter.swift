@@ -118,7 +118,7 @@ final class RPCRouter {
             }
         }
         if let rpc = error as? WalletRPC.Error {
-            if case .rpc(let code, let message) = rpc {
+            if case .rpc(let code, let message, _) = rpc {
                 return ErrorPayload(code: code, message: message)
             }
             return ErrorPayload(code: -32603, message: rpc.errorDescription ?? "internal error")

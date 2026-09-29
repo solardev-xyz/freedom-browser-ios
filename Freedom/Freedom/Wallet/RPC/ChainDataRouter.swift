@@ -30,8 +30,65 @@ final class ChainDataRouter {
         /// Skip every verified tier (DEBUG smoke hook for the onchain
         /// loader's unverified path). Never set from user-facing code.
         var directOnly = false
+        /// Background work (the Swarm node's chain polling): Myotis only
+        /// when its slot is free, never queued behind interactive reads
+        /// (desktop `background: true`).
+        var background = false
+        /// Per-endpoint budget for the direct tier and the quorum legs
+        /// that may serve it — a wide log scan needs more than an
+        /// interactive read (desktop `directTimeoutMs`).
+        var directTimeout: TimeInterval? = nil
+        /// Ranks a tier's failure by how useful it is to the caller
+        /// (desktop `rankError`). With one set, the walk keeps the most
+        /// useful failure across tiers and ends early on `.request`.
+        var rankError: (@Sendable (Swift.Error) -> ErrorRank)? = nil
 
         static let standard = Options()
+    }
+
+    /// How useful a failed attempt is to a caller that keys retries on
+    /// the error (desktop `ERROR_RANK`). Higher is more useful; only
+    /// `.request` is final.
+    enum ErrorRank: Int, Comparable, Sendable {
+        /// The endpoint, not the query: throttles, transport failures, a
+        /// source that is not ready. The walk goes on.
+        case endpoint = 0
+        /// A coded reply that may describe the query but may also be a
+        /// throttle; kept over endpoint failures, later tiers still asked.
+        case hint
+        /// A timeout; a later one replaces an earlier one.
+        case timeout
+        /// The query itself is too big: ends the walk, reaches the caller intact.
+        case request
+
+        static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    /// Desktop `createErrorKeeper`: the most useful failure seen so far.
+    private struct ErrorKeeper {
+        let rank: (@Sendable (Swift.Error) -> ErrorRank)?
+        private(set) var best: (error: Swift.Error, rank: ErrorRank)?
+
+        /// Returns the error that ends the walk, if one of these is final.
+        mutating func offer(_ errors: [Swift.Error]) -> Swift.Error? {
+            guard let rank else { return nil }
+            for error in errors where !(error is CancellationError) {
+                let r = rank(error)
+                if r == .request { return error }
+                if let current = best {
+                    // A later timeout replaces an earlier one (the budget
+                    // that ran out is the one to report); an endpoint that
+                    // actually answered outranks a source that never tried.
+                    let replaces = r > current.rank
+                        || (r == .timeout && current.rank == .timeout)
+                        || (r == current.rank && current.error is ChainSourceUnavailable && !(error is ChainSourceUnavailable))
+                    if replaces { best = (error, r) }
+                } else {
+                    best = (error, r)
+                }
+            }
+            return nil
+        }
     }
 
     /// Methods a verified tier can never serve (stateful filters, node
@@ -125,6 +182,7 @@ final class ChainDataRouter {
         /// endpoints the quorum already asked.
         var directFallback: DirectFallback?
         var directAttempted: [URL] = []
+        var keeper = ErrorKeeper(rank: options.rankError)
 
         let order = policy.readOrder
         for (index, source) in order.enumerated() {
@@ -187,6 +245,7 @@ final class ChainDataRouter {
                     throw error
                 case .allProvidersFailed(let errors):
                     directErrors = errors
+                    if let final = keeper.offer(errors) { throw WalletRPC.Error.allProvidersFailed([final]) }
                 case .noProviders:
                     sawEmptyPool = true
                 case .invalidResponse:
@@ -198,10 +257,14 @@ final class ChainDataRouter {
             } catch {
                 adaptive.recordFailure(routeKey, kind: Self.failureKind(error))
                 sourceFailures.append(error)
+                if let final = keeper.offer([error]) { throw WalletRPC.Error.allProvidersFailed([final]) }
                 Self.logFailure(method: method, chainID: chainID, source: source, error: error, elapsed: started.duration(to: .now))
             }
         }
 
+        if let best = keeper.best?.error {
+            throw WalletRPC.Error.allProvidersFailed([best] + directErrors + sourceFailures)
+        }
         if !directErrors.isEmpty { throw WalletRPC.Error.allProvidersFailed(directErrors) }
         if sawEmptyPool { throw WalletRPC.Error.noProviders }
         throw WalletRPC.Error.allProvidersFailed(sourceFailures)
@@ -466,6 +529,11 @@ final class ChainDataRouter {
         }
         let started = ContinuousClock.now
         if case .queued(let waiter) = slot {
+            if options.background {
+                // Node polling must not park behind an interactive read.
+                admission.abandonMyotis(chainID: chainID, waiter: waiter)
+                throw ChainSourceUnavailable(reason: "Myotis is busy; background reads never queue")
+            }
             do {
                 try await withSourceDeadline(budget, source: .myotis) { await waiter.wait() }
             } catch {
@@ -593,7 +661,9 @@ final class ChainDataRouter {
         var errors: [Swift.Error] = []
         for url in urls where !skip.contains(url) {
             try Task.checkCancellation()
-            switch await callEndpoint(url, body: body, timeout: policy.sourceTimeout, chainID: chainID, rejectNull: options.rejectNull) {
+            switch await callEndpoint(
+                url, body: body, timeout: options.directTimeout ?? policy.sourceTimeout, chainID: chainID, rejectNull: options.rejectNull
+            ) {
             case .answer(.value(let value)):
                 return ChainDataResult(
                     result: value,
@@ -604,6 +674,12 @@ final class ChainDataRouter {
                 throw error
             case .error(let error, _):
                 if error is CancellationError { throw error }
+                // A failure that depends on the query, not the endpoint
+                // (a log-scan range limit), ends the walk here: asking
+                // the next endpoint could only hide it (desktop keeper).
+                if let rank = options.rankError, rank(error) == .request {
+                    throw WalletRPC.Error.allProvidersFailed([error])
+                }
                 errors.append(error)
             }
         }
@@ -633,16 +709,16 @@ final class ChainDataRouter {
         case .success(let value):
             registry.markSuccess(url: url, chainID: chainID)
             return .answer(.value(value))
-        case .rpcError(let code, let message, let hasRevertData):
+        case .rpcError(let code, let message, let data):
             if Self.isInsufficientFunds(message: message) {
                 return .answer(.deterministic(.insufficientFunds(message: message)))
             }
-            if hasRevertData || code == Self.invalidParamsCode {
-                return .answer(.deterministic(.rpc(code: code, message: message)))
+            if data != nil || code == Self.invalidParamsCode {
+                return .answer(.deterministic(.rpc(code: code, message: message, data: data)))
             }
             // Don't mark — the provider responded correctly per spec.
             let kind: ChainSourceFailureKind? = ChainSourceUnavailable.isCapacityMessage(message) ? .capacity : nil
-            return .error(WalletRPC.Error.rpc(code: code, message: message), kind: kind)
+            return .error(WalletRPC.Error.rpc(code: code, message: message, data: data), kind: kind)
         case .malformed(let error):
             registry.markFailure(url: url, chainID: chainID)
             return .error(error, kind: nil)
@@ -666,8 +742,9 @@ final class ChainDataRouter {
     ) async -> QuorumOutcome {
         let k = policy.effectiveQuorumK
         let m = policy.effectiveQuorumM
-        let timeout = min(policy.sourceTimeout, wait)
-        let endpointTimeout = allowDirectFallback ? policy.sourceTimeout : timeout
+        let perEndpoint = options.directTimeout ?? policy.sourceTimeout
+        let timeout = min(perEndpoint, wait)
+        let endpointTimeout = allowDirectFallback ? perEndpoint : timeout
         let urls = Array(registry.rpcURLs(forChainID: chainID).prefix(k))
         guard urls.count >= m else {
             return .failed(reason: "RPC quorum needs \(m) endpoints, \(urls.count) available", kind: nil, fallback: nil, attempted: [], errors: [])
@@ -700,9 +777,9 @@ final class ChainDataRouter {
 
     enum Envelope {
         case success(Any)
-        /// `hasRevertData` flags an EIP-474 execution revert (`error.data`
-        /// populated). Deterministic protocol answer → short-circuit.
-        case rpcError(code: Int, message: String, hasRevertData: Bool)
+        /// `data` is the EIP-474 revert payload when the endpoint sent
+        /// one — a deterministic protocol answer → short-circuit.
+        case rpcError(code: Int, message: String, data: String?)
         case malformed(Swift.Error)
     }
 
@@ -719,8 +796,7 @@ final class ChainDataRouter {
         if let errObj = envelope["error"] as? [String: Any] {
             let code = errObj["code"] as? Int ?? 0
             let message = errObj["message"] as? String ?? "unknown error"
-            let hasRevertData = errObj["data"] is String
-            return .rpcError(code: code, message: message, hasRevertData: hasRevertData)
+            return .rpcError(code: code, message: message, data: errObj["data"] as? String)
         }
         guard let result = envelope["result"] else {
             return .malformed(WalletRPC.Error.invalidResponse)

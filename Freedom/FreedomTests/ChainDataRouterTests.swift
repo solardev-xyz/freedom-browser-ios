@@ -209,7 +209,7 @@ final class ChainDataRouterTests: XCTestCase {
                 chainID: 1, method: "eth_call", params: [["to": "0xabc", "data": "0x01"]]
             )
             XCTFail("expected revert")
-        } catch WalletRPC.Error.rpc(let code, _) {
+        } catch WalletRPC.Error.rpc(let code, _, _) {
             XCTAssertEqual(code, 3)
         }
         XCTAssertTrue(transport.hits.isEmpty)

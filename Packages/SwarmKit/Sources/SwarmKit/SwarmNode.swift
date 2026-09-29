@@ -104,6 +104,22 @@ public final class SwarmNode {
     /// suspension reaped its loopback listener.
     private var lastConfig: SwarmConfig?
 
+    /// Host-provided Gnosis JSON-RPC transport (ant's `ant_set_chain_transport`,
+    /// issue #77): every chain request the node makes — `eth_call`,
+    /// `eth_getLogs`, `eth_sendRawTransaction`, … — is handed to this
+    /// closure as a complete JSON-RPC request body and expects a JSON-RPC
+    /// response body back, or `nil` for "can't serve" (ant then falls
+    /// back to `SwarmConfig.rpcEndpoint`). Called on ant's blocking pool,
+    /// possibly concurrently, never on the main thread; blocking inside
+    /// it is expected. Set before `start(_:)` — the gateway captures its
+    /// chain wiring at start.
+    public var chainTransport: (@Sendable (String) -> String?)?
+    /// The retained callback context for the installed transport, kept
+    /// until `ant_shutdown` has drained every in-flight callback.
+    private var chainTransportBox: Unmanaged<ChainTransportBox>?
+    /// Owned batches discovered on-chain at the last start (`ant_storage_discover`).
+    public private(set) var discoveredBatches: [String] = []
+
     public init() {}
 
     public nonisolated static func defaultDataDir() -> URL {
@@ -188,6 +204,7 @@ public final class SwarmNode {
         // gateway surfaces. Present only in light mode; nil → those
         // endpoints stay bee zero-stubs (ultra-light browsing).
         let gnosisRpc = config.rpcEndpoint
+        let transport = chainTransport
 
         Task.detached(priority: .userInitiated) { [weak self] in
             // Boot the node.
@@ -197,6 +214,23 @@ public final class SwarmNode {
                 let message = Self.takeError(initErr)
                 await MainActor.run { self?.failStart(message, generation: myGeneration) }
                 return
+            }
+
+            // Verified chain reads: install the host transport before
+            // anything builds a chain client (the chequebook step below,
+            // the gateway) so ant's Gnosis requests go through the app's
+            // chain-data router instead of one pinned URL.
+            var transportBox: Unmanaged<ChainTransportBox>?
+            if let transport {
+                let box = Unmanaged.passRetained(ChainTransportBox(transport))
+                let rc = ant_set_chain_transport(handle, chainTransportCallback, box.toOpaque())
+                if rc == ANT_CHAIN_TRANSPORT_OK {
+                    transportBox = box
+                    await MainActor.run { self?.append("chain transport: routed through the app's chain-data router") }
+                } else {
+                    box.release()
+                    await MainActor.run { self?.append("chain transport not installed (rc=\(rc)); using the pinned RPC") }
+                }
             }
 
             // Light mode: deploy (or rediscover / reuse) the node's
@@ -239,27 +273,74 @@ public final class SwarmNode {
 
             let wallet = Self.readWalletAddress(handle)
 
-            await MainActor.run {
+            let adopted = await MainActor.run { () -> Bool in
                 guard let self else {
                     // Owner released mid-start — don't leak a live node.
-                    ant_stop_gateway(handle)
-                    ant_shutdown(handle)
-                    return
+                    Self.tearDown(handle, transportBox)
+                    return false
                 }
                 guard self.lifecycleGeneration == myGeneration else {
                     // `stop()` (or another start) ran while we warmed up.
-                    ant_stop_gateway(handle)
-                    ant_shutdown(handle)
+                    Self.tearDown(handle, transportBox)
                     self.append("start cancelled — discarding warmed-up node")
-                    return
+                    return false
                 }
                 self.node = handle
+                self.chainTransportBox = transportBox
                 self.walletAddress = wallet
                 self.status = .running
                 self.append("node running · gateway http://\(Self.gatewayAuthority) · wallet \(wallet)")
                 self.startPolling()
+                return true
+            }
+
+            // Light mode: adopt funded batches this account owns on-chain
+            // but has no local issuer for (antd's startup step 3 — a
+            // reinstall, or a batch bought on desktop with the same
+            // vault). A log scan, so it runs after the node is serving
+            // and never blocks browsing; best-effort like antd.
+            // Re-check right before the call: a `stop()` in between would
+            // shut the handle down under us (ant drains calls already in
+            // flight, but a call must not *start* on a freed handle).
+            var stillOurs = false
+            if adopted { stillOurs = await MainActor.run { self?.node == handle } }
+            if stillOurs, lightMode, let gnosisRpc {
+                var discErr: UnsafeMutablePointer<CChar>?
+                let json: String? = gnosisRpc.withCString { rpcPtr in
+                    guard let ptr = ant_storage_discover(handle, rpcPtr, &discErr) else { return nil }
+                    defer { ant_free_string(ptr) }
+                    return String(cString: ptr)
+                }
+                let ids = json.flatMap(Self.registeredBatchIDs) ?? []
+                let line = json != nil
+                    ? "batch discovery: \(ids.count) owned batch\(ids.count == 1 ? "" : "es") registered"
+                    : "batch discovery skipped: \(Self.takeError(discErr))"
+                await MainActor.run {
+                    guard let self, self.lifecycleGeneration == myGeneration else { return }
+                    self.discoveredBatches = ids
+                    self.append(line)
+                }
             }
         }
+    }
+
+    /// Stop + shut down a node off the main actor. `ant_shutdown` (and a
+    /// gateway stop) drain in-flight chain-transport callbacks, and those
+    /// callbacks wait on the main actor — tearing down *on* it would
+    /// deadlock the drain.
+    private nonisolated static func tearDown(_ handle: OpaquePointer, _ box: Unmanaged<ChainTransportBox>?) {
+        Task.detached(priority: .userInitiated) {
+            ant_stop_gateway(handle)
+            ant_shutdown(handle)
+            box?.release()
+        }
+    }
+
+    /// `{"registered":[...ids], "status": {...}}` → the ids.
+    nonisolated static func registeredBatchIDs(_ json: String) -> [String] {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        return object["registered"] as? [String] ?? []
     }
 
     public func stop() {
@@ -277,9 +358,14 @@ public final class SwarmNode {
         pollTask?.cancel()
         pollTask = nil
         node = nil
+        let box = chainTransportBox
+        chainTransportBox = nil
         Task.detached(priority: .userInitiated) { [weak self] in
             ant_stop_gateway(handle)
+            // `ant_shutdown` drains every in-flight transport callback
+            // before returning, so the context is safe to release after it.
             ant_shutdown(handle)
+            box?.release()
             await MainActor.run {
                 guard let self else { return }
                 self.status = .stopped
@@ -339,15 +425,20 @@ public final class SwarmNode {
     private func rebindGateway(_ handle: OpaquePointer) {
         let lightMode = lastConfig?.rpcEndpoint != nil
         let rpc = lastConfig?.rpcEndpoint
-        ant_stop_gateway(handle)
-        var err: UnsafeMutablePointer<CChar>?
-        let served = Self.gatewayAuthority.withCString { addrPtr in
-            if let rpc {
-                return rpc.withCString { ant_start_gateway(handle, addrPtr, lightMode, $0, &err) }
+        // Off the main actor: a gateway handler mid chain-read holds a
+        // transport callback that waits on the main actor (see `tearDown`).
+        Task.detached(priority: .userInitiated) { [weak self] in
+            ant_stop_gateway(handle)
+            var err: UnsafeMutablePointer<CChar>?
+            let served = Self.gatewayAuthority.withCString { addrPtr in
+                if let rpc {
+                    return rpc.withCString { ant_start_gateway(handle, addrPtr, lightMode, $0, &err) }
+                }
+                return ant_start_gateway(handle, addrPtr, lightMode, nil, &err)
             }
-            return ant_start_gateway(handle, addrPtr, lightMode, nil, &err)
+            let line = served ? "resume: gateway rebound" : "resume: gateway rebind failed (\(Self.takeError(err)))"
+            await MainActor.run { self?.append(line) }
         }
-        append(served ? "resume: gateway rebound" : "resume: gateway rebind failed (\(Self.takeError(err)))")
     }
 
     private func failStart(_ message: String, generation: Int) {
@@ -395,4 +486,23 @@ public final class SwarmNode {
         log.append("\(ts)  \(line)")
         if log.count > 500 { log.removeFirst(log.count - 500) }
     }
+}
+
+
+// MARK: - Chain transport plumbing
+
+/// The `host_ctx` behind `ant_set_chain_transport`: owns the Swift
+/// closure for as long as ant may call it.
+final class ChainTransportBox: @unchecked Sendable {
+    let serve: @Sendable (String) -> String?
+    init(_ serve: @escaping @Sendable (String) -> String?) { self.serve = serve }
+}
+
+/// `ant_chain_transport` C entry point. Runs on ant's blocking pool; the
+/// returned buffer is `malloc`'d (`strdup`) and freed by ant with `free(3)`.
+private let chainTransportCallback: @convention(c) (UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>? = { request, ctx in
+    guard let request, let ctx else { return nil }
+    let box = Unmanaged<ChainTransportBox>.fromOpaque(ctx).takeUnretainedValue()
+    guard let response = box.serve(String(cString: request)) else { return nil }
+    return strdup(response)
 }
