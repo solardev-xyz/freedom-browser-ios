@@ -9,7 +9,9 @@ enum NameResolution {
 }
 
 extension ENSResolving {
-    /// ENS-style resolvers only ever yield content.
+    /// Default for content-only resolvers (ENS, test fakes). Being a
+    /// protocol requirement, a conformer's own implementation wins
+    /// through `any ENSResolving` as well.
     func resolveName(_ name: String) async throws -> NameResolution {
         .content(try await resolveContent(name))
     }

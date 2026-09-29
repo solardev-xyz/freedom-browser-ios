@@ -323,6 +323,10 @@ final class TezosDomainsTests: XCTestCase {
         rpc.record = record([("web:redirect_url", "https://example.com/welcome")])
         guard case .web(let url, _) = try await facade.resolveName("redirect.tez") else { return XCTFail() }
         XCTAssertEqual(url.absoluteString, "https://example.com/welcome")
+        // Through the existential, exactly as BrowserTab holds it — a
+        // protocol-extension default would answer here instead of the façade.
+        let erased: any ENSResolving = facade
+        guard case .web = try await erased.resolveName("redirect.tez") else { return XCTFail("existential dispatch bypassed the façade") }
         do {
             _ = try await facade.resolveContent("redirect.tez")
             XCTFail("a web record is not content")
