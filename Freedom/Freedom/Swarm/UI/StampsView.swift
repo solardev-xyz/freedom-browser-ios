@@ -3,8 +3,8 @@ import SwiftUI
 
 /// Stamps list — the entry point from the node sheet for users who've
 /// already finished publish-setup. Empty state pushes straight to the
-/// purchase form so a fresh node ready+no-stamps user has one tap to
-/// the buy flow.
+/// node-side funding flow so a fresh node ready+no-stamps user has one
+/// tap to the buy flow.
 @MainActor
 struct StampsView: View {
     @Environment(StampService.self) private var stampService
@@ -26,7 +26,7 @@ struct StampsView: View {
             if !stampService.stamps.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
-                        StampPurchaseView()
+                        StorageFundingView()
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -44,9 +44,9 @@ struct StampsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
             NavigationLink {
-                StampPurchaseView()
+                StorageFundingView()
             } label: {
-                Label("Buy your first stamp", systemImage: "plus.circle.fill")
+                Label("Buy storage", systemImage: "plus.circle.fill")
             }
             .buttonStyle(PrimaryActionStyle())
         }

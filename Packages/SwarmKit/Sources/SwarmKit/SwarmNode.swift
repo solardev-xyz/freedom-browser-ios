@@ -119,6 +119,24 @@ public final class SwarmNode {
     private var chainTransportBox: Unmanaged<ChainTransportBox>?
     /// Owned batches discovered on-chain at the last start (`ant_storage_discover`).
     public private(set) var discoveredBatches: [String] = []
+    /// Gnosis RPC handed to the `ant_storage_*` calls as their fallback
+    /// transport (the installed chain transport answers first). Needed
+    /// in every mode: storage can be bought while the node still browses
+    /// ultra-light.
+    public var storageRPC: String = "https://rpc.gnosischain.com"
+
+    public enum StorageError: Swift.Error, LocalizedError {
+        case notRunning
+        /// ant's own message ("not enough xDAI: send 0.3 more", …).
+        case failed(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .notRunning: "The Swarm node isn't running."
+            case .failed(let message): message
+            }
+        }
+    }
 
     public init() {}
 
@@ -401,6 +419,64 @@ public final class SwarmNode {
             // stop()/restart raced; re-read rather than reuse `handle`.
             if let live = node { rebindGateway(live) }
         }
+    }
+
+    // MARK: - Storage plans (ant_storage_*)
+
+    /// Price a plan: `ant_storage_quote` JSON (see `StorageQuote`).
+    public func storageQuote(depth: UInt8, days: UInt64) async throws -> String {
+        try await storageCall { handle, rpc, err in ant_storage_quote(handle, rpc, depth, days, err) }
+    }
+
+    /// Buy and activate a plan funded only with xDAI held by the node
+    /// wallet. Submits real transactions and blocks until they confirm.
+    public func storageBuyXdai(depth: UInt8, amountPerChunk: String, immutable: Bool) async throws -> String {
+        try await storageCall { handle, rpc, err in
+            amountPerChunk.withCString { ant_storage_buy_xdai(handle, rpc, depth, $0, immutable ? 1 : 0, err) }
+        }
+    }
+
+    public func storageTopupQuote(days: UInt64) async throws -> String {
+        try await storageCall { handle, rpc, err in ant_storage_topup_quote(handle, rpc, days, err) }
+    }
+
+    public func storageTopupXdai(amountPerChunk: String) async throws -> String {
+        try await storageCall { handle, rpc, err in
+            amountPerChunk.withCString { ant_storage_topup_xdai(handle, rpc, $0, err) }
+        }
+    }
+
+    /// `ant_storage_status` JSON (the connected plan).
+    public func storageStatus() async throws -> String {
+        try await storageCall { handle, _, err in ant_storage_status(handle, err) }
+    }
+
+    /// `ant_storage_settlement_deposit` JSON (see `SettlementDeposit`).
+    public func settlementDeposit() async throws -> String {
+        try await storageCall { handle, rpc, err in ant_storage_settlement_deposit(handle, rpc, err) }
+    }
+
+    /// Fund the chequebook up to the settlement target from xDAI. Real
+    /// transactions; blocks until confirmed.
+    public func settlementTopup() async throws -> String {
+        try await storageCall { handle, rpc, err in ant_storage_settlement_topup(handle, rpc, err) }
+    }
+
+    /// Run one `ant_storage_*` call off the main actor with the live
+    /// handle and the storage RPC. ant returns a malloc'd JSON string or
+    /// NULL plus an error string; both are freed here.
+    private func storageCall(
+        _ call: @escaping @Sendable (OpaquePointer, UnsafePointer<CChar>, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> UnsafeMutablePointer<CChar>?
+    ) async throws -> String {
+        guard let handle = node else { throw StorageError.notRunning }
+        let rpc = storageRPC
+        return try await Task.detached(priority: .userInitiated) { () throws -> String in
+            var err: UnsafeMutablePointer<CChar>?
+            let result: UnsafeMutablePointer<CChar>? = rpc.withCString { call(handle, $0, &err) }
+            guard let result else { throw StorageError.failed(Self.takeError(err)) }
+            defer { ant_free_string(result) }
+            return String(cString: result)
+        }.value
     }
 
     // MARK: - Internals

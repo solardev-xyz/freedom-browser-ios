@@ -25,9 +25,13 @@ struct SendFlowView: View {
     @State private var quoteTask: Task<Void, Never>?
     @State private var balance: BigUInt?
 
-    init(chain: Chain, asset: Token? = nil) {
+    /// `recipient` / `amount` prefill the form (the storage funding
+    /// flow paying the node wallet); the user can still edit both.
+    init(chain: Chain, asset: Token? = nil, recipient: String? = nil, amount: String? = nil) {
         self._chain = State(initialValue: chain)
         self._asset = State(initialValue: asset ?? TokenRegistry.native(for: chain))
+        self._recipientInput = State(initialValue: recipient ?? "")
+        self._amountInput = State(initialValue: amount ?? "")
     }
 
     private enum RecipientState: Equatable {
@@ -102,6 +106,10 @@ struct SendFlowView: View {
         .onChange(of: asset) { _, _ in onAssetChanged() }
         .onChange(of: chain.id) { _, _ in onChainChanged() }
         .task(id: asset) { await refreshBalance() }
+        // `onChange` doesn't fire for prefilled values.
+        .onAppear {
+            if !recipientInput.isEmpty, recipientState == .idle { scheduleResolution() }
+        }
         .onDisappear {
             recipientTask?.cancel()
             quoteTask?.cancel()

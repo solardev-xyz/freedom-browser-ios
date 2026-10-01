@@ -27,9 +27,9 @@ What desktop (`freedom-browser`) ships today and we port here:
 
 **v1 iOS-specific divergences**:
 
-- **One-tx funding via `SwarmNodeFunder`** for the ultralight→light upgrade, replacing desktop's 5-step manual checklist (xDAI → CowSwap xDAI→xBZZ → xBZZ to node). Single transaction from the main wallet does it all on Gnosis: swap via UniswapV3 BZZ/WXDAI 0.3% pool + forward xDAI for chequebook gas + forward xBZZ to the Bee wallet. Contract at `0x508994B55C53E84d2d600A55da05f751aEf658d2` (deployed 2026-04-24, verified on Blockscout). This is the meaningful improvement over desktop's flow and the user-facing reason to upgrade *here* rather than wait for the next desktop release.
-- The funding gate itself stays mandatory — a Bee node without funding can't connect to peers in light mode (Bee's design, not ours). Users physically *cannot* skip funding; we just shrink it from 5 steps + 3 signatures to 1 step + 1 signature.
-- Stamp purchase stays in the Bee API for v1 (the funder contract has a stamp-purchase tuple in `fundNodeAndBuyStamp` but the renderer passes `depth=0` to skip — keeps stamp-buy logic uniform with the existing stamp-extension flows that go through Bee anyway).
+- **Node-side funding** for the ultralight→light upgrade (see `docs/swarm-storage-funding.md`), replacing desktop's 5-step manual checklist (xDAI → CowSwap xDAI→xBZZ → xBZZ to node) and the earlier `SwarmNodeFunder` one-tx contract flow. The user sends plain xDAI to the node wallet (prefilled send from the Freedom wallet, or any wallet via an EIP-681 QR); ant's `ant_storage_*` calls quote the plan all-in and, once the node holds enough, swap, buy the batch, register it, and deploy and fund the chequebook. No contract, no signature from the main wallet.
+- The funding gate itself stays mandatory — a Bee node without funding can't connect to peers in light mode (Bee's design, not ours). Users physically *cannot* skip funding; we just shrink it to "send xDAI to this address".
+- Stamp purchase is part of that flow (`ant_storage_buy_xdai`, immutable batches); extending a node-side plan goes through `ant_storage_topup_xdai`. Dilutes and pre-existing batches keep the Bee API endpoints.
 
 **Out of scope for v1**:
 
@@ -51,13 +51,12 @@ We guard against:
 - **Cross-origin feed forgery**: feed topics are derived as `keccak256(normalizedOrigin + "/" + feedName)` — origin A can never write to a feed under origin B's namespace because the topic incorporates the (normalized, address-bar-derived) origin. The feed signing key is also separate per origin (when in `app-scoped` identity mode), so even if origin A guessed origin B's topic, A's signatures wouldn't verify under B's owner address.
 - **Origin spoofing for publish/feed grants**: same rule as the Ethereum bridge — permissions bind to the address-bar identity (e.g. `ens://foo.eth`), not the resolved bzz hash. A Swarm-content-hash rotation cannot silently transfer a publish grant to new content under a name the user trusted.
 - **Stamp-batch drain by malicious dapps**: every `swarm_publishData` / `swarm_publishFiles` requires either a foregrounded approval **or** a pre-existing per-origin auto-approve toggle. Auto-approve is opt-in per origin and never the default. A dapp cannot silently mint chunks against the user's stamp.
-- **Funding-tx phishing on light-mode upgrade**: the `SwarmNodeFunder` contract address is hardcoded in-app (not user-configurable, not dapp-supplied). The upgrade tx signs through the same `eth_sendTransaction` approval sheet pattern as any other send — the user sees `to: 0x508994…`, the resolved label "Fund Bee node (one-tx)", and the xDAI amount. It's a normal Ethereum send from the user's perspective; the contract is just the destination.
+- **Funding-tx phishing on light-mode upgrade**: the only destination the app ever asks the user to pay is the node wallet address derived from their own vault (`m/44'/60'/0'/0/1`), shown in full next to the QR and prefilled into the ordinary send flow. Nothing dapp-supplied enters that path.
 - **Replay across mnemonics on re-import**: re-importing the *same* mnemonic must not wipe state (no key changed). We compare derived bee address against current `walletAddress` before deciding to wipe. §5.6.
 
 Out of scope:
 
-- A compromised SwarmNodeFunder contract. The contract is admin-less and stateless (per the contributor's PR notes); we treat it as a vetted constant. If a future audit finds an issue, we ship a new address in a point release.
-- Front-running / MEV on the funder swap. The user picks the xDAI amount they're committing; UniswapV3's slippage is bounded by the pool's geometry. For ~$2K TVL and small per-user funding amounts (sub-$10 typically), this is acceptable.
+- Front-running / MEV on ant's xDAI→xBZZ swap. ant bounds the slippage of the swap it submits; for small per-user funding amounts (sub-$10 typically), this is acceptable.
 - A malicious local Bee node. The Bee node runs in-process under our control; if it's compromised, the whole app is.
 
 ## 3. Library posture
@@ -76,7 +75,7 @@ Out of scope:
 
 **The SwarmKit Swift package stays exactly as it is.** We don't touch its `Package.swift` or its `MobileMobileNodeOptions` surface. We drive identity by writing files into `dataDir` *before* calling `SwarmNode.start(_:)`, and we drive light/ultralight by setting `SwarmConfig.rpcEndpoint`. No new gomobile bindings needed.
 
-**What we build in-repo**: V3 keystore encoder (~80 LoC of plumbing — `CryptoSwift.Scrypt` + `CommonCrypto` AES-CTR + `web3.swift` keccak + `JSONEncoder`; we do not implement any primitive ourselves), Bee state-dir wiper, `BeeAPIClient`, `StampService`, `SwarmBridge` + preload script, `SwarmRouter`, `SwarmPermissionStore` (SwiftData), `SwarmFeedStore` (SwiftData), `SwarmPublishService`, `SwarmFeedService`, the `SwarmNodeFunder` ABI binding (one method, hand-encoded — no new ABI tooling). All mechanical, all small, threat model matches line-for-line.
+**What we build in-repo**: V3 keystore encoder (~80 LoC of plumbing — `CryptoSwift.Scrypt` + `CommonCrypto` AES-CTR + `web3.swift` keccak + `JSONEncoder`; we do not implement any primitive ourselves), Bee state-dir wiper, `BeeAPIClient`, `StampService`, `SwarmBridge` + preload script, `SwarmRouter`, `SwarmPermissionStore` (SwiftData), `SwarmFeedStore` (SwiftData), `SwarmPublishService`, `SwarmFeedService`, and the `StorageFundingController` state machine over ant's `ant_storage_*` calls. All mechanical, all small, threat model matches line-for-line.
 
 ## 4. Module layout
 
@@ -87,9 +86,8 @@ Freedom/
 ├── Wallet/                              ✅ (M5, see wallet-architecture.md)
 │   ├── Vault/HDKey.swift                ✅ incl. publisherKey(originIndex:)
 │   └── Transactions/TransactionService.swift
-│                                        ✅ Used as-is by funder via direct
-│                                            (to, value, data) tuple — no
-│                                            buildFundNode helper needed.
+│                                        ✅ `awaitConfirmation` reads the
+│                                            receipt and requires status 0x1.
 └── Swarm/                               ── new tree at M6
     ├── Identity/
     │   ├── BeeKeystore.swift            ✅ V3 JSON encoder (scrypt + AES-128-CTR)
@@ -106,12 +104,11 @@ Freedom/
     │   └── BeeWalletInfo.swift          ✅ polls /wallet + /chequebook/balance
     │                                       (replaces the planned BeeWalletCard
     │                                       service-side; UI lives in NodeHomeView)
-    ├── Funder/
-    │   ├── SwarmFunderConstants.swift   ✅ pinned addresses, decimals, slippage
-    │   ├── SwarmFunderQuote.swift       ✅ spot from sqrtPriceX96, expected/min BZZ
-    │   ├── SwarmFunderPool.swift        ✅ slot0() reader via WalletRPC
-    │   └── FundNodeBuilder.swift        ✅ hand-rolled ABI encoder for
-    │                                       fundNodeAndBuyStamp (selector 0x834aeb80)
+    ├── Storage/
+    │   ├── StorageQuote.swift           ✅ ant_storage_* JSON models, EIP-681 URI
+    │   └── StorageFundingController.swift
+    │                                    ✅ plan → payment → activating → done,
+    │                                       single-flight buy, settlement deposit
     ├── API/
     │   └── BeeAPIClient.swift           ✅ URLSession wrapper. GET + POST (with
     │                                       optional query params for endpoints
@@ -216,14 +213,13 @@ Freedom/
         │                                    inline mode toggle that the original
         │                                    plan called NodeModeView.
         ├── NodeLogView.swift            ✅ separate diagnostic surface
-        ├── PublishSetupView.swift       ✅ 4-step checklist (fund → sync →
-        │                                    chequebook deployed → buy stamp).
-        │                                    Hosts the funder UI inline that the
-        │                                    original plan split into FundNodeFlow
-        │                                    + FundNodeReviewView.
+        ├── PublishSetupView.swift       ✅ 3-step checklist (fund storage →
+        │                                    sync → chequebook deployed). Hosts
+        │                                    StorageFundingView inline.
+        ├── StorageFundingView.swift     ✅ plan picker, xDAI payment card (QR +
+        │                                    prefilled send), activating, done
         ├── PublishStepRow.swift         ✅ checklist row component
         ├── StampsView.swift             ✅ list + empty state
-        ├── StampPurchaseView.swift      ✅ preset chips + cost + buy
         ├── StampDetailView.swift        ✅ per-batch detail; pushes StampExtendView
         ├── StampExtendView.swift        ✅ two-tab (Duration / Size) extend form
         ├── SwarmConnectSheet.swift      ✅ (WP4) approval for swarm_requestAccess.
@@ -420,11 +416,15 @@ If the pinned URL goes flaky, the symptom is "the user's light node has connecti
 
 Mandatory. Light mode without funding produces a node that can't pay for chunk retrieval and silently fails — Bee's design, not ours.
 
-**Shipped gate**: `settings.beeNodeMode` itself, plus the publish-setup checklist at `PublishSetupView`. Users in `.ultraLight` see the `publishSetupCTA` banner on the node sheet and can only enter `.light` by going through the funder (step 1 of the checklist). The dual chequebook+xDAI check the original plan called for didn't ship — by the time the user is past step 1's tx confirmation, the chequebook deploy is in flight regardless of any client-side check, so an in-app "is this funded?" probe would just race bee's own state.
+**Shipped gate**: `settings.beeNodeMode` itself, plus the publish-setup checklist at `PublishSetupView`. Users in `.ultraLight` see the `publishSetupCTA` banner on the node sheet and enter `.light` automatically once step 1 (the node-side plan purchase) completes — the buy also deploys and funds the chequebook, so by then the node is funded by construction.
 
 The publish-setup banner stays visible until the user has a usable stamp (`StampService.hasUsableStamps == true`) — covers fresh-ultralight, mid-sync, and the light+ready+no-stamps gap, so the setup is "done" only when the user can actually publish.
 
-### 6.4 One-tx funding via SwarmNodeFunder
+### 6.4 Funding
+
+**Current path (node-side funding, PR "node-side storage funding")**: the user sends plain xDAI to the node wallet and ant's `ant_storage_*` calls do the rest — quote all-in, swap, buy the batch, register it, deploy and fund the chequebook — then the app switches the node to light mode. Full description in `docs/swarm-storage-funding.md`. The `SwarmNodeFunder` contract flow below shipped first and is **removed from the tree**; it stays documented for history.
+
+#### 6.4.1 One-tx funding via SwarmNodeFunder (historical)
 
 The contributor's `SwarmNodeFunder` contract at `0x508994B55C53E84d2d600A55da05f751aEf658d2` (Gnosis, deployed 2026-04-24, verified on Blockscout) takes a single tx from the user's main wallet and:
 
@@ -558,7 +558,7 @@ Shipped in the polish branch (`feature/swarm-polish`) once feed-write was settle
 
 Cost preview uses the same `StampMath` helpers as the buy flow plus a new `StampMath.diluteCostPlur(oldDepth:newDepth:oldAmount:)` for the size case — golden vectors in `StampMathTests`.
 
-State machine lives on `StampService.extendState`, independent of `BuyState` so a concurrent buy + extend don't share one slot (bee accepts both endpoints in parallel against different batches). After every successful PATCH, `topUpChequebookIfBelowFloor` runs (same fire-and-forget shape as the buy flow — extends consume xBZZ from the chequebook just like buys, so the floor needs to be maintained).
+State machine lives on `StampService.extendState`. Since node-side funding, the duration extend of the node's connected plan (`ant_storage_status.batch_id`) goes through `StorageFundingView` in extend mode (`ant_storage_topup_quote` / `ant_storage_topup_xdai`, paid in xDAI) — the node wallet holds no xBZZ for bee's own `PATCH /stamps/topup`. Dilutes and pre-existing batches keep the gateway endpoints. The post-PATCH `topUpChequebookIfBelowFloor` is gone (see §7.6).
 
 What's deliberately left out of v1:
 
@@ -567,13 +567,17 @@ What's deliberately left out of v1:
 
 ### 7.5 UI
 
-`StampsView.swift` — empty state ("No stamps yet — buy one to start publishing") if list is empty, else cards with usability badge / size / TTL / usage%. "Buy stamp" CTA pushes `StampPurchaseView.swift`.
+`StampsView.swift` — empty state ("No stamps yet — buy one to start publishing") if list is empty, else cards with usability badge / size / TTL / usage%. "Buy storage" CTA pushes `StorageFundingView.swift` (the node-side funding flow; `StampPurchaseView` is gone).
 
-Stamps surface lives under the **node sheet**, not "Wallet → Storage" as originally planned. A dedicated "Storage stamps" row in `NodeHomeView` pushes `StampsView`; the row is gated on `settings.hasCompletedPublishSetup` (same gate as the inline mode toggle). The publish-setup checklist also pushes `StampPurchaseView` from step 4 — single destination, two ways in.
+Stamps surface lives under the **node sheet**, not "Wallet → Storage" as originally planned. A dedicated "Storage stamps" row in `NodeHomeView` pushes `StampsView`; the row is gated on `settings.hasCompletedPublishSetup` (same gate as the inline mode toggle). The publish-setup checklist embeds the same `StorageFundingView` as step 1 — single flow, two ways in.
 
-### 7.6 Chequebook auto-top-up
+### 7.6 Chequebook settlement deposit
 
-Bee uses xBZZ in the chequebook to pay peers via SWAP for relaying content. With the chequebook at zero, peers won't actually serve published content — a hard prerequisite for the upcoming WP4–6 publish flow. After **every** successful stamp purchase, `StampService.topUpChequebookIfBelowFloor` runs:
+**Current path**: the node-side plan purchase deploys *and funds* the chequebook (the quote's `settlement_deposit_*` is part of the all-in price). Existing installs see a "Settlement deposit" row on the node sheet's chequebook card (`ant_storage_settlement_deposit`) with a "Top up from node wallet" button (`ant_storage_settlement_topup`, paid from xDAI the node holds). The silent `topUpChequebookIfBelowFloor` below is **removed**: it deposited xBZZ from the node wallet, which a node-side purchase leaves none of.
+
+#### 7.6.1 Chequebook auto-top-up (historical)
+
+Bee uses xBZZ in the chequebook to pay peers via SWAP for relaying content. With the chequebook at zero, peers won't actually serve published content — a hard prerequisite for the upcoming WP4–6 publish flow. After **every** successful stamp purchase, `StampService.topUpChequebookIfBelowFloor` ran:
 
 1. Read `/chequebook/balance.availableBalance`.
 2. If `available >= floor` (0.1 xBZZ in PLUR = `BigUInt(10).power(15)`) → no-op.
@@ -773,7 +777,7 @@ Originally six WPs, one PR each. WP1–3 shipped on `feature/swarm-publishing`. 
 - **Manual stamp selection on publish** — we always auto-pick the best-fitting usable batch. Surface for advanced users only if user feedback demands it.
 - **Stamp dilute as separate UX** — folded into "extend size" (the Bee API endpoint is `dilute` but the user-facing word is "size").
 - **Non-Gnosis chequebook** — Gnosis only.
-- **CowSwap / 1inch fallback for funding** — `SwarmNodeFunder` is the only path. If the funder contract goes down, we ship a new address.
+- **CowSwap / 1inch fallback for funding** — ant's own swap inside `ant_storage_buy_xdai` is the only path.
 - **In-place key rotation in Bee** — we always do full stop/wipe/start. No "graceful reload" path; bee-lite doesn't expose one.
 - **`swarm_subscribeFeed` or push-based feed updates** — SWIP-draft is poll-only. We follow.
 - **ACT (Access Control Trie) encrypted publishing** — bee-lite supports it, our wrapper doesn't. Future SWIP, future WP.

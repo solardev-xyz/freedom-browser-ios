@@ -30,7 +30,7 @@ enum BeeBootConfig {
     private static func rpcEndpoint(for mode: BeeNodeMode) -> String? {
         switch mode {
         case .ultraLight: return nil
-        case .light: return SwarmFunderConstants.pinnedGnosisRPC
+        case .light: return SwarmDefaults.pinnedGnosisRPC
         }
     }
 }
