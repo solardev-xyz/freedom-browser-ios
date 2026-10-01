@@ -3,9 +3,12 @@ import SwiftUI
 
 /// Extend an existing batch's TTL (duration tab) or capacity (size tab).
 /// State machine lives in `StampService.extendState`; this view only
-/// renders + dispatches. Mirrors `StampPurchaseView`'s shape and reads
-/// its batch from `stampService.stamps` so a successful extend
-/// (`refreshStamps`) propagates without re-pushing.
+/// renders + dispatches. Reads its batch from `stampService.stamps` so
+/// a successful extend (`refreshStamps`) propagates without re-pushing.
+///
+/// The plan ant stamps with (`ant_storage_status.batch_id`) was bought
+/// node-side and the node wallet holds no xBZZ for bee's own topup, so
+/// its duration extends through the xDAI funding flow instead.
 @MainActor
 struct StampExtendView: View {
     enum Mode: String, CaseIterable, Identifiable {
@@ -16,7 +19,11 @@ struct StampExtendView: View {
 
     let batchID: String
     @Environment(StampService.self) private var stampService
+    @Environment(StorageFundingController.self) private var funding
     @Environment(\.dismiss) private var dismiss
+
+    /// True when this batch is the node's connected plan.
+    @State private var isConnectedPlan = false
 
     @State private var mode: Mode = .duration
     @State private var durationIndex: Int = StampService.defaultDurationExtendIndex
@@ -41,9 +48,13 @@ struct StampExtendView: View {
                     case .duration: durationSection
                     case .size: sizeSection(for: batch)
                     }
-                    costRow
-                    confirmButton(for: batch)
-                    stateMessage
+                    if mode == .duration, isConnectedPlan {
+                        planExtendLink
+                    } else {
+                        costRow
+                        confirmButton(for: batch)
+                        stateMessage
+                    }
                 } else {
                     Text("Stamp no longer present.")
                         .font(.callout)
@@ -55,6 +66,10 @@ struct StampExtendView: View {
         .navigationTitle("Extend stamp")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: estimateKey) { await refreshEstimate() }
+        .task {
+            let connected = await funding.connectedPlanBatchID()
+            isConnectedPlan = connected.map { Hex.stripped($0.lowercased()) == Hex.stripped(batchID.lowercased()) } ?? false
+        }
         .onAppear { initSizeIndex() }
         .onChange(of: stampService.extendState) { _, new in
             if case .completed = new { dismiss() }
@@ -80,6 +95,24 @@ struct StampExtendView: View {
                     if !isLocked { durationIndex = idx }
                 }
             }
+        }
+    }
+
+    /// Node-side plans are extended with xDAI the way they were bought:
+    /// the funding flow quotes the top-up and the node pays for it.
+    private var planExtendLink: some View {
+        let days = UInt64(StampService.durationExtendPresets[durationIndex].additionalDays)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Your node extends this plan itself — the next step prices it in xDAI.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            NavigationLink {
+                StorageFundingView(initialPurchase: .extend(days: days))
+            } label: {
+                Label("Extend plan", systemImage: "arrow.up.circle.fill")
+            }
+            .buttonStyle(PrimaryActionStyle())
         }
     }
 

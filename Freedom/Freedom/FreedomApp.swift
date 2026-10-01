@@ -32,6 +32,7 @@ struct FreedomApp: App {
     @State private var beeIdentity: BeeIdentityCoordinator
     @State private var beeReadiness: BeeReadiness
     @State private var stampService: StampService
+    @State private var storageFunding: StorageFundingController
     @State private var beeWalletInfo: BeeWalletInfo
     @State private var swarmPermissionStore: SwarmPermissionStore
     @State private var swarmFeedStore: SwarmFeedStore
@@ -149,7 +150,8 @@ struct FreedomApp: App {
             self._permissionStore = State(wrappedValue: permissions)
             self._autoApproveStore = State(wrappedValue: autoApprove)
             self._transactionService = State(wrappedValue: txService)
-            self._beeIdentity = State(wrappedValue: BeeIdentityCoordinator(settings: settings))
+            let beeIdentity = BeeIdentityCoordinator(settings: settings)
+            self._beeIdentity = State(wrappedValue: beeIdentity)
             let swarmInstance = SwarmNode()
             // Ant's Gnosis reads and broadcasts go through the same
             // chain-data router as the wallet (desktop PR #419 parity)
@@ -162,13 +164,30 @@ struct FreedomApp: App {
             self._beeReadiness = State(wrappedValue: readiness)
             let stamps = StampService(swarm: swarmInstance, settings: settings)
             let walletInfo = BeeWalletInfo(swarm: swarmInstance, settings: settings)
-            // Stamp service triggers a chequebook auto-deposit after
-            // every successful purchase; the attach lets it nudge
-            // BeeWalletInfo to refresh balances once the deposit lands
-            // instead of waiting for the next 30s poll tick.
-            stamps.attach(walletInfo: walletInfo)
             self._stampService = State(wrappedValue: stamps)
             self._beeWalletInfo = State(wrappedValue: walletInfo)
+            // Storage plans are bought node-side (`ant_storage_*`); the
+            // calls work in every mode and fall back to the pinned RPC
+            // when the chain transport can't serve.
+            swarmInstance.storageRPC = SwarmDefaults.pinnedGnosisRPC
+            let storageFunding = StorageFundingController(ffi: .live(swarmInstance))
+            storageFunding.onActivated = { purchase in
+                stamps.expectNewPlan()
+                if case .buy = purchase {
+                    // The gateway loads plans and the chequebook at
+                    // start: upgrade to light mode, or restart if the
+                    // node is already there.
+                    if settings.beeNodeMode == .ultraLight {
+                        beeIdentity.switchMode(to: .light, swarm: swarmInstance)
+                    } else {
+                        beeIdentity.reloadNode(swarm: swarmInstance)
+                    }
+                } else {
+                    await stamps.refreshStamps()
+                }
+                await walletInfo.refresh()
+            }
+            self._storageFunding = State(wrappedValue: storageFunding)
             let swarmPermissions = SwarmPermissionStore(context: container.mainContext)
             let feedStore = SwarmFeedStore(context: container.mainContext)
             let publishHistory = SwarmPublishHistoryStore(context: container.mainContext)
@@ -309,6 +328,7 @@ struct FreedomApp: App {
                 .environment(beeIdentity)
                 .environment(beeReadiness)
                 .environment(stampService)
+                .environment(storageFunding)
                 .environment(beeWalletInfo)
                 .environment(swarmPermissionStore)
                 .environment(swarmFeedStore)

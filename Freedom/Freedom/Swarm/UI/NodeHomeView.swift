@@ -15,6 +15,7 @@ struct NodeHomeView: View {
     @Environment(StampService.self) private var stampService
     @Environment(BeeWalletInfo.self) private var beeWallet
     @Environment(SwarmPublishHistoryStore.self) private var publishHistoryStore
+    @Environment(StorageFundingController.self) private var funding
 
     var body: some View {
         ScrollView {
@@ -160,11 +161,51 @@ struct NodeHomeView: View {
             if let addr = beeReadiness.chequebookAddress {
                 CopyableAddressRow(address: addr)
             }
+            settlementDepositRow
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        .task(id: beeReadiness.chequebookAddress) { await funding.refreshDeposit() }
+    }
+
+    /// The settlement deposit backs the cheques the node signs for
+    /// bandwidth. Installs from before node-side funding may run with
+    /// an empty one; the node tops it up from xDAI it holds.
+    @ViewBuilder private var settlementDepositRow: some View {
+        if let deposit = funding.deposit, deposit.enabled {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Settlement deposit").font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(deposit.depositBzz) / \(deposit.targetBzz) xBZZ")
+                        .font(.callout).monospacedDigit()
+                }
+                if deposit.needsTopUp {
+                    if deposit.sufficientFunds {
+                        Button {
+                            Task { await funding.topUpDeposit() }
+                        } label: {
+                            Label(
+                                funding.isToppingUpDeposit ? "Topping up…" : "Top up from node wallet",
+                                systemImage: funding.isToppingUpDeposit ? "hourglass" : "arrow.up.circle.fill"
+                            )
+                        }
+                        .buttonStyle(PrimaryActionStyle(isEnabled: !funding.isToppingUpDeposit))
+                        .disabled(funding.isToppingUpDeposit)
+                    } else {
+                        Text("Send \(StoragePayment.roundedUpXdai(deposit.xdaiToSendDisplay)) xDAI to your node wallet to fund the deposit.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let error = funding.depositError {
+                        Text(error).font(.caption).foregroundStyle(.red)
+                    }
+                }
+            }
+        }
     }
 
     /// Desktop's `freedom://publish`: publish a file, folder or text

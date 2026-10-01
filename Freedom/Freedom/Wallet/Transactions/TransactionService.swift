@@ -18,6 +18,7 @@ final class TransactionService {
         case signingFailed
         case broadcastMalformed
         case confirmationTimeout
+        case transactionReverted
 
         var errorDescription: String? {
             switch self {
@@ -27,6 +28,7 @@ final class TransactionService {
             case .signingFailed: return "Couldn't sign the transaction. Unlock the wallet and try again."
             case .broadcastMalformed: return "Signed transaction is malformed — please report this."
             case .confirmationTimeout: return "Transaction hasn't confirmed within the expected window. It may still land — check the explorer."
+            case .transactionReverted: return "The transaction was mined but reverted — nothing was transferred. Check the explorer."
             }
         }
     }
@@ -214,9 +216,12 @@ final class TransactionService {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
             try Task.checkCancellation()
-            if let tx = try await registry.walletRPC.getTransaction(hash: hash, on: chain),
-               let blockHex = tx.blockNumber,
+            // The receipt, not the transaction: a mined transaction
+            // has a block number whether it succeeded or reverted.
+            if let receipt = try await registry.walletRPC.getTransactionReceipt(hash: hash, on: chain),
+               let blockHex = receipt.blockNumber,
                let block = Hex.int(blockHex) {
+                guard receipt.succeeded else { throw Error.transactionReverted }
                 return block
             }
             try? await Task.sleep(for: interval)

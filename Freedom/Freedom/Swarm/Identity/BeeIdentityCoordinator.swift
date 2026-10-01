@@ -93,6 +93,17 @@ final class BeeIdentityCoordinator {
         run { [restartForModeFn] in try await restartForModeFn(swarm, newMode) }
     }
 
+    /// Restart bee in its current mode so the gateway reloads state
+    /// written outside it (a plan bought through `ant_storage_buy_xdai`
+    /// while the light node was already up).
+    func reloadNode(swarm: SwarmNode) {
+        let mode = settings.beeNodeMode
+        retryAction = { [weak self] in
+            self?.reloadNode(swarm: swarm)
+        }
+        run { [restartForModeFn] in try await restartForModeFn(swarm, mode) }
+    }
+
     /// No-op if there's no failure to recover from (e.g. user cancelled the
     /// alert first).
     func retry() {

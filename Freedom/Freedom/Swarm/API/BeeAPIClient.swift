@@ -8,11 +8,35 @@ import Foundation
 struct BeeAPIClient {
     static let baseURL = URL(string: "http://127.0.0.1:1633")!
 
-    enum Error: Swift.Error, Equatable {
+    enum Error: Swift.Error, Equatable, LocalizedError {
         case notRunning           // network refused (bee not up)
         case notFound             // 404
         case transient(Int)       // 5xx, retryable
+        /// Any other 4xx: bee's own message (`{"message": …}`), the
+        /// body text, or the status when the body is empty.
+        case rejected(status: Int, message: String)
         case malformedResponse    // body wasn't JSON or missing fields
+
+        var errorDescription: String? {
+            switch self {
+            case .notRunning: "The Swarm node isn't running."
+            case .notFound: "Not found on the Swarm node."
+            case .transient(let status): "The Swarm node is busy (HTTP \(status)). Try again shortly."
+            case .rejected(_, let message): message
+            case .malformedResponse: "The Swarm node returned an unexpected response."
+            }
+        }
+
+        /// Build the `.rejected` case for a 4xx: bee answers with a JSON
+        /// `{"code": 400, "message": "…"}` body on nearly every route.
+        static func rejection(status: Int, body: Data) -> Error {
+            if let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let message = object["message"] as? String, !message.isEmpty {
+                return .rejected(status: status, message: message)
+            }
+            let text = String(decoding: body, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            return .rejected(status: status, message: text.isEmpty ? "The Swarm node rejected the request (HTTP \(status))." : text)
+        }
     }
 
     let session: URLSession
@@ -388,6 +412,7 @@ struct BeeAPIClient {
                 }
                 return (data, headers)
             case 404: throw Error.notFound
+            case 400..<500: throw Error.rejection(status: http.statusCode, body: data)
             case 500..<600: throw Error.transient(http.statusCode)
             default: throw Error.malformedResponse
             }

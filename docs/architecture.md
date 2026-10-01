@@ -333,7 +333,7 @@ Alternative if the xcframework gets much bigger: host on S3 / Cloudflare R2.
 
 Freedom Browser is the first use case. The SwarmKit layer is designed so other Swarm-native iOS apps could reuse it. Natural follow-ons:
 
-- **Publishing**: upload a site from the phone. Requires light mode (chequebook, stamps) and Ethereum signing. The Go `Upload` method and `BuyStamp` are already exposed; the Swift side just needs UI + key management.
+- **Publishing**: upload a site from the phone. Requires light mode (chequebook, stamps) and Ethereum signing. Shipped: see `docs/swarm-publishing.md`; storage plans are bought node-side with plain xDAI through ant's `ant_storage_*` calls (`docs/swarm-storage-funding.md`).
 - **Feeds**: Swarm Feed subscription (mutable pointers into immutable content). Requires wrapping `bee-lite.AddFeed` / feed lookup.
 - **Access control**: ACT (Access Control Trie) encrypted content. Already supported in bee-lite (`actDecryptionHandler`), not yet exposed through our wrapper.
 
