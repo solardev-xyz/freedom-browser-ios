@@ -196,13 +196,13 @@ final class SwarmBridgeTests: XCTestCase {
     func testPublishDataNodeUltraLightReturns4900() async throws {
         connect()
         // Router caps gate fires before stamp selection.
-        fixture.stubs.routerNodeReason = Reason.ultraLightMode
+        fixture.stubs.routerNodeReason = Reason.noUsableStamps
         await fixture.dispatch(
             method: "swarm_publishData",
             params: ["data": "hi", "contentType": "text/plain"],
             origin: connectedOrigin
         )
-        try assertSingleError(code: 4900, reason: Reason.ultraLightMode)
+        try assertSingleError(code: 4900, reason: Reason.noUsableStamps)
     }
 
     func testPublishDataDeniedReturns4001() async throws {

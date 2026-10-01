@@ -55,7 +55,6 @@ final class SwarmRouter {
             // permission-gated calls in WP5/WP6)
             static let notConnected = "not-connected"
             static let nodeStopped = "node-stopped"
-            static let ultraLightMode = "ultra-light-mode"
             static let nodeNotReady = "node-not-ready"
             static let noUsableStamps = "no-usable-stamps"
             // -32602 reasons — full list per SWIP §"Structured Error Reasons"
@@ -136,8 +135,8 @@ final class SwarmRouter {
     private let listFeedsForOrigin: @MainActor (String) -> [[String: Any]]
     /// Returns `nil` when bee is fully ready, or one of the node-side
     /// `Reason` strings otherwise. Production wiring composes from
-    /// `SwarmNode.status`, `SettingsStore.beeNodeMode`,
-    /// `BeeReadiness.state`, and `StampService.hasUsableStamps`.
+    /// `SwarmNode.status`, `BeeReadiness.state`, and
+    /// `StampService.hasUsableStamps`.
     private let nodeFailureReason: @MainActor () -> String?
     /// Stored owner address for `(origin, name)`, from the local feed
     /// store. Returns `nil` when no record exists — `swarm_readFeedEntry`

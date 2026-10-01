@@ -24,10 +24,13 @@ to it and ant (via `freedom-mobile-ffi`) does everything on-chain:
    registers it with ant, and deploys and funds the chequebook when
    needed. It blocks until the transactions confirm (one to two minutes
    on Gnosis).
-4. On success the app switches the node to light mode (or restarts it if
-   it already was) so the gateway reloads the batch and the chequebook,
-   and `StampService` polls fast until `/stamps` lists the batch as
-   usable.
+4. On success the running gateway lists the batch at once (the C API and
+   the gateway share the issuer registry); it reports `usable:false` for
+   about 70 s (ant #107), then usable. The app re-runs the idempotent
+   `ant_start_gateway` (`SwarmNode.refreshChainState`) so the gateway
+   adopts the chequebook the buy deployed and its `/chequebook` and
+   `/wallet` surfaces follow; `StampService` polls fast until `/stamps`
+   lists the batch as usable. No mode switch, no restart.
 
 Extending a node-side plan works the same way with
 `ant_storage_topup_quote(days)` / `ant_storage_topup_xdai(amount_per_chunk)`
@@ -63,11 +66,25 @@ deposited xBZZ the node no longer holds.
   `ant_storage_buy_xdai` while one is running. `StorageFundingController`
   activates at most once per payment session; a failed buy drops back to
   the payment step with ant's message and needs a manual "Activate again".
-- **The storage calls work in ultra-light mode.** They build their own
-  chain client per call (the installed chain transport first, the pinned
-  RPC in `SwarmDefaults.pinnedGnosisRPC` as fallback), so the plan is
-  bought before the node ever runs light, and the light-mode switch stays
-  automatic — no toggle.
+- **No light / ultra-light mode.** ant has none any more: `light_mode` on
+  `ant_start_gateway` is a label, the Gnosis RPC argument is the switch
+  that makes ant build a chain client, and the installed chain transport
+  routes that client's requests through the app's chain-data router.
+  Freedom always passes the RPC (desktop #459 does the same), so the
+  `BeeNodeMode` setting, the mode row, the post-buy restart and the
+  startup `ant_deploy_chequebook` / `ant_storage_discover` calls are gone.
+  A node that never bought storage pays nothing for it: ant's startup
+  chain block only reads (a block number and two xBZZ log scans filtered
+  by the node address — about nine `eth_getLogs` through the router on
+  the simulator, each answered by the quorum in well under a second).
+- **Gateway start never deploys.** It verifies persisted batches,
+  rediscovers owned ones, and adopts a chequebook the node wallet ever
+  funded. An account with batches but no chequebook (a deploy that ran
+  out of gas, a reinstall whose old chequebook was never funded from the
+  node wallet) shows "Settlement is off" on the chequebook card with a
+  "Set up settlement" button (`ant_deploy_chequebook`).
+- **The capability reason** dapps get for a node without a plan is
+  `no-usable-stamps`, as on desktop; `ultra-light-mode` no longer exists.
 - **`awaitConfirmation` reads the receipt.** A mined transaction has a
   block number whether it succeeded or reverted; the wallet's send flow
   now requires `status == 0x1` and surfaces `transactionReverted`.
@@ -76,7 +93,6 @@ deposited xBZZ the node no longer holds.
 
 ## Follow-ups
 
-- ant #97/#98 (persisted-issuer verification, gateway-start rediscovery
-  and chequebook adoption): once released, bump the ffi pin; the
-  `ant_storage_discover` call at start becomes redundant.
 - A Rust-side single-flight guard would let the app drop `didAutoActivate`.
+- ant: the running gateway's chequebook slot isn't updated by a C-API
+  buy (hence `refreshChainState`); ant-23 is raising an ant fix.

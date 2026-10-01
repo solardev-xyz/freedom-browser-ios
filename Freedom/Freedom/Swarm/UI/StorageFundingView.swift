@@ -135,7 +135,7 @@ struct StorageFundingView: View {
     /// the xBZZ figure; the xDAI differs per node: nothing when the
     /// node is funded, only gas when it already holds the xBZZ, swap
     /// input plus gas otherwise.
-    nonisolated static func sendLine(for quote: StorageQuote) -> String {
+    static func sendLine(for quote: StorageQuote) -> String {
         if quote.sufficientFunds { return "node already funded" }
         let xdai = StoragePayment.roundedUpXdai(quote.xdaiToSendDisplay)
         return quote.coveredByNodeBzz ? "send \(xdai) xDAI for fees" : "send \(xdai) xDAI"
@@ -218,7 +218,7 @@ struct StorageFundingView: View {
     /// What the xDAI pays for: the plan costs `totalCostBzz` xBZZ either
     /// way; the node swaps for what it lacks and keeps a small reserve
     /// for its own transactions.
-    nonisolated static func coverageLine(for quote: StorageQuote) -> String {
+    static func coverageLine(for quote: StorageQuote) -> String {
         var parts: [String] = []
         if quote.coveredByNodeBzz {
             parts.append("Your node already holds the \(quote.totalCostBzz) xBZZ this plan costs, so the xDAI only covers its transaction fees.")
@@ -333,7 +333,7 @@ struct StorageFundingView: View {
 
     private var doneLabel: String {
         if case .extend = funding.purchase { return "Plan extended." }
-        return "Plan active. Your node restarts to load it."
+        return "Plan active. It becomes usable in about a minute."
     }
 
     private static func generateQR(content: String) -> UIImage? {

@@ -2,6 +2,7 @@ import XCTest
 @testable import Freedom
 
 /// ant's storage JSON as the app reads it, plus the payment helpers.
+@MainActor
 final class StorageQuoteTests: XCTestCase {
     func testDecodesAntStorageQuote() throws {
         let json = """

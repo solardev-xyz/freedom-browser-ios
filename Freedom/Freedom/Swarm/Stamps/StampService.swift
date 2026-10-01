@@ -145,11 +145,6 @@ final class StampService {
     /// during that window we leave `stamps` empty and try again next
     /// tick.
     func refreshStamps() async {
-        guard settings.beeNodeMode == .light else {
-            if !stamps.isEmpty { stamps = [] }
-            if hasUsableStamps { hasUsableStamps = false }
-            return
-        }
         guard let batches = try? await fetchStamps() else { return }
         if batches != stamps { stamps = batches }
         let usable = batches.contains(where: { $0.usable })

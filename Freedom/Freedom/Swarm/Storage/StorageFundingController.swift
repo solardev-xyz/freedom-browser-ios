@@ -16,6 +16,9 @@ struct StorageFFI {
     var status: @MainActor () async throws -> StorageStatus
     var settlementDeposit: @MainActor () async throws -> SettlementDeposit
     var settlementTopup: @MainActor () async throws -> SettlementDeposit
+    /// `ant_deploy_chequebook`: deploy or adopt the chequebook and
+    /// switch settlement on. Returns the address.
+    var deployChequebook: @MainActor () async throws -> String
 
     @MainActor
     static func live(_ node: SwarmNode) -> StorageFFI {
@@ -26,7 +29,8 @@ struct StorageFFI {
             topup: { amount in _ = try await node.storageTopupXdai(amountPerChunk: amount) },
             status: { try StorageStatus.decode(try await node.storageStatus()) },
             settlementDeposit: { try SettlementDeposit.decode(try await node.settlementDeposit()) },
-            settlementTopup: { try SettlementDeposit.decode(try await node.settlementTopup()) }
+            settlementTopup: { try SettlementDeposit.decode(try await node.settlementTopup()) },
+            deployChequebook: { try await node.deployChequebook() }
         )
     }
 }
@@ -96,6 +100,8 @@ final class StorageFundingController {
     /// Runs after a successful buy or extend (switch to light mode,
     /// refresh stamps).
     @ObservationIgnored var onActivated: (@MainActor (Purchase) async -> Void)?
+    /// Runs after `setUpSettlement` deployed or adopted a chequebook.
+    @ObservationIgnored var onSettlementSetUp: (@MainActor () async -> Void)?
 
     init(ffi: StorageFFI) {
         self.ffi = ffi
@@ -246,6 +252,26 @@ final class StorageFundingController {
         defer { isToppingUpDeposit = false }
         do {
             deposit = try await ffi.settlementTopup()
+        } catch {
+            depositError = error.localizedDescription
+        }
+    }
+
+    private(set) var isSettingUpSettlement = false
+
+    /// Settlement is off although the node holds batches (a deploy that
+    /// ran out of gas, a reinstall whose old chequebook can't be
+    /// rediscovered): deploy or adopt a chequebook from xDAI the node
+    /// holds. Gateway start never does this on its own.
+    func setUpSettlement() async {
+        guard !isSettingUpSettlement else { return }
+        isSettingUpSettlement = true
+        depositError = nil
+        defer { isSettingUpSettlement = false }
+        do {
+            _ = try await ffi.deployChequebook()
+            await onSettlementSetUp?()
+            deposit = try? await ffi.settlementDeposit()
         } catch {
             depositError = error.localizedDescription
         }

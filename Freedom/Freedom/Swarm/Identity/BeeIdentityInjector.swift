@@ -64,7 +64,7 @@ enum BeeIdentityInjector {
     /// Idempotent for same-mnemonic re-imports — compares the derived
     /// address to what the running node already reports and returns early
     /// when they match.
-    static func inject(vault: Vault, swarm: SwarmNode, mode: BeeNodeMode) async throws {
+    static func inject(vault: Vault, swarm: SwarmNode) async throws {
         let hdKey = try vault.signingKey(at: .beeWallet)
         let derivedAddress = try hdKey.ethereumAddress
 
@@ -77,7 +77,7 @@ enum BeeIdentityInjector {
         // identity via identity.json), but BeeBootConfig still threads it
         // — keep loading it so the config shape is unchanged.
         let password = try BeePassword.loadOrCreate()
-        let config = await BeeBootConfig.build(password: password, mode: mode)
+        let config = await BeeBootConfig.build(password: password)
 
         try await restart(
             swarm: swarm,
@@ -89,37 +89,16 @@ enum BeeIdentityInjector {
 
     /// Drop the user-derived identity and let Bee regenerate a fresh
     /// internal random key. Called on vault wipe so the node doesn't
-    /// keep signing as a seed the user just chose to forget. Always
-    /// restarts in ultralight — caller is responsible for resetting
-    /// `settings.beeNodeMode` to `.ultraLight` so the next launch agrees.
+    /// keep signing as a seed the user just chose to forget.
     static func revertToAnonymous(swarm: SwarmNode) async throws {
         let password = try BeePassword.loadOrCreate()
-        async let config = BeeBootConfig.build(password: password, mode: .ultraLight)
+        async let config = BeeBootConfig.build(password: password)
         try await restart(
             swarm: swarm,
             wipe: .all,
             signingKey: nil,
             config: await config
         )
-    }
-
-    /// Restart bee-lite with a different `BeeNodeMode` while keeping the
-    /// existing identity. Used by the ultralight→light upgrade after the
-    /// funder tx confirms; bee re-boots into light mode and starts the
-    /// chequebook deploy + postage sync.
-    ///
-    /// Deliberately does NOT wait for `.running`: bee's first boot in
-    /// light mode includes a chequebook deploy + batch snapshot load +
-    /// postage sync prep + warmup, totalling ~5 minutes on a fresh
-    /// install. The wallet's status bar + publish-setup checklist drive
-    /// progress UI from `BeeReadiness`; a synchronous "wait for running"
-    /// gate here only produces fake errors when the wait expires before
-    /// bee finishes — bee continues starting regardless.
-    static func restartForMode(swarm: SwarmNode, mode: BeeNodeMode) async throws {
-        let password = try BeePassword.loadOrCreate()
-        async let config = BeeBootConfig.build(password: password, mode: mode)
-        try await ensureStopped(swarm)
-        swarm.start(await config)
     }
 
     /// Lowercase byte-equality on hex addresses. Both inputs may carry an

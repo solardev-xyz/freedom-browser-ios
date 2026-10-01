@@ -32,16 +32,15 @@ struct NodeHomeView: View {
                     }
                     statusCard
                     nodeWalletCard
-                    // Chequebook only exists in light mode and only after
-                    // bee's chequebook subsystem has come online.
-                    if beeReadiness.chequebookAddress != nil {
+                    // The chequebook (and the settlement it backs) is
+                    // readable once the gateway's chain init has run.
+                    if beeReadiness.state == .ready {
                         chequebookCard
                     }
-                    // Stamps row appears once the user has crossed `.ready`
-                    // at least once — same gate as the inline mode toggle.
+                    // Stamp rows appear once the node holds a batch.
                     // Pre-setup users use the publish-setup CTA above and
                     // never see a half-disabled "stamps" row.
-                    if settings.hasCompletedPublishSetup {
+                    if !stampService.stamps.isEmpty {
                         publishRow
                         stampsRow
                         publishHistoryRow
@@ -95,7 +94,7 @@ struct NodeHomeView: View {
     private var publishSetupCTA: some View {
         NavRowCard(
             icon: "sparkles", title: "Setup Swarm publishing",
-            subtitle: "Upgrade your node to start publishing",
+            subtitle: "Buy storage to start publishing",
             background: Color.accentColor.opacity(0.12)
         ) {
             PublishSetupView()
@@ -121,7 +120,7 @@ struct NodeHomeView: View {
                     .foregroundStyle(.secondary)
             }
             Divider().opacity(0.3)
-            modeRow
+            nodeStateRow
             if beeIdentity.status == .swapping {
                 Divider().opacity(0.3)
                 row(label: "Identity", value: "Updating…")
@@ -136,14 +135,8 @@ struct NodeHomeView: View {
     private var nodeWalletCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Node wallet").font(.caption).foregroundStyle(.secondary)
-            // Balances only meaningful in light mode (bee's `/wallet`
-            // endpoint requires the chain backend). Pre-light users
-            // see the address alone — no "— —" rows that read as
-            // broken.
-            if settings.beeNodeMode == .light {
-                balanceRow(label: "xDAI", value: beeWallet.nodeXdai, decimals: 18)
-                balanceRow(label: "xBZZ", value: beeWallet.nodeXbzz, decimals: 16)
-            }
+            balanceRow(label: "xDAI", value: beeWallet.nodeXdai, decimals: 18)
+            balanceRow(label: "xBZZ", value: beeWallet.nodeXbzz, decimals: 16)
             if !displayAddress.isEmpty {
                 CopyableAddressRow(address: displayAddress)
             }
@@ -167,14 +160,37 @@ struct NodeHomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .task(id: beeReadiness.chequebookAddress) { await funding.refreshDeposit() }
+        .task(id: beeReadiness.chequebookAddress ?? "") { await funding.refreshDeposit() }
     }
 
     /// The settlement deposit backs the cheques the node signs for
     /// bandwidth. Installs from before node-side funding may run with
     /// an empty one; the node tops it up from xDAI it holds.
     @ViewBuilder private var settlementDepositRow: some View {
-        if let deposit = funding.deposit, deposit.enabled {
+        if let deposit = funding.deposit, !deposit.enabled, !stampService.stamps.isEmpty {
+            // Batches but no chequebook (a deploy that ran out of gas,
+            // a reinstall whose old chequebook can't be rediscovered):
+            // gateway start never deploys, so offer it here.
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Settlement is off: your node can't pay peers for bandwidth yet.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    Task { await funding.setUpSettlement() }
+                } label: {
+                    Label(
+                        funding.isSettingUpSettlement ? "Setting up…" : "Set up settlement",
+                        systemImage: funding.isSettingUpSettlement ? "hourglass" : "checkmark.seal.fill"
+                    )
+                }
+                .buttonStyle(PrimaryActionStyle(isEnabled: !funding.isSettingUpSettlement))
+                .disabled(funding.isSettingUpSettlement)
+                if let error = funding.depositError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+            }
+        } else if let deposit = funding.deposit, deposit.enabled {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Settlement deposit").font(.callout).foregroundStyle(.secondary)
@@ -275,53 +291,19 @@ struct NodeHomeView: View {
     // bee-lite's `0x` prefix isn't contractual; normalise.
     private var displayAddress: String { Hex.prefixed(swarm.walletAddress) }
 
-    /// Mode row — value becomes an inline `Menu` when toggling is safe
-    /// (i.e. the user has reached `.ready` at least once, so statestore
-    /// is known to carry the chequebook reference). Pre-setup users
-    /// see a plain string and use the `publishSetupCTA` instead.
-    @ViewBuilder private var modeRow: some View {
-        HStack {
-            Text("Mode").font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            if settings.hasCompletedPublishSetup {
-                Menu {
-                    Button("Light") { switchMode(to: .light) }
-                        .disabled(settings.beeNodeMode == .light)
-                    Button("Ultralight") { switchMode(to: .ultraLight) }
-                        .disabled(settings.beeNodeMode == .ultraLight)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(modeRowValue).font(.callout)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } else {
-                Text(modeRowValue).font(.callout)
-            }
-        }
+    /// Readiness in one line. The address bar shows the same suffix at
+    /// all times; this row mirrors it inside the node sheet.
+    private var nodeStateRow: some View {
+        row(label: "Node", value: nodeStateValue)
     }
 
-    /// Human-readable mode label. In light mode, append the readiness
-    /// state — chequebook deploy / sync %. ContentView's status bar
-    /// shows the same suffix at all times; this row mirrors it inside
-    /// the node sheet so users don't have to check both surfaces.
-    private var modeRowValue: String {
-        let mode = settings.beeNodeMode.displayName
-        switch (settings.beeNodeMode, beeReadiness.state) {
-        case (.ultraLight, _): return mode
-        case (.light, .ready): return "\(mode) · ready"
-        case (.light, .startingUp): return "\(mode) · starting up"
-        case (.light, .syncingPostage(let percent, _, _)):
-            return "\(mode) · syncing \(percent)%"
-        case (.light, .initializing): return "\(mode) · starting"
-        case (.light, .browsingOnly): return mode
+    private var nodeStateValue: String {
+        switch beeReadiness.state {
+        case .ready: return "ready"
+        case .startingUp: return "starting up"
+        case .syncingPostage(let percent, _, _): return "syncing \(percent)%"
+        case .initializing: return "starting"
         }
-    }
-
-    private func switchMode(to newMode: BeeNodeMode) {
-        beeIdentity.switchMode(to: newMode, swarm: swarm)
     }
 
     private func row(label: String, value: String) -> some View {

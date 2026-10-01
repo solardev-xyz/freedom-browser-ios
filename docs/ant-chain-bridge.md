@@ -29,7 +29,7 @@ Only `eth_getLogs` is ranked; wallet and app reads are unchanged.
 
 `SwarmNode.chainTransport` is set once in `FreedomApp` and installed right after `ant_init`, before the chequebook step and `ant_start_gateway` (the gateway captures its chain wiring at start). The callback runs on ant's blocking pool, possibly concurrently, and blocks that thread on a main-actor task; `SwarmNode` calls into ant only from detached tasks, so neither side waits on the other. `ant_shutdown` drains in-flight callbacks before returning, and the retained context is released after it.
 
-With the transport in place, `SwarmNode.start` also runs `ant_storage_discover` once the node serves (light mode only): antd's startup step 3, adopting funded batches this account owns on-chain but has no local issuer for (a reinstall, or a batch bought on desktop with the same vault). Best-effort, logged to the node log as `batch discovery: N owned batches registered`.
+Since ant v0.5.51 (#98) `ant_start_gateway` runs antd's startup chain block itself in the background — persisted-batch verification, owned-batch rediscovery, chequebook adoption — so `SwarmNode.start` no longer calls `ant_deploy_chequebook` or `ant_storage_discover`. The app always passes the Gnosis RPC (no ultra-light mode), so this runs on every launch through the router: one `eth_blockNumber` and two xBZZ log scans filtered by the node address.
 
 Errors forwarded to ant are sanitized (URLs replaced by `[url]`, control characters removed, 500 characters) because ant logs them. Nothing else about a request is logged; the node log line is `[Ant chain] <method> via <source>`.
 

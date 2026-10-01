@@ -46,7 +46,7 @@ public enum SwarmError: LocalizedError {
 public struct SwarmConfig: Sendable {
     public var dataDir: URL
     public var password: String
-    public var rpcEndpoint: String?       // nil → ultra-light mode
+    public var rpcEndpoint: String?       // nil → no chain access (Freedom always passes one)
     public var bootnodes: String          // pipe-delimited list of multiaddrs
     public var mainnet: Bool
     public var networkID: Int64
@@ -117,8 +117,6 @@ public final class SwarmNode {
     /// The retained callback context for the installed transport, kept
     /// until `ant_shutdown` has drained every in-flight callback.
     private var chainTransportBox: Unmanaged<ChainTransportBox>?
-    /// Owned batches discovered on-chain at the last start (`ant_storage_discover`).
-    public private(set) var discoveredBatches: [String] = []
     /// Gnosis RPC handed to the `ant_storage_*` calls as their fallback
     /// transport (the installed chain transport answers first). Needed
     /// in every mode: storage can be bought while the node still browses
@@ -251,26 +249,6 @@ public final class SwarmNode {
                 }
             }
 
-            // Light mode: deploy (or rediscover / reuse) the node's
-            // chequebook BEFORE serving, so the gateway's ChainContext
-            // reports it and publish-setup's "chequebook deployed" step
-            // advances. Idempotent — returns the persisted/rediscovered
-            // address with no on-chain tx when one already exists (incl.
-            // one the same vault deployed on desktop). Best-effort: a
-            // failure (no xDAI for gas, RPC down) is non-fatal; the node
-            // still serves so browsing works.
-            if lightMode, let gnosisRpc {
-                var cbErr: UnsafeMutablePointer<CChar>?
-                let cbResult: String? = gnosisRpc.withCString { rpcPtr in
-                    guard let ptr = ant_deploy_chequebook(handle, rpcPtr, &cbErr) else { return nil }
-                    defer { ant_free_string(ptr) }
-                    return String(cString: ptr)
-                }
-                let line = cbResult.map { "chequebook ready · \($0)" }
-                    ?? "chequebook deploy skipped: \(Self.takeError(cbErr))"
-                await MainActor.run { self?.append(line) }
-            }
-
             // Serve the bee-compatible HTTP gateway in-process. Pass the
             // Gnosis RPC through so light mode gets live wallet/postage.
             var gwErr: UnsafeMutablePointer<CChar>?
@@ -291,7 +269,7 @@ public final class SwarmNode {
 
             let wallet = Self.readWalletAddress(handle)
 
-            let adopted = await MainActor.run { () -> Bool in
+            _ = await MainActor.run { () -> Bool in
                 guard let self else {
                     // Owner released mid-start — don't leak a live node.
                     Self.tearDown(handle, transportBox)
@@ -312,33 +290,6 @@ public final class SwarmNode {
                 return true
             }
 
-            // Light mode: adopt funded batches this account owns on-chain
-            // but has no local issuer for (antd's startup step 3 — a
-            // reinstall, or a batch bought on desktop with the same
-            // vault). A log scan, so it runs after the node is serving
-            // and never blocks browsing; best-effort like antd.
-            // Re-check right before the call: a `stop()` in between would
-            // shut the handle down under us (ant drains calls already in
-            // flight, but a call must not *start* on a freed handle).
-            var stillOurs = false
-            if adopted { stillOurs = await MainActor.run { self?.node == handle } }
-            if stillOurs, lightMode, let gnosisRpc {
-                var discErr: UnsafeMutablePointer<CChar>?
-                let json: String? = gnosisRpc.withCString { rpcPtr in
-                    guard let ptr = ant_storage_discover(handle, rpcPtr, &discErr) else { return nil }
-                    defer { ant_free_string(ptr) }
-                    return String(cString: ptr)
-                }
-                let ids = json.flatMap(Self.registeredBatchIDs) ?? []
-                let line = json != nil
-                    ? "batch discovery: \(ids.count) owned batch\(ids.count == 1 ? "" : "es") registered"
-                    : "batch discovery skipped: \(Self.takeError(discErr))"
-                await MainActor.run {
-                    guard let self, self.lifecycleGeneration == myGeneration else { return }
-                    self.discoveredBatches = ids
-                    self.append(line)
-                }
-            }
         }
     }
 
@@ -444,6 +395,30 @@ public final class SwarmNode {
         try await storageCall { handle, rpc, err in
             amountPerChunk.withCString { ant_storage_topup_xdai(handle, rpc, $0, err) }
         }
+    }
+
+    /// Re-run `ant_start_gateway` on the live node. Idempotent on a
+    /// running gateway: ant re-runs its chain init, which adopts a
+    /// chequebook a storage call just deployed and refreshes the
+    /// gateway's `/chequebook` and `/wallet` surfaces. No stop, no
+    /// restart, nothing deployed or funded.
+    public func refreshChainState() async throws {
+        guard let handle = node, let rpc = lastConfig?.rpcEndpoint else { throw StorageError.notRunning }
+        try await Task.detached(priority: .userInitiated) {
+            var err: UnsafeMutablePointer<CChar>?
+            let ok = Self.gatewayAuthority.withCString { addr in
+                rpc.withCString { ant_start_gateway(handle, addr, true, $0, &err) }
+            }
+            guard ok else { throw StorageError.failed(Self.takeError(err)) }
+        }.value
+        append("chain state refreshed")
+    }
+
+    /// Deploy (or rediscover / reuse) the node's chequebook and switch
+    /// settlement on. Idempotent; a deploy costs xDAI gas. Returns the
+    /// chequebook address.
+    public func deployChequebook() async throws -> String {
+        try await storageCall { handle, rpc, err in ant_deploy_chequebook(handle, rpc, err) }
     }
 
     /// `ant_storage_status` JSON (the connected plan).

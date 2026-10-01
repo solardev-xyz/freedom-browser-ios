@@ -4,9 +4,8 @@ import SwiftUI
 /// Per-section settings page for the embedded Swarm (bee) node.
 /// Reachable from the top-level `SettingsView` hub. Mirrors the IPFS
 /// settings page's shape, scoped today to a single Enable toggle —
-/// node mode (light / ultraLight) and other Swarm-specific controls
-/// stay in the Swarm node sheet for now since they're tied to the
-/// publish-setup flow.
+/// other Swarm-specific controls stay in the Swarm node sheet for now
+/// since they're tied to the publish-setup flow.
 @MainActor
 struct SwarmSettingsView: View {
     @Environment(SettingsStore.self) private var settings
@@ -34,7 +33,6 @@ struct SwarmSettingsView: View {
 
             Section {
                 LabeledContent("Status", value: swarm.status.rawValue.capitalized)
-                LabeledContent("Mode", value: settings.beeNodeMode.displayName)
                 LabeledContent("Connected peers", value: "\(swarm.peerCount)")
             } header: {
                 Text("Live")
