@@ -1,16 +1,15 @@
 import SwarmKit
 import SwiftUI
 
-/// Three-step checklist that takes a user from ultralight to a synced
-/// light node with an active storage plan. Step 1 is the node-side
-/// funding flow (`StorageFundingView`): the user sends plain xDAI to
-/// the node wallet and the node buys the plan, registers it, and
-/// deploys and funds its chequebook by itself. Step 2 is passive
-/// watching of the `/chainstate` percent while the light node syncs
-/// after the automatic mode switch. Step 3 is the post-sync chequebook
-/// confirmation: bee's chequebook subsystem only comes online once the
-/// node is `.ready`, so that is the first moment the deploy from step 1
-/// is visible.
+/// Three-step checklist that takes a user from a read-only node to one
+/// with an active storage plan. Step 1 is the node-side funding flow
+/// (`StorageFundingView`): the user sends plain xDAI to the node wallet
+/// and the node buys the plan, registers it, and deploys and funds its
+/// chequebook by itself. Step 2 watches the node restart with chain
+/// access (the gateway loads the plan and the chequebook at start; ant
+/// reports ready almost at once, the `/chainstate` percent only shows
+/// if it ever lags). Step 3 is the chequebook confirmation, read from
+/// the restarted node.
 @MainActor
 struct PublishSetupView: View {
     @Environment(SettingsStore.self) private var settings
@@ -47,7 +46,7 @@ struct PublishSetupView: View {
     private var step2: some View {
         PublishStepRow(
             number: 2,
-            title: "Syncing light node",
+            title: "Restarting your node",
             summary: step2Copy,
             status: step2Status
         ) {
@@ -75,7 +74,7 @@ struct PublishSetupView: View {
         if step1Status == .completed {
             return "Done. Your node holds a storage plan and runs in light mode."
         }
-        return "Pick a plan and send xDAI to your node. It swaps, buys the plan and sets up its chequebook on its own."
+        return "Pick a plan and send xDAI to your node. It buys the plan — swapping xDAI for xBZZ if it needs to — and sets up its chequebook on its own."
     }
 
     private var step2Copy: String {
@@ -88,19 +87,21 @@ struct PublishSetupView: View {
         if case .startingUp = beeReadiness.state {
             return "Connecting to Gnosis…"
         }
-        if step2Status == .completed { return "Done." }
-        return "Bee catches up to the chain. Takes a few minutes — please keep the app open."
+        if step2Status == .completed { return "Done. Your node has chain access and loaded the plan." }
+        return "Your node restarts with chain access and loads the plan and its chequebook. Usually well under a minute — keep the app open."
     }
 
     private var step3Copy: String {
-        if let addr = beeReadiness.chequebookAddress {
+        // The address can linger from an earlier session; show it only
+        // once the restarted node has confirmed it.
+        if step3Status == .completed, let addr = beeReadiness.chequebookAddress {
             return "Chequebook \(addr.shortenedHex())"
         }
         // Reached `.ready` but the one-shot address fetch failed —
-        // chequebook is deployed (bee wouldn't be ready otherwise),
+        // the chequebook exists (the node wouldn't be ready otherwise),
         // we just couldn't display it. Don't show the pending copy.
         if step3Status == .completed { return "Chequebook deployed." }
-        return "Confirms once your light node has finished syncing."
+        return "Confirms once your node is back."
     }
 
     /// Step 1 is done once a plan came through this flow or the node
@@ -121,8 +122,9 @@ struct PublishSetupView: View {
     }
 
     private var step3Status: PublishStepStatus {
-        // Auto-completes on .ready (`/chequebook/address` is the first
-        // post-sync verifiable signal that step 1's deploy succeeded).
+        // Auto-completes on .ready (`/chequebook/address` from the
+        // restarted node is the first verifiable signal that step 1's
+        // deploy succeeded).
         step2Status == .completed ? .completed : .pending
     }
 }

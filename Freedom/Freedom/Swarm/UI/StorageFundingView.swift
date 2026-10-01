@@ -298,7 +298,7 @@ struct StorageFundingView: View {
                 ProgressView()
                 Text(activatingLabel).font(.callout)
             }
-            Text("Your node swaps xDAI for xBZZ and submits the transactions. Usually one to two minutes on Gnosis — keep the app open.")
+            Text(activatingDetail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -308,6 +308,14 @@ struct StorageFundingView: View {
     private var activatingLabel: String {
         if case .extend = funding.purchase { return "Extending your plan…" }
         return "Activating your plan…"
+    }
+
+    private var activatingDetail: String {
+        let covered = funding.quote?.coveredByNodeBzz ?? false
+        let how = covered
+            ? "Your node pays with the xBZZ it already holds and submits the transactions."
+            : "Your node swaps xDAI for xBZZ and submits the transactions."
+        return how + " Usually one to two minutes on Gnosis — keep the app open."
     }
 
     private var doneCard: some View {
@@ -325,7 +333,7 @@ struct StorageFundingView: View {
 
     private var doneLabel: String {
         if case .extend = funding.purchase { return "Plan extended." }
-        return "Plan active. Your node is restarting in light mode to load it."
+        return "Plan active. Your node restarts to load it."
     }
 
     private static func generateQR(content: String) -> UIImage? {
