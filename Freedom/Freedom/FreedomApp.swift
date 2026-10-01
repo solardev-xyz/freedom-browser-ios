@@ -150,7 +150,7 @@ struct FreedomApp: App {
             self._permissionStore = State(wrappedValue: permissions)
             self._autoApproveStore = State(wrappedValue: autoApprove)
             self._transactionService = State(wrappedValue: txService)
-            let beeIdentity = BeeIdentityCoordinator(settings: settings)
+            let beeIdentity = BeeIdentityCoordinator()
             self._beeIdentity = State(wrappedValue: beeIdentity)
             let swarmInstance = SwarmNode()
             // Ant's Gnosis reads and broadcasts go through the same
@@ -160,33 +160,31 @@ struct FreedomApp: App {
             self._swarm = State(wrappedValue: swarmInstance)
             let ipfsInstance = IPFSNode()
             self._ipfs = State(wrappedValue: ipfsInstance)
-            let readiness = BeeReadiness(swarm: swarmInstance, settings: settings)
+            let readiness = BeeReadiness(swarm: swarmInstance)
             self._beeReadiness = State(wrappedValue: readiness)
             let stamps = StampService(swarm: swarmInstance, settings: settings)
             let walletInfo = BeeWalletInfo(swarm: swarmInstance, settings: settings)
             self._stampService = State(wrappedValue: stamps)
             self._beeWalletInfo = State(wrappedValue: walletInfo)
             // Storage plans are bought node-side (`ant_storage_*`); the
-            // calls work in every mode and fall back to the pinned RPC
-            // when the chain transport can't serve.
+            // calls fall back to the pinned RPC when the chain transport
+            // can't serve.
             swarmInstance.storageRPC = SwarmDefaults.pinnedGnosisRPC
             let storageFunding = StorageFundingController(ffi: .live(swarmInstance))
-            storageFunding.onActivated = { purchase in
-                stamps.expectNewPlan()
-                if case .buy = purchase {
-                    // The gateway loads plans and the chequebook at
-                    // start: upgrade to light mode, or restart if the
-                    // node is already there.
-                    if settings.beeNodeMode == .ultraLight {
-                        beeIdentity.switchMode(to: .light, swarm: swarmInstance)
-                    } else {
-                        beeIdentity.reloadNode(swarm: swarmInstance)
-                    }
-                } else {
-                    await stamps.refreshStamps()
-                }
+            // The running gateway lists a bought batch at once, but only
+            // a repeated (idempotent) gateway start lets it adopt the
+            // chequebook the buy deployed.
+            let adoptChainState: @MainActor () async -> Void = {
+                try? await swarmInstance.refreshChainState()
+                await readiness.refreshChequebookAddress()
                 await walletInfo.refresh()
             }
+            storageFunding.onActivated = { purchase in
+                stamps.expectNewPlan()
+                await stamps.refreshStamps()
+                if case .buy = purchase { await adoptChainState() } else { await walletInfo.refresh() }
+            }
+            storageFunding.onSettlementSetUp = adoptChainState
             self._storageFunding = State(wrappedValue: storageFunding)
             let swarmPermissions = SwarmPermissionStore(context: container.mainContext)
             let feedStore = SwarmFeedStore(context: container.mainContext)
@@ -202,15 +200,12 @@ struct FreedomApp: App {
                 discover: { await manifestFetcher.discover(committedURL: $0) }
             )
             self._swarmManifestStore = State(wrappedValue: manifestStore)
-            // Composed once; closure reads the four observables live so a
-            // mode flip / sync tick / stamp purchase is reflected on the
-            // next swarm_getCapabilities without rebuilding anything.
+            // Composed once; closure reads the three observables live so a
+            // sync tick / stamp purchase is reflected on the next
+            // swarm_getCapabilities without rebuilding anything.
             let nodeFailureReason: @MainActor () -> String? = {
                 if swarmInstance.status != .running {
                     return SwarmRouter.ErrorPayload.Reason.nodeStopped
-                }
-                if settings.beeNodeMode == .ultraLight {
-                    return SwarmRouter.ErrorPayload.Reason.ultraLightMode
                 }
                 if readiness.state != .ready {
                     return SwarmRouter.ErrorPayload.Reason.nodeNotReady
@@ -567,17 +562,12 @@ struct FreedomApp: App {
             let isLegacyInstall = try BeePassword.readExisting() == nil
             if isLegacyInstall {
                 try BeeStateDirs.wipeAll(at: SwarmNode.defaultDataDir())
-                // Statestore is gone with the dir — bee would deploy a
-                // fresh chequebook on the next light boot, orphaning the
-                // user's previous on-chain one. Force back to ultralight
-                // so they go through publish-setup intentionally.
-                // (Reset BEFORE building config — the boot config reads
-                // `settings.beeNodeMode` to decide swap-enable.)
-                settings.beeNodeMode = .ultraLight
-                settings.hasCompletedPublishSetup = false
+                // ant rediscovers owned batches and a chequebook the node
+                // wallet ever funded at the next gateway start; nothing
+                // is deployed until the user buys storage again.
             }
             let password = try BeePassword.loadOrCreate()
-            let config = await BeeBootConfig.build(password: password, mode: settings.beeNodeMode)
+            let config = await BeeBootConfig.build(password: password)
             swarm.start(config)
         } catch {
             // SwarmNode stays `.idle`; a future scenePhase resume retries.

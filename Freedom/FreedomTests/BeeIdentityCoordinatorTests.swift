@@ -7,31 +7,14 @@ import SwarmKit
 @MainActor
 final class BeeIdentityCoordinatorTests: XCTestCase {
     private let dummySwarm = SwarmNode()
-    private var settings: SettingsStore!
-
-    override func setUp() async throws {
-        try await super.setUp()
-        // Per-test UUID suite so `revertInBackground` and `switchMode`
-        // can't reach the user's real `beeNodeMode` /
-        // `hasCompletedPublishSetup` (production was getting clobbered
-        // back to ultralight by every test run).
-        let defaults = UserDefaults(suiteName: "BeeIdentityCoordinatorTests-\(UUID().uuidString)")!
-        settings = SettingsStore(defaults: defaults)
-    }
 
     private func makeVault() -> Vault { Vault() }
 
     private func makeCoord(
-        inject: @escaping BeeIdentityCoordinator.InjectionWork = { _, _, _ in },
-        revert: @escaping BeeIdentityCoordinator.RevertWork = { _ in },
-        restartForMode: @escaping BeeIdentityCoordinator.ModeChangeWork = { _, _ in }
+        inject: @escaping BeeIdentityCoordinator.InjectionWork = { _, _ in },
+        revert: @escaping BeeIdentityCoordinator.RevertWork = { _ in }
     ) -> BeeIdentityCoordinator {
-        BeeIdentityCoordinator(
-            settings: settings,
-            inject: inject,
-            revert: revert,
-            restartForMode: restartForMode
-        )
+        BeeIdentityCoordinator(inject: inject, revert: revert)
     }
 
     // MARK: - Status transitions
@@ -44,7 +27,7 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
     }
 
     func testInjectTransitionsToFailedOnError() async throws {
-        let coord = makeCoord(inject: { _, _, _ in throw FakeError.boom })
+        let coord = makeCoord(inject: { _, _ in throw FakeError.boom })
         coord.injectInBackground(vault: makeVault(), swarm: dummySwarm)
         try await waitForFailed(coord)
         XCTAssertEqual(coord.failedMessage, FakeError.boom.localizedDescription)
@@ -66,7 +49,7 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
     // MARK: - Dismiss
 
     func testDismissErrorClearsFailed() async throws {
-        let coord = makeCoord(inject: { _, _, _ in throw FakeError.boom })
+        let coord = makeCoord(inject: { _, _ in throw FakeError.boom })
         XCTAssertNil(coord.failedMessage)
         coord.injectInBackground(vault: makeVault(), swarm: dummySwarm)
         try await waitForFailed(coord)
@@ -82,7 +65,7 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
         let injectCalls = ActorCallTracker()
         var attempt = 0
         let coord = makeCoord(
-            inject: { _, _, _ in
+            inject: { _, _ in
                 await injectCalls.increment()
                 attempt += 1
                 if attempt == 1 { throw FakeError.boom }
@@ -104,7 +87,7 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
         let revertCalls = ActorCallTracker()
         var attempt = 0
         let coord = makeCoord(
-            inject: { _, _, _ in XCTFail("should not be called") },
+            inject: { _, _ in XCTFail("should not be called") },
             revert: { _ in
                 await revertCalls.increment()
                 attempt += 1
@@ -122,36 +105,6 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
         XCTAssertEqual(retryCount, 2)
     }
 
-    // MARK: - Mode change
-
-    /// `switchMode` flips the persisted mode and routes through the
-    /// `restartForMode` closure. No-ops when target mode equals current.
-    func testSwitchModeFlipsSettingsAndRoutesToCoordinator() async throws {
-        let calls = ActorCallTracker()
-        settings.beeNodeMode = .ultraLight
-        let coord = makeCoord(
-            restartForMode: { _, _ in await calls.increment() }
-        )
-        coord.switchMode(to: .light, swarm: dummySwarm)
-        try await waitForStatus(coord, .idle)
-        let count = await calls.value
-        XCTAssertEqual(count, 1)
-        XCTAssertEqual(settings.beeNodeMode, .light)
-    }
-
-    func testSwitchModeNoOpsWhenAlreadyInTargetMode() async throws {
-        let calls = ActorCallTracker()
-        settings.beeNodeMode = .light
-        let coord = makeCoord(
-            restartForMode: { _, _ in await calls.increment() }
-        )
-        coord.switchMode(to: .light, swarm: dummySwarm)
-        // Give the runloop a tick — should NOT trigger a restart.
-        try await Task.sleep(nanoseconds: 50_000_000)
-        let count = await calls.value
-        XCTAssertEqual(count, 0)
-    }
-
     // MARK: - Cancellation
 
     /// A new injectInBackground while one is already in flight cancels
@@ -167,7 +120,7 @@ final class BeeIdentityCoordinatorTests: XCTestCase {
         let invocations = ActorCallTracker()
 
         let coord = makeCoord(
-            inject: { _, _, _ in
+            inject: { _, _ in
                 let count = await invocations.value
                 await invocations.increment()
                 if count == 0 {

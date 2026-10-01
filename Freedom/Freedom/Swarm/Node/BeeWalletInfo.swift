@@ -54,15 +54,8 @@ final class BeeWalletInfo {
     }
 
     /// Pull fresh balances. Falls through silently on errors — the
-    /// next tick will retry. Clears all values when leaving light mode
-    /// so the UI doesn't show stale balances after a vault wipe.
+    /// next tick will retry.
     func refresh() async {
-        guard settings.beeNodeMode == .light else {
-            if nodeXdai != nil { nodeXdai = nil }
-            if nodeXbzz != nil { nodeXbzz = nil }
-            if chequebookXbzz != nil { chequebookXbzz = nil }
-            return
-        }
         if let dict = try? await bee.getJSON("/wallet") {
             let xdai = Self.parseBig(dict["nativeTokenBalance"])
             if let xdai, xdai != nodeXdai { nodeXdai = xdai }

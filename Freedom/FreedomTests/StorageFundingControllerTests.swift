@@ -42,7 +42,8 @@ final class StorageFundingControllerTests: XCTestCase {
             topup: { [unowned self] amount in topups.append(amount) },
             status: { StorageStatus(enabled: true, batchID: "abcd") },
             settlementDeposit: { [unowned self] in deposit(needsTopUp: true) },
-            settlementTopup: { [unowned self] in deposit(needsTopUp: false) }
+            settlementTopup: { [unowned self] in deposit(needsTopUp: false) },
+            deployChequebook: { "0xcheq" }
         )
         let c = StorageFundingController(ffi: ffi)
         c.onActivated = { [unowned self] purchase in activated.append(purchase) }

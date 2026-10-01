@@ -6,15 +6,13 @@ import SwarmKit
 ///   - the status-bar suffix in `ContentView` (always-visible hint)
 ///   - the checklist progression in `PublishSetupView` (full surface)
 ///
-/// Adaptive polling: 3s while light mode is not-yet-ready (so the live
-/// percent feels responsive), 30s once `.ready` (sticky).
+/// Adaptive polling: 3s while not-yet-ready (so the live percent feels
+/// responsive), 30s once `.ready` (sticky).
 @MainActor
 @Observable
 final class BeeReadiness {
     enum State: Equatable {
-        /// Ultralight — node is browsing-only. No publishing surface.
-        case browsingOnly
-        /// Light, but bee isn't running yet (booting, restart in flight).
+        /// The node isn't running yet (booting, restart in flight).
         case initializing
         /// Light + running, but bee's API is in its "Node is syncing"
         /// phase — `/chainstate` not yet reachable, every other endpoint
@@ -29,7 +27,7 @@ final class BeeReadiness {
         case ready
     }
 
-    private(set) var state: State = .browsingOnly
+    private(set) var state: State = .initializing
     /// Bee's chequebook contract address, fetched once when the node
     /// first transitions to `.ready`. Drives the publish-setup
     /// "Chequebook deployed" confirmation row.
@@ -38,15 +36,12 @@ final class BeeReadiness {
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private let bee: BeeAPIClient
     @ObservationIgnored private let swarm: SwarmNode
-    @ObservationIgnored private let settings: SettingsStore
 
     init(
         swarm: SwarmNode,
-        settings: SettingsStore,
         bee: BeeAPIClient = BeeAPIClient()
     ) {
         self.swarm = swarm
-        self.settings = settings
         self.bee = bee
     }
 
@@ -87,24 +82,22 @@ final class BeeReadiness {
         if !wasReady && next == .ready {
             chequebookAddress = await fetchChequebookAddress()
         }
-        // Sticky flag: once the user has crossed into .ready we know
-        // statestore has the chequebook reference (`restartForMode`
-        // never wipes), so the inline mode toggle in `NodeHomeView` is
-        // safe to surface even after they later flip back to ultralight.
-        if next == .ready && !settings.hasCompletedPublishSetup {
-            settings.hasCompletedPublishSetup = true
-        }
+    }
+
+    /// Re-read `/chequebook/address` — after a storage buy set the
+    /// chequebook up and `SwarmNode.refreshChainState` let the gateway
+    /// adopt it.
+    func refreshChequebookAddress() async {
+        chequebookAddress = await fetchChequebookAddress()
     }
 
     // MARK: - Private
 
     private func shouldPollFast() -> Bool {
-        guard settings.beeNodeMode == .light else { return false }
-        return state != .ready
+        state != .ready
     }
 
     private func computeState() async -> State {
-        guard settings.beeNodeMode == .light else { return .browsingOnly }
         // `.starting` matters: `SwarmNode.start` does a blocking gomobile
         // call that doesn't return — and so doesn't set `.running` —
         // until bee's full init (including the ~5min bundled-snapshot

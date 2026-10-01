@@ -1,18 +1,16 @@
 import SwarmKit
 import SwiftUI
 
-/// Three-step checklist that takes a user from a read-only node to one
+/// Two-step checklist that takes a user from a read-only node to one
 /// with an active storage plan. Step 1 is the node-side funding flow
 /// (`StorageFundingView`): the user sends plain xDAI to the node wallet
 /// and the node buys the plan, registers it, and deploys and funds its
-/// chequebook by itself. Step 2 watches the node restart with chain
-/// access (the gateway loads the plan and the chequebook at start; ant
-/// reports ready almost at once, the `/chainstate` percent only shows
-/// if it ever lags). Step 3 is the chequebook confirmation, read from
-/// the restarted node.
+/// chequebook by itself. Step 2 waits for the network to see the batch:
+/// the gateway lists it at once but reports it usable only after bee's
+/// block window (about a minute). The node always has chain access, so
+/// there is no mode switch and no restart.
 @MainActor
 struct PublishSetupView: View {
-    @Environment(SettingsStore.self) private var settings
     @Environment(BeeReadiness.self) private var beeReadiness
     @Environment(StampService.self) private var stampService
     @Environment(StorageFundingController.self) private var funding
@@ -22,7 +20,6 @@ struct PublishSetupView: View {
             VStack(alignment: .leading, spacing: 12) {
                 step1
                 step2
-                step3
             }
             .padding(20)
         }
@@ -46,25 +43,9 @@ struct PublishSetupView: View {
     private var step2: some View {
         PublishStepRow(
             number: 2,
-            title: "Restarting your node",
+            title: "Plan ready",
             summary: step2Copy,
             status: step2Status
-        ) {
-            Group {
-                if case .syncingPostage(let percent, _, _) = beeReadiness.state {
-                    ProgressView(value: Double(percent), total: 100)
-                        .progressViewStyle(.linear)
-                }
-            }
-        }
-    }
-
-    private var step3: some View {
-        PublishStepRow(
-            number: 3,
-            title: "Chequebook deployed",
-            summary: step3Copy,
-            status: step3Status
         ) { EmptyView() }
     }
 
@@ -72,41 +53,27 @@ struct PublishSetupView: View {
 
     private var step1Copy: String {
         if step1Status == .completed {
-            return "Done. Your node holds a storage plan and runs in light mode."
+            return "Done. Your node holds a storage plan."
         }
         return "Pick a plan and send xDAI to your node. It buys the plan — swapping xDAI for xBZZ if it needs to — and sets up its chequebook on its own."
     }
 
     private var step2Copy: String {
-        if case .syncingPostage(let percent, let lastSynced, let head) = beeReadiness.state {
-            if head > 0 {
-                return "\(percent)% · block \(lastSynced.formatted()) of \(head.formatted())"
+        switch step2Status {
+        case .completed:
+            if let addr = beeReadiness.chequebookAddress {
+                return "Done. You can publish. Chequebook \(addr.shortenedHex())"
             }
-            return "Block \(lastSynced.formatted())"
+            return "Done. You can publish."
+        case .waiting:
+            return "The network confirms your plan. About a minute — keep the app open."
+        case .pending, .active:
+            return "Confirms once the plan is bought."
         }
-        if case .startingUp = beeReadiness.state {
-            return "Connecting to Gnosis…"
-        }
-        if step2Status == .completed { return "Done. Your node has chain access and loaded the plan." }
-        return "Your node restarts with chain access and loads the plan and its chequebook. Usually well under a minute — keep the app open."
-    }
-
-    private var step3Copy: String {
-        // The address can linger from an earlier session; show it only
-        // once the restarted node has confirmed it.
-        if step3Status == .completed, let addr = beeReadiness.chequebookAddress {
-            return "Chequebook \(addr.shortenedHex())"
-        }
-        // Reached `.ready` but the one-shot address fetch failed —
-        // the chequebook exists (the node wouldn't be ready otherwise),
-        // we just couldn't display it. Don't show the pending copy.
-        if step3Status == .completed { return "Chequebook deployed." }
-        return "Confirms once your node is back."
     }
 
     /// Step 1 is done once a plan came through this flow or the node
-    /// already reports a usable stamp (returning user). Ultralight
-    /// users with no plan land here.
+    /// already reports a usable stamp (returning user).
     private var step1Status: PublishStepStatus {
         if funding.step == .done || stampService.hasUsableStamps { return .completed }
         return .active
@@ -114,17 +81,6 @@ struct PublishSetupView: View {
 
     private var step2Status: PublishStepStatus {
         guard step1Status == .completed else { return .pending }
-        if settings.beeNodeMode == .ultraLight { return .waiting }
-        switch beeReadiness.state {
-        case .browsingOnly, .initializing, .startingUp, .syncingPostage: return .waiting
-        case .ready: return .completed
-        }
-    }
-
-    private var step3Status: PublishStepStatus {
-        // Auto-completes on .ready (`/chequebook/address` from the
-        // restarted node is the first verifiable signal that step 1's
-        // deploy succeeded).
-        step2Status == .completed ? .completed : .pending
+        return stampService.hasUsableStamps ? .completed : .waiting
     }
 }

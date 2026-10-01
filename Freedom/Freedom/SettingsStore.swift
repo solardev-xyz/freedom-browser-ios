@@ -209,9 +209,6 @@ final class SettingsStore {
     var enableCcipRead: Bool {
         didSet { defaults.set(enableCcipRead, forKey: Keys.enableCcipRead) }
     }
-    var beeNodeMode: BeeNodeMode {
-        didSet { defaults.set(beeNodeMode.rawValue, forKey: Keys.beeNodeMode) }
-    }
     /// IPFS reader content-routing mode. `.autoclient` is the default
     /// — delegated routing with a light-DHT fallback. Cheapest config
     /// on mobile.
@@ -223,15 +220,6 @@ final class SettingsStore {
     /// by default.
     var ipfsLowPower: Bool {
         didSet { defaults.set(ipfsLowPower, forKey: Keys.ipfsLowPower) }
-    }
-    /// True once the user has successfully reached light-mode `.ready` at
-    /// least once. Drives the inline mode toggle in `NodeHomeView`: a true
-    /// flag means bee's statestore still has the `swap_chequebook` entry
-    /// (we never wipe across mode toggles), so flipping back to light is
-    /// safe — bee picks up the existing chequebook, no redeploy.
-    /// Cleared whenever we wipe statestore (vault wipe, legacy migration).
-    var hasCompletedPublishSetup: Bool {
-        didSet { defaults.set(hasCompletedPublishSetup, forKey: Keys.hasCompletedPublishSetup) }
     }
     /// Block ads via EasyList. Default on.
     var adblockAdsEnabled: Bool {
@@ -323,8 +311,6 @@ final class SettingsStore {
             Keys.ensPublicRpcProviders: Self.defaultPublicRpcProviders,
             Keys.blockUnverifiedEns: true,
             Keys.enableCcipRead: true,
-            Keys.beeNodeMode: BeeNodeMode.ultraLight.rawValue,
-            Keys.hasCompletedPublishSetup: false,
             Keys.ipfsRoutingMode: IPFSRoutingMode.autoclient.rawValue,
             Keys.ipfsLowPower: false,
             Keys.adblockAdsEnabled: true,
@@ -359,9 +345,6 @@ final class SettingsStore {
         self.chainStoreMigrated = defaults.bool(forKey: Keys.chainStoreMigrated)
         self.blockUnverifiedEns = defaults.bool(forKey: Keys.blockUnverifiedEns)
         self.enableCcipRead = defaults.bool(forKey: Keys.enableCcipRead)
-        self.beeNodeMode = defaults.string(forKey: Keys.beeNodeMode)
-            .flatMap(BeeNodeMode.init(rawValue:)) ?? .ultraLight
-        self.hasCompletedPublishSetup = defaults.bool(forKey: Keys.hasCompletedPublishSetup)
         self.ipfsRoutingMode = defaults.string(forKey: Keys.ipfsRoutingMode)
             .flatMap(IPFSRoutingMode.init(rawValue:)) ?? .autoclient
         self.ipfsLowPower = defaults.bool(forKey: Keys.ipfsLowPower)
@@ -487,8 +470,6 @@ final class SettingsStore {
         static let chainStoreMigrated = "chainStoreMigrated"
         static let blockUnverifiedEns = "blockUnverifiedEns"
         static let enableCcipRead = "enableCcipRead"
-        static let beeNodeMode = "beeNodeMode"
-        static let hasCompletedPublishSetup = "hasCompletedPublishSetup"
         static let ipfsRoutingMode = "ipfsRoutingMode"
         static let ipfsLowPower = "ipfsLowPower"
         static let adblockAdsEnabled = "adblockAdsEnabled"

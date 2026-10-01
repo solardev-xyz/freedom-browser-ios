@@ -56,10 +56,10 @@ final class SwarmRouterTests: XCTestCase {
 
     func testCapabilitiesReportsNodeFailureWhenConnectedButNodeNotReady() async {
         connected.insert(connectedOrigin.key)
-        nodeReason = SwarmRouter.ErrorPayload.Reason.ultraLightMode
+        nodeReason = SwarmRouter.ErrorPayload.Reason.noUsableStamps
         let caps = makeRouter().capabilities(origin: connectedOrigin)
         XCTAssertFalse(caps.canPublish)
-        XCTAssertEqual(caps.reason, "ultra-light-mode")
+        XCTAssertEqual(caps.reason, "no-usable-stamps")
     }
 
     func testCapabilitiesGreenWhenConnectedAndNodeReady() async {

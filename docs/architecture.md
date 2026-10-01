@@ -203,7 +203,7 @@ The crucial insight that made M2 a two-hour task instead of a two-day fork-of-be
 
 - **Single hardcoded password**. `"freedom-default"`. Usable for reads; for writes (upload/publish) we'd need real key management.
 - **No browser chrome.** No back/forward/reload, no tabs, no history, no bookmarks. One URL at a time.
-- **Ultra-light mode only.** `rpcEndpoint == nil` means no chequebook, no SWAP payments. Read-only. Enough for browsing public Swarm content.
+- **`rpcEndpoint == nil` means no chain access**: no chequebook, no SWAP payments, read-only. SwarmKit still allows it; Freedom always passes the pinned Gnosis RPC since the always-RPC cleanup (ant has no light/ultra-light modes; the chain transport routes the node's requests through the chain-data router).
 - **No background execution strategy.** The app only runs while foregrounded. iOS backgrounds the process, libp2p connections die. Re-opening the app starts a fresh discovery cycle.
 - **Simulator proven, device untested.** No technical reason device shouldn't work — no simulator-specific code paths — but we haven't verified.
 - **Hash collision with the probe.** Both apps want port 1633. Running two at once on the same simulator fails; keep only one installed.

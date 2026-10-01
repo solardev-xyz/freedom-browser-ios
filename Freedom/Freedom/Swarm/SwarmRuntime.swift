@@ -17,7 +17,7 @@ enum SwarmRuntime {
     static func enable(swarm: SwarmNode, settings: SettingsStore) async {
         do {
             let password = try BeePassword.loadOrCreate()
-            let config = await BeeBootConfig.build(password: password, mode: settings.beeNodeMode)
+            let config = await BeeBootConfig.build(password: password)
             swarm.start(config)
         } catch {
             print("SwarmRuntime.enable failed: \(error)")

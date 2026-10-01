@@ -416,7 +416,7 @@ If the pinned URL goes flaky, the symptom is "the user's light node has connecti
 
 Mandatory. Light mode without funding produces a node that can't pay for chunk retrieval and silently fails — Bee's design, not ours.
 
-**Shipped gate**: `settings.beeNodeMode` itself, plus the publish-setup checklist at `PublishSetupView`. Users in `.ultraLight` see the `publishSetupCTA` banner on the node sheet and enter `.light` automatically once step 1 (the node-side plan purchase) completes — the buy also deploys and funds the chequebook, so by then the node is funded by construction.
+**Shipped gate**: the publish-setup checklist at `PublishSetupView` and `StampService.hasUsableStamps`. There is no node mode any more (ant has none; the app always starts the gateway with chain access and the chain transport routes it through the chain-data router — see `docs/swarm-storage-funding.md`). Users without a usable stamp see the `publishSetupCTA` banner on the node sheet; step 1 (the node-side plan purchase) also deploys and funds the chequebook, so by then the node is funded by construction.
 
 The publish-setup banner stays visible until the user has a usable stamp (`StampService.hasUsableStamps == true`) — covers fresh-ultralight, mid-sync, and the light+ready+no-stamps gap, so the setup is "done" only when the user can actually publish.
 
