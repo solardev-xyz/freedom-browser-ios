@@ -70,6 +70,7 @@ struct NodesDrawer: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .environment(\.dismissNodesUI, { dismiss() })
     }
 
     private func row(

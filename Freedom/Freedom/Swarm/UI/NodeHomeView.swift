@@ -42,6 +42,7 @@ struct NodeHomeView: View {
                     // Pre-setup users use the publish-setup CTA above and
                     // never see a half-disabled "stamps" row.
                     if settings.hasCompletedPublishSetup {
+                        publishRow
                         stampsRow
                         publishHistoryRow
                     }
@@ -204,6 +205,18 @@ struct NodeHomeView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Desktop's `freedom://publish`: publish a file, folder or text
+    /// from this device.
+    private var publishRow: some View {
+        NavRowCard(
+            icon: "square.and.arrow.up", title: "Publish on Swarm",
+            subtitle: "A file, a folder or text from this device",
+            background: Color.accentColor.opacity(0.12)
+        ) {
+            SwarmPublishView()
         }
     }
 
