@@ -105,8 +105,12 @@ struct StorageFundingView: View {
             }
             Spacer()
             if let quote = funding.quotes[plan.id] {
-                Text("\(StoragePayment.roundedUpXdai(quote.xdaiRequiredDisplay)) xDAI")
-                    .font(.callout).monospacedDigit()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(quote.totalCostBzz) xBZZ")
+                        .font(.callout).monospacedDigit()
+                    Text(Self.sendLine(for: quote))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             } else if funding.isLoadingQuotes {
                 ProgressView().controlSize(.small)
             } else {
@@ -125,6 +129,16 @@ struct StorageFundingView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .contentShape(Rectangle())
+    }
+
+    /// What the user actually sends for this plan. The plan's price is
+    /// the xBZZ figure; the xDAI differs per node: nothing when the
+    /// node is funded, only gas when it already holds the xBZZ, swap
+    /// input plus gas otherwise.
+    nonisolated static func sendLine(for quote: StorageQuote) -> String {
+        if quote.sufficientFunds { return "node already funded" }
+        let xdai = StoragePayment.roundedUpXdai(quote.xdaiToSendDisplay)
+        return quote.coveredByNodeBzz ? "send \(xdai) xDAI for fees" : "send \(xdai) xDAI"
     }
 
     private var startingCard: some View {
@@ -151,6 +165,10 @@ struct StorageFundingView: View {
                     Text(purchaseTitle).font(.headline)
                     Text("Send \(amount) xDAI on Gnosis Chain to your node. It buys the plan on its own once the transfer lands.")
                         .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(Self.coverageLine(for: quote))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -195,6 +213,22 @@ struct StorageFundingView: View {
                 }
             }
         }
+    }
+
+    /// What the xDAI pays for: the plan costs `totalCostBzz` xBZZ either
+    /// way; the node swaps for what it lacks and keeps a small reserve
+    /// for its own transactions.
+    nonisolated static func coverageLine(for quote: StorageQuote) -> String {
+        var parts: [String] = []
+        if quote.coveredByNodeBzz {
+            parts.append("Your node already holds the \(quote.totalCostBzz) xBZZ this plan costs, so the xDAI only covers its transaction fees.")
+        } else {
+            parts.append("Covers the \(quote.totalCostBzz) xBZZ this plan costs (your node swaps for it) plus a small reserve for its transaction fees.")
+        }
+        if quote.includesSettlementDeposit {
+            parts.append("Includes a one-time \(quote.settlementDepositBzz) xBZZ deposit that backs your node's bandwidth payments.")
+        }
+        return parts.joined(separator: " ")
     }
 
     private var purchaseTitle: String {

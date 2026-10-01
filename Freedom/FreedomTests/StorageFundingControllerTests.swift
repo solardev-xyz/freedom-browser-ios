@@ -18,7 +18,8 @@ final class StorageFundingControllerTests: XCTestCase {
             depth: depth, days: days, amountPerChunk: "4142000000", totalCostBzz: "0.4344",
             settlementDepositPlur: sufficient ? "0" : "10000000000000000", settlementDepositBzz: sufficient ? "0" : "1.0",
             capacityBytes: 1_000_000_000, accountBzzDisplay: "0.0000", accountXdai: "0.1", accountXdaiDisplay: "0.1000",
-            neededBzzDisplay: "1.4344", xdaiRequiredDisplay: "0.5301", xdaiToSendDisplay: sufficient ? "0" : "0.4301",
+            neededBzz: sufficient ? "0" : "14344000000000000", neededBzzDisplay: sufficient ? "0.0000" : "1.4344",
+            xdaiRequiredDisplay: "0.5301", xdaiToSendDisplay: sufficient ? "0" : "0.4301",
             sufficientFunds: sufficient
         )
     }

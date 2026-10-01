@@ -19,7 +19,12 @@ struct StorageQuote: Codable, Equatable {
     let accountBzzDisplay: String
     let accountXdai: String
     let accountXdaiDisplay: String
+    /// PLUR the node still has to swap for; "0" when its wallet already
+    /// holds the xBZZ (then `xdaiRequired` is only the gas reserve).
+    let neededBzz: String
     let neededBzzDisplay: String
+    /// Swap input plus ant's fixed gas reserve: what the node wallet
+    /// must hold. Not the plan's price — see `totalCostBzz`.
     let xdaiRequiredDisplay: String
     /// How much more xDAI the node wallet needs before the buy can run.
     let xdaiToSendDisplay: String
@@ -35,6 +40,7 @@ struct StorageQuote: Codable, Equatable {
         case accountBzzDisplay = "account_bzz_display"
         case accountXdai = "account_xdai"
         case accountXdaiDisplay = "account_xdai_display"
+        case neededBzz = "needed_bzz"
         case neededBzzDisplay = "needed_bzz_display"
         case xdaiRequiredDisplay = "xdai_required_display"
         case xdaiToSendDisplay = "xdai_to_send_display"
@@ -42,6 +48,9 @@ struct StorageQuote: Codable, Equatable {
     }
 
     var includesSettlementDeposit: Bool { (UInt64(settlementDepositPlur) ?? 0) > 0 }
+    /// The node's own xBZZ already covers the plan; the xDAI asked for
+    /// is just its transaction fees.
+    var coveredByNodeBzz: Bool { (UInt64(neededBzz) ?? 0) == 0 }
 
     static func decode(_ json: String) throws -> StorageQuote {
         try JSONDecoder().decode(StorageQuote.self, from: Data(json.utf8))
