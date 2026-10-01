@@ -4,9 +4,15 @@ import SwiftUI
 struct WalletSheet: View {
     @Environment(Vault.self) private var vault
     @Binding var isPresented: Bool
+    /// A Send form to push the moment the vault is unlocked — an
+    /// `ethereum:` payment link. Setup or unlock still come first; the
+    /// request waits, then lands on top of the wallet home.
+    var initialSend: SendRequest? = nil
+    @State private var path = NavigationPath()
+    @State private var pushedInitialSend = false
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 switch vault.state {
                 case .empty:
@@ -17,6 +23,11 @@ struct WalletSheet: View {
                     WalletHomeView()
                 }
             }
+            .navigationDestination(for: SendRequest.self) { request in
+                SendFlowView(chain: request.chain, recipient: request.recipient, amount: request.amount)
+            }
+            .onAppear(perform: pushInitialSendIfUnlocked)
+            .onChange(of: vault.state) { _, _ in pushInitialSendIfUnlocked() }
             .navigationTitle("Wallet")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -29,6 +40,12 @@ struct WalletSheet: View {
         // (send flow's Done button on the confirmation screen). Apple's
         // `.dismiss` only pops one nav level; this is a full-sheet close.
         .environment(\.closeWalletSheet, CloseWalletSheetAction { isPresented = false })
+    }
+
+    private func pushInitialSendIfUnlocked() {
+        guard let initialSend, !pushedInitialSend, vault.state == .unlocked else { return }
+        pushedInitialSend = true
+        path.append(initialSend)
     }
 }
 

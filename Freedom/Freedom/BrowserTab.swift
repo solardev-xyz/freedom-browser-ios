@@ -294,6 +294,9 @@ final class BrowserTab {
     @ObservationIgnored var onCreatePopup: ((WKWebViewConfiguration) -> WKWebView?)?
     /// `window.close()` from a script-opened page — close this tab.
     @ObservationIgnored var onRequestClose: (() -> Void)?
+    /// Set by TabStore: an `ethereum:` link (EIP-681) the page asked to
+    /// open. Never a page load — the wallet's Send form, prefilled.
+    @ObservationIgnored var onEthereumURI: ((URL) -> Void)?
     @ObservationIgnored private var activeResolveTask: Task<Void, Never>?
     @ObservationIgnored private let contentController: WKUserContentController
     @ObservationIgnored fileprivate var walletBridge: EthereumBridge?
@@ -1428,6 +1431,12 @@ private final class UIDelegate: NSObject, WKUIDelegate {
             // parity; the CSP sandbox already denies popups, this is
             // the belt to its braces).
             if owner?.isOnchainApp == true { return nil }
+            // `target="_blank"` onto an `ethereum:` payment link: the
+            // wallet's Send form, not a tab.
+            if let url = navigationAction.request.url, url.scheme?.lowercased() == EthereumURI.scheme {
+                owner?.onEthereumURI?(url)
+                return nil
+            }
             // `target="_blank"` onto mailto:/tel:/an app scheme: consent
             // and the system, not a tab.
             if let url = navigationAction.request.url, ExternalLinks.isExternal(url) {
@@ -1578,6 +1587,14 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // `<a download>` and other explicit download requests.
         if navigationAction.shouldPerformDownload {
             decisionHandler(.download)
+            return
+        }
+        // An EIP-681 payment link: never a page load, the wallet's Send
+        // form (desktop parity). `ethereum` counts as a browser scheme so
+        // it never reaches the external-app prompt below.
+        if let url = navigationAction.request.url, url.scheme?.lowercased() == EthereumURI.scheme {
+            decisionHandler(.cancel)
+            MainActor.assumeIsolated { owner?.onEthereumURI?(url) }
             return
         }
         // A scheme the browser cannot show: never a navigation, an ask.

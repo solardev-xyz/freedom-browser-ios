@@ -6,10 +6,12 @@ import Foundation
 /// through the site-permission store (`SitePermissionKind.externalApps`).
 enum ExternalLinks {
     /// Schemes the browser renders or routes itself; anything else is an
-    /// external app. `freedom` is the app's own link scheme (OpenLV).
+    /// external app. `freedom` is the app's own link scheme (OpenLV);
+    /// `ethereum` is an EIP-681 payment request the wallet's Send form
+    /// takes (`EthereumURI`).
     static let browserSchemes: Set<String> = [
         "http", "https", "bzz", "ipfs", "ipns", "ens", "tez", "rad", "web3", "freedom",
-        "about", "blob", "data", "javascript", "file",
+        "ethereum", "about", "blob", "data", "javascript", "file",
     ]
 
     static func isExternal(_ url: URL) -> Bool {

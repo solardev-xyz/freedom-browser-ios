@@ -10,6 +10,9 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "TabStore")
 @MainActor
 @Observable
 final class TabStore {
+    /// An `ethereum:` link (EIP-681) a page asked to open. ContentView
+    /// turns it into the wallet's Send form and clears it.
+    var pendingEthereumURI: URL?
     var records: [TabRecord] = []
     var activeRecordID: UUID?
     /// Tabs closed this run, most recent first (private tabs and empty
@@ -276,6 +279,9 @@ final class TabStore {
         tab.onRequestClose = { [weak self, weak tab] in
             guard let self, let tab else { return }
             self.close(tab.recordID)
+        }
+        tab.onEthereumURI = { [weak self] url in
+            self?.pendingEthereumURI = url
         }
     }
 
