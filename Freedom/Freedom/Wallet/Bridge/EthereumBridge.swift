@@ -205,7 +205,7 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         switch decision {
         case .approved:
             do {
-                let address = try vault.signingKey(at: .mainUser).ethereumAddress
+                let address = try vault.signingKey(at: vault.activeAccountPath).ethereumAddress
                 permissionStore.grant(origin: origin.key, account: address)
                 emit(event: "accountsChanged", data: [address])
                 emit(event: "connect", data: ["chainId": router.currentChain().hexChainID])
@@ -470,7 +470,22 @@ final class EthereumBridge: NSObject, WKScriptMessageHandler {
         ) { [weak self] note in
             MainActor.assumeIsolated { self?.emitDisconnectIfMatch(note) }
         }
-        notificationTokens = [chainToken, revokeToken]
+        let accountToken = center.addObserver(
+            forName: .walletActiveAccountChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.emitAccountsChangedIfConnected() }
+        }
+        notificationTokens = [chainToken, revokeToken, accountToken]
+    }
+
+    /// The user switched accounts: a connected page hears the new one.
+    /// (`PermissionStore.reassignAllGrants` already moved the grant.)
+    private func emitAccountsChangedIfConnected() {
+        guard let origin = OriginIdentity.from(displayURL: tab?.displayURL),
+              permissionStore.isConnected(origin.key) else { return }
+        emit(event: "accountsChanged", data: permissionStore.accounts(for: origin.key))
     }
 
     private func emitChainChangedIfConnected(_ note: Notification) {

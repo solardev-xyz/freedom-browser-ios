@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 struct WalletSettingsView: View {
     @Environment(Vault.self) private var vault
+    @Environment(WalletAccountStore.self) private var accounts
 
     @State private var revealedPhrase: [String]?
     @State private var revealedKey: RevealedPrivateKey?
@@ -36,7 +37,7 @@ struct WalletSettingsView: View {
                     Text(revealError).font(.caption).foregroundStyle(.red)
                 }
             } footer: {
-                Text("Both re-prompt for biometrics. The recovery phrase controls every account and identity; the private key controls this one account and is what other wallets' \"import private key\" fields take. Anyone with either can drain this wallet.")
+                Text("Both re-prompt for biometrics. The recovery phrase controls every account and identity; the private key is the active account's (\(accounts.activeAccount.name)) and is what other wallets' \"import private key\" fields take. Anyone with either can drain this wallet.")
             }
 
             Section {
@@ -58,8 +59,8 @@ struct WalletSettingsView: View {
     private func revealKey() async {
         revealError = nil
         do {
-            let address = Hex.checksummed(try vault.signingKey(at: .mainUser).ethereumAddress)
-            let key = try await vault.revealPrivateKey(at: .mainUser)
+            let address = Hex.checksummed(try vault.signingKey(at: vault.activeAccountPath).ethereumAddress)
+            let key = try await vault.revealPrivateKey()
             revealedKey = RevealedPrivateKey(address: address, hex: PrivateKeyExport.hex(key))
         } catch {
             revealError = error.localizedDescription

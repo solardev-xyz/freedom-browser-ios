@@ -6,6 +6,9 @@ import Foundation
 /// fragmenting storage.
 enum WalletDefaults {
     static let activeChainID = "walletActiveChainID"
+    /// `WalletAccountStore`: the account list (JSON) and the active index.
+    static let accounts = "walletAccounts"
+    static let activeAccountIndex = "walletActiveAccountIndex"
 
     /// Single read path for the active chain — the per-tab RPCRouters,
     /// the openlv session, and the wallet UI must all agree on it.
@@ -41,6 +44,11 @@ extension Notification.Name {
     /// the new Int chain ID. Bridge observers emit `chainChanged` to
     /// connected origins.
     static let walletActiveChainChanged = Notification.Name("walletActiveChainChanged")
+
+    /// Posted when the user switches the active account.
+    /// `userInfo["index"]` carries the account index; connected dapps
+    /// hear `accountsChanged` with the new address.
+    static let walletActiveAccountChanged = Notification.Name("walletActiveAccountChanged")
 
     /// Posted when the user revokes a dapp's grant. `userInfo["origin"]`
     /// carries the `OriginIdentity.key` so observers can match affected tabs.
