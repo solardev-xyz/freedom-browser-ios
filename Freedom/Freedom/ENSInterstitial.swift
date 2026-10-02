@@ -52,14 +52,23 @@ struct ENSInterstitial: View {
             OnchainSummary(provenance: document.provenance)
         case .conflictOnchain(let document, _):
             OnchainSummary(provenance: document.provenance, showDissent: true)
+        case .codecMismatch(let name, _, let requested, let resolved):
+            CodecMismatchDetails(name: name, requested: requested, resolved: resolved)
         }
     }
 
     private var canContinue: Bool {
         switch gate {
-        case .unverifiedUntrusted, .unverifiedOnchain: true
+        case .unverifiedUntrusted, .unverifiedOnchain, .codecMismatch: true
         case .conflict, .anchorDisagreement, .conflictOnchain: false
         }
+    }
+
+    private var continueLabel: (text: String, symbol: String) {
+        if case .codecMismatch(_, _, _, let resolved) = gate {
+            return ("Open on \(resolved.scheme)://", "arrow.triangle.swap")
+        }
+        return ("Continue once", "arrow.forward")
     }
 
     private var canRetry: Bool {
@@ -71,7 +80,7 @@ struct ENSInterstitial: View {
         VStack(spacing: 12) {
             if canContinue {
                 Button { tab.continuePastGate() } label: {
-                    Label("Continue once", systemImage: "arrow.forward")
+                    Label(continueLabel.text, systemImage: continueLabel.symbol)
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -97,12 +106,13 @@ struct ENSInterstitial: View {
         switch gate {
         case .unverifiedUntrusted, .unverifiedOnchain: "exclamationmark.shield.fill"
         case .conflict, .anchorDisagreement, .conflictOnchain: "xmark.shield.fill"
+        case .codecMismatch: "arrow.triangle.swap"
         }
     }
 
     private var headerColor: Color {
         switch gate {
-        case .unverifiedUntrusted, .unverifiedOnchain: .orange
+        case .unverifiedUntrusted, .unverifiedOnchain, .codecMismatch: .orange
         case .conflict, .anchorDisagreement, .conflictOnchain: .red
         }
     }
@@ -114,6 +124,7 @@ struct ENSInterstitial: View {
         case .anchorDisagreement: "Block-hash disagreement"
         case .unverifiedOnchain: "Onchain app not independently verified"
         case .conflictOnchain: "RPC endpoints disagreed about this app"
+        case .codecMismatch(_, _, let requested, let resolved): "Resolves to \(resolved.scheme), not \(requested.scheme)"
         }
     }
 
@@ -129,6 +140,8 @@ struct ENSInterstitial: View {
             "Freedom fetched this app's code through one public RPC endpoint, but could not verify the answer against chain consensus. The app has not run yet. Continue once runs exactly these bytes for this session; if the contract returns different code later, Freedom will warn you again."
         case .conflictOnchain:
             "The RPC endpoints Freedom asked returned different code for this contract and no verified source could settle it. One of them may be lying, or the chain is reorganizing. The app has not run. Try again in a moment, or check the endpoints under Settings → Chains."
+        case .codecMismatch(let name, _, let requested, let resolved):
+            "You asked for \(name) over \(requested.scheme)://, but its contenthash points to \(resolved.scheme) content. Freedom doesn't switch transports behind your back; open it on \(resolved.scheme):// if that's what you meant."
         }
     }
 }
@@ -160,6 +173,21 @@ private struct OnchainSummary: View {
                     .lineLimit(1).truncationMode(.middle)
             }
             .font(.caption)
+        }
+    }
+}
+
+private struct CodecMismatchDetails: View {
+    let name: String
+    let requested: ENSContentCodec
+    let resolved: ENSContentCodec
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            detailsHeader
+            LabeledContent("Name", value: name).font(.caption)
+            LabeledContent("Requested", value: "\(requested.scheme)://").font(.caption)
+            LabeledContent("Resolved", value: "\(resolved.scheme)://").font(.caption)
         }
     }
 }

@@ -3,7 +3,7 @@ import XCTest
 
 final class BrowserURLTests: XCTestCase {
     func testBareEthNameParsesAsENS() {
-        guard case .ens(let name, let path) = BrowserURL.parse("vitalik.eth") else {
+        guard case .ens(let name, let path, _) = BrowserURL.parse("vitalik.eth") else {
             return XCTFail()
         }
         XCTAssertEqual(name, "vitalik.eth")
@@ -11,7 +11,7 @@ final class BrowserURLTests: XCTestCase {
     }
 
     func testEnsSchemeLiteralParses() {
-        guard case .ens(let name, _) = BrowserURL.parse("ens://swarmit.eth") else {
+        guard case .ens(let name, _, _) = BrowserURL.parse("ens://swarmit.eth") else {
             return XCTFail()
         }
         XCTAssertEqual(name, "swarmit.eth")
@@ -19,14 +19,14 @@ final class BrowserURLTests: XCTestCase {
 
     func testHttpsOnEthHostRedirectsToENS() {
         // No DNS `.eth` TLD exists — treat as ENS regardless of scheme.
-        guard case .ens(let name, _) = BrowserURL.parse("https://vitalik.eth") else {
+        guard case .ens(let name, _, _) = BrowserURL.parse("https://vitalik.eth") else {
             return XCTFail()
         }
         XCTAssertEqual(name, "vitalik.eth")
     }
 
     func testENSCaseNormalizesToLowercase() {
-        guard case .ens(let name, _) = BrowserURL.parse("VITALIK.ETH") else {
+        guard case .ens(let name, _, _) = BrowserURL.parse("VITALIK.ETH") else {
             return XCTFail()
         }
         XCTAssertEqual(name, "vitalik.eth")
@@ -39,7 +39,7 @@ final class BrowserURLTests: XCTestCase {
 
     func testClassifyRoundTripsENSUrl() {
         let url = URL(string: "ens://vitalik.eth")!
-        guard case .ens(let name, _) = BrowserURL.classify(url) else {
+        guard case .ens(let name, _, _) = BrowserURL.classify(url) else {
             return XCTFail()
         }
         XCTAssertEqual(name, "vitalik.eth")
@@ -62,7 +62,7 @@ final class BrowserURLTests: XCTestCase {
     // MARK: - .wei / .gwei names (WNS / GNS)
 
     func testBareWeiNameParsesAsENS() {
-        guard case .ens(let name, let path) = BrowserURL.parse("wns.wei") else {
+        guard case .ens(let name, let path, _) = BrowserURL.parse("wns.wei") else {
             return XCTFail()
         }
         XCTAssertEqual(name, "wns.wei")
@@ -70,14 +70,14 @@ final class BrowserURLTests: XCTestCase {
     }
 
     func testBareGweiNameNormalizesCase() {
-        guard case .ens(let name, _) = BrowserURL.parse("Apoorv.GWEI") else {
+        guard case .ens(let name, _, _) = BrowserURL.parse("Apoorv.GWEI") else {
             return XCTFail()
         }
         XCTAssertEqual(name, "apoorv.gwei")
     }
 
     func testWeiNameWithPathRoutesToENS() {
-        guard case .ens(let name, let path) = BrowserURL.parse("wns.wei/docs") else {
+        guard case .ens(let name, let path, _) = BrowserURL.parse("wns.wei/docs") else {
             return XCTFail()
         }
         XCTAssertEqual(name, "wns.wei")
@@ -86,7 +86,7 @@ final class BrowserURLTests: XCTestCase {
 
     func testIpfsOnWeiHostRoutesToENSWithPath() {
         let url = URL(string: "ipfs://wns.wei/x?y=1#z")!
-        guard case .ens(let name, let path) = BrowserURL.classify(url) else {
+        guard case .ens(let name, let path, _) = BrowserURL.classify(url) else {
             return XCTFail()
         }
         XCTAssertEqual(name, "wns.wei")
@@ -110,7 +110,7 @@ final class BrowserURLTests: XCTestCase {
         // resolve runs (populating `currentTrust` for the shield) AND the
         // sub-path survives the round-trip to the resolved transport.
         let url = URL(string: "bzz://vitalik.eth/blog/post1")!
-        guard case .ens(let name, let path) = BrowserURL.classify(url) else {
+        guard case .ens(let name, let path, _) = BrowserURL.classify(url) else {
             return XCTFail()
         }
         XCTAssertEqual(name, "vitalik.eth")
@@ -119,7 +119,7 @@ final class BrowserURLTests: XCTestCase {
 
     func testIpfsOnEthHostPreservesQueryAndFragment() {
         let url = URL(string: "ipfs://vitalik.eth/x?y=1#z")!
-        guard case .ens(let name, let path) = BrowserURL.classify(url) else {
+        guard case .ens(let name, let path, _) = BrowserURL.classify(url) else {
             return XCTFail()
         }
         XCTAssertEqual(name, "vitalik.eth")
@@ -128,7 +128,7 @@ final class BrowserURLTests: XCTestCase {
 
     func testIpnsOnEthHostRoutesToENS() {
         let url = URL(string: "ipns://vitalik.eth/foo")!
-        guard case .ens(let name, let path) = BrowserURL.classify(url) else {
+        guard case .ens(let name, let path, _) = BrowserURL.classify(url) else {
             return XCTFail()
         }
         XCTAssertEqual(name, "vitalik.eth")
@@ -148,7 +148,7 @@ final class BrowserURLTests: XCTestCase {
     func testParseBareEthNameWithPath() {
         // Typing `vitalik.eth/blog` in the address bar should reach
         // `/blog` after resolution, not root.
-        guard case .ens(let name, let path) = BrowserURL.parse("vitalik.eth/blog") else {
+        guard case .ens(let name, let path, _) = BrowserURL.parse("vitalik.eth/blog") else {
             return XCTFail()
         }
         XCTAssertEqual(name, "vitalik.eth")
@@ -160,10 +160,33 @@ final class BrowserURLTests: XCTestCase {
         // through the pseudo `ens://` form used for in-flight display +
         // legacy storage.
         let original = BrowserURL.ens(name: "vitalik.eth", path: "/blog?q=1#a")
-        guard case .ens(let name, let path) = BrowserURL.classify(original.url) else {
+        guard case .ens(let name, let path, _) = BrowserURL.classify(original.url) else {
             return XCTFail()
         }
         XCTAssertEqual(name, "vitalik.eth")
         XCTAssertEqual(path, "/blog?q=1#a")
+    }
+
+    /// Desktop "typed scheme is an assertion": `bzz://name.eth` must
+    /// land on bzz; bare names, `ens://` and `https://` accept any
+    /// transport.
+    func testTypedSchemeIsCarriedAsACodecAssertion() throws {
+        guard case .ens(let name, let path, let codec) = BrowserURL.classify(URL(string: "bzz://vitalik.eth/blog")!) else {
+            return XCTFail("expected .ens")
+        }
+        XCTAssertEqual(name, "vitalik.eth")
+        XCTAssertEqual(path, "/blog")
+        XCTAssertEqual(codec, .bzz)
+        guard case .ens(_, _, let ipfs) = BrowserURL.classify(URL(string: "ipfs://vitalik.eth")!) else { return XCTFail("expected .ens") }
+        XCTAssertEqual(ipfs, .ipfs)
+        guard case .ens(_, _, let ipns) = BrowserURL.parse("ipns://vitalik.eth/x") else { return XCTFail("expected .ens") }
+        XCTAssertEqual(ipns, .ipns)
+        for raw in ["ens://vitalik.eth", "https://vitalik.eth", "vitalik.eth", "VITALIK.ETH/blog"] {
+            guard case .ens(_, _, let none) = BrowserURL.parse(raw) else { return XCTFail("expected .ens for \(raw)") }
+            XCTAssertNil(none, raw)
+        }
+        // The assertion rides along without changing the stored form.
+        XCTAssertEqual(BrowserURL.ens(name: "vitalik.eth", path: "/blog", codec: .bzz).url.absoluteString, "ens://vitalik.eth/blog")
+        XCTAssertNotEqual(BrowserURL.ens(name: "vitalik.eth", codec: .bzz), BrowserURL.ens(name: "vitalik.eth"))
     }
 }

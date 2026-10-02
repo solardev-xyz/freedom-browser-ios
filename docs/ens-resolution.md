@@ -144,6 +144,7 @@ Mirrors desktop PR #352 against the [ENSv2 readiness guide](https://docs.ens.dom
   - `.unverifiedUntrusted` — amber. "Continue once" + "Go back". One-shot bypass, not remembered (cache TTL for unverified is 60s, so a second attempt within the minute re-gates).
   - `.conflict` — red. Lists each `ENSConflictGroup` with its hosts + a short hex preview of the disputed bytes. "Go back" only.
   - `.anchorDisagreement` — red. Shows bucket/threshold counts. "Go back" only.
+  - `.codecMismatch` — amber (2026-10-02, desktop "typed scheme is an assertion"). `bzz://name.eth`, `ipfs://name.eth` or `ipns://name.eth` typed, clicked, restored or reloaded carries the scheme as `BrowserURL.ens(codec:)`; a resolution on another codec gates with "Resolves to X, not Y" instead of silently switching transports. "Open on X://" re-navigates without the assertion; "Go back". Bare names, `ens://` and `https://` assert nothing. The scheme handlers keep enforcing the same rule for subresource fetches (`SchemeHandlerErrorPage.codecMismatch`).
 
 **History and bookmarks store the `ens://name.eth` form**, not the resolved `bzz://<hash>`. Revisits re-resolve and pick up any content-hash rotation by the ENS record owner. Favicons key on the same form, so a cached favicon survives rotation.
 
