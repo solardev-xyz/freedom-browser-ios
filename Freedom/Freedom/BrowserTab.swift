@@ -700,10 +700,10 @@ final class BrowserTab {
             loadInWebView(target)
         case .ens(let name, let path, let codec):
             ensStatus = .resolving(name: name, url: browserURL.url)
-            activeResolveTask = Task { await resolveAndLoad(name: name, path: path, expectedCodec: codec) }
+            activeResolveTask = Task { await resolveAndLoad(name: name, path: path, expectedCodec: codec, displayURL: browserURL.url) }
         case .tez(let name, let path):
             ensStatus = .resolving(name: name, url: browserURL.url)
-            activeResolveTask = Task { await resolveAndLoad(name: name, path: path, expectedCodec: nil) }
+            activeResolveTask = Task { await resolveAndLoad(name: name, path: path, expectedCodec: nil, displayURL: browserURL.url) }
         case .onchain(let app, let path):
             ensStatus = .fetchingOnchain(app: app, url: browserURL.url)
             activeResolveTask = Task { await fetchAndLoadOnchain(app: app, path: path) }
@@ -728,7 +728,10 @@ final class BrowserTab {
             document = try await onchainLoader.load(app)
         } catch {
             if Task.isCancelled { return }
-            ensStatus = .failed(message: ENSErrorFormatting.describe(error))
+            let message = ENSErrorFormatting.describe(error)
+            ensStatus = .failed(message: message)
+            let friendly = BrowserURL.onchain(app: app, path: path).url
+            presentResolutionFailure(subject: friendly.host(percentEncoded: false) ?? friendly.absoluteString, url: friendly, message: message)
             return
         }
         if Task.isCancelled { return }
@@ -775,6 +778,45 @@ final class BrowserTab {
     /// of subresources can be blocked under the previous tab's allowlist
     /// state. The KVO observer on `webView.url` catches subsequent
     /// changes (redirects, anchor clicks, pushState).
+    /// The URL whose friendly error page the web view is showing, so
+    /// reload retries the real request instead of the page.
+    @ObservationIgnored private(set) var errorPageURL: URL?
+    /// Set around `loadSimulatedRequest` so the error page's own
+    /// start/finish callbacks don't count as a new navigation.
+    @ObservationIgnored private var expectingErrorPageLoad = false
+
+    /// A navigation WebKit gave up on: show what went wrong, for the URL
+    /// that failed, in place of the blank view. Cancels (a new
+    /// navigation, stop, a download) show nothing.
+    func presentLoadFailure(_ error: Error) {
+        guard let kind = WebErrorPage.kind(for: error) else { return }
+        guard let failed = WebErrorPage.failedURL(error) ?? url else { return }
+        errorPageURL = failed
+        expectingErrorPageLoad = true
+        webView.loadSimulatedRequest(URLRequest(url: failed), responseHTML: WebErrorPage.render(kind, url: failed))
+    }
+
+    /// A name that didn't resolve, or an onchain app whose code couldn't
+    /// be fetched: the same page as a failed web load, for the pseudo
+    /// URL (`ens://name`, `web3://…`) so reload re-resolves.
+    func presentResolutionFailure(subject: String, url: URL, message: String) {
+        errorPageURL = url
+        expectingErrorPageLoad = true
+        webView.loadSimulatedRequest(URLRequest(url: url), responseHTML: WebErrorPage.render(.notResolved(subject: subject, message: message), url: url))
+    }
+
+    /// Navigation bookkeeping for the error page: a real navigation
+    /// elsewhere forgets it; the page's own callbacks are skipped once.
+    func noteNavigationStarted() {
+        if expectingErrorPageLoad { return }
+        if let errorPageURL, webView.url != errorPageURL { self.errorPageURL = nil }
+    }
+
+    func noteNavigationFinished() {
+        if expectingErrorPageLoad { expectingErrorPageLoad = false; return }
+        errorPageURL = nil
+    }
+
     private func loadInWebView(_ url: URL) {
         adblock.updateURL(url, for: contentController)
         webView.load(URLRequest(url: url))
@@ -1009,6 +1051,13 @@ final class BrowserTab {
     /// resolve every time, matching the "pull-to-refresh = bypass cache"
     /// contract.
     func reload() {
+        // An error page: retry the request that failed (desktop "retry
+        // on reload"), through the name pipeline when it is a name.
+        if let failed = errorPageURL {
+            errorPageURL = nil
+            navigate(to: BrowserURL.classify(failed) ?? .web(failed))
+            return
+        }
         // `classify` rewrites any `.eth`-host URL — regardless of codec
         // scheme — to `.ens(name:, path:)` so the path survives the
         // re-resolve. Without `classify`, `bzz://vitalik.eth/blog`
@@ -1074,7 +1123,7 @@ final class BrowserTab {
     /// (`bzz://name.eth`); a resolution on another codec gates instead
     /// of silently switching schemes (desktop parity; the scheme
     /// handlers enforce the same rule for subresource fetches).
-    private func resolveAndLoad(name: String, path: String, expectedCodec: ENSContentCodec?) async {
+    private func resolveAndLoad(name: String, path: String, expectedCodec: ENSContentCodec?, displayURL: URL) async {
         // Paths that never reach webView.load (gates, resolve failures,
         // unsupported codecs, task cancellation) need to stop the pull
         // spinner explicitly; the webview-load path rides the isLoading
@@ -1111,7 +1160,9 @@ final class BrowserTab {
             return
         } catch {
             if Task.isCancelled { return }
-            ensStatus = .failed(message: ENSErrorFormatting.describe(error))
+            let message = ENSErrorFormatting.describe(error)
+            ensStatus = .failed(message: message)
+            presentResolutionFailure(subject: name, url: displayURL, message: message)
             return
         }
         if Task.isCancelled { return }
@@ -1758,6 +1809,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // than carrying the previous page's brand color or layout
         // negotiation into a fresh navigation.
         MainActor.assumeIsolated {
+            owner?.noteNavigationStarted()
             owner?.reinstallPreloads()
             owner?.resetPerPageSurfaceState()
             // A navigation withdraws the departing page's prompts and
@@ -1774,6 +1826,9 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // pattern as the KVO observers in BrowserTab.
         MainActor.assumeIsolated {
             owner?.tearDownActiveIpfsNavigation()
+            owner?.noteNavigationFinished()
+            // An error page is not a visit.
+            if owner?.errorPageURL == url { return }
             // History / favicons see the friendly `web3://…` form.
             owner?.onNavigationFinish?(BrowserTab.presented(url), title)
             owner?.extractThemeColor()
@@ -1784,6 +1839,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         MainActor.assumeIsolated {
             owner?.tearDownActiveIpfsNavigation()
+            owner?.presentLoadFailure(error)
         }
     }
 
@@ -1794,6 +1850,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
     ) {
         MainActor.assumeIsolated {
             owner?.tearDownActiveIpfsNavigation()
+            owner?.presentLoadFailure(error)
         }
     }
 }
