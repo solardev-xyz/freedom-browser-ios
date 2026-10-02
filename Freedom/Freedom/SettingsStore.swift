@@ -280,6 +280,27 @@ final class SettingsStore {
     var myotisNodeEnabled: Bool {
         didSet { defaults.set(myotisNodeEnabled, forKey: Keys.myotisNodeEnabled) }
     }
+    /// External Swarm endpoint (desktop "explicit external nodes"): the
+    /// bee-compatible API of a node outside the app, e.g.
+    /// `http://192.168.1.20:1633` or `https://bee.example.com`. Empty
+    /// means the embedded node. Mirrored into `SwarmGateway.shared`,
+    /// which every HTTP user reads; while set, the embedded node stays
+    /// off and node-side storage funding (a C API on the embedded node)
+    /// is unavailable.
+    var swarmExternalEndpoint: String {
+        didSet {
+            defaults.set(swarmExternalEndpoint, forKey: Keys.swarmExternalEndpoint)
+            Self.applyGateway(swarmExternalEndpoint)
+        }
+    }
+
+    var swarmExternalEndpointURL: URL? { try? SwarmGateway.parseExternal(swarmExternalEndpoint).get() }
+    var usesExternalSwarmEndpoint: Bool { swarmExternalEndpointURL != nil }
+
+    private static func applyGateway(_ text: String) {
+        SwarmGateway.shared.setExternal(try? SwarmGateway.parseExternal(text).get())
+    }
+
     /// Per-network switches under the master (desktop: Ethereum and
     /// Gnosis start and stop separately). Both default on.
     var myotisMainnetEnabled: Bool {
@@ -393,11 +414,13 @@ final class SettingsStore {
         self.adblockAllowlist = defaults.stringArray(forKey: Keys.adblockAllowlist) ?? []
         self.adblockAutoUpdateEnabled = defaults.bool(forKey: Keys.adblockAutoUpdateEnabled)
         self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
+        self.swarmExternalEndpoint = defaults.string(forKey: Keys.swarmExternalEndpoint) ?? ""
         self.ipfsNodeEnabled = defaults.bool(forKey: Keys.ipfsNodeEnabled)
         self.myotisNodeEnabled = defaults.bool(forKey: Keys.myotisNodeEnabled)
         self.myotisMainnetEnabled = defaults.bool(forKey: Keys.myotisMainnetEnabled)
         self.myotisGnosisEnabled = defaults.bool(forKey: Keys.myotisGnosisEnabled)
         self.radicleNodeEnabled = defaults.bool(forKey: Keys.radicleNodeEnabled)
+        Self.applyGateway(swarmExternalEndpoint)
     }
 
     /// One-time migration for installs predating the `ensResolutionMethod`
@@ -519,6 +542,7 @@ final class SettingsStore {
         static let adblockAllowlist = "adblockAllowlist"
         static let adblockAutoUpdateEnabled = "adblockAutoUpdateEnabled"
         static let swarmNodeEnabled = "swarmNodeEnabled"
+        static let swarmExternalEndpoint = "swarmExternalEndpoint"
         static let ipfsNodeEnabled = "ipfsNodeEnabled"
         static let myotisNodeEnabled = "myotisNodeEnabled"
         static let myotisMainnetEnabled = "myotisMainnetEnabled"

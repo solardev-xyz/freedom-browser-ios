@@ -1,12 +1,13 @@
 import BigInt
 import Foundation
 
-/// Thin HTTP client for the embedded Bee node's REST API on
-/// `127.0.0.1:1633`. Reads + a small set of writes the user explicitly
-/// triggers (stamp purchase). Dapp-driven writes (publish, feeds) live
-/// behind the EIP-1193-style permission model in WP4-6.
+/// Thin HTTP client for the Swarm node's bee-compatible REST API — the
+/// embedded gateway on `127.0.0.1:1633` or the external endpoint the
+/// user configured (`SwarmGateway`). Reads + a small set of writes the
+/// user explicitly triggers (stamp purchase). Dapp-driven writes
+/// (publish, feeds) live behind the EIP-1193-style permission model.
 struct BeeAPIClient {
-    static let baseURL = URL(string: "http://127.0.0.1:1633")!
+    static var baseURL: URL { SwarmGateway.shared.baseURL }
 
     enum Error: Swift.Error, Equatable, LocalizedError {
         case notRunning           // network refused (bee not up)

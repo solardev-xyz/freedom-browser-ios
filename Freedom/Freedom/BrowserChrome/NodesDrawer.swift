@@ -20,16 +20,20 @@ struct NodesDrawer: View {
     @Environment(IPFSNode.self) private var ipfs
     @Environment(MyotisNode.self) private var myotis
     @Environment(RadicleNode.self) private var radicle
+    @Environment(SettingsStore.self) private var settings
+    @Environment(BeeReadiness.self) private var beeReadiness
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
-                row(icon: "NodeSwarm", name: "Swarm", detail: peerLine(
-                    running: swarm.status == .running,
-                    status: swarm.status.rawValue,
-                    peers: swarm.peerCount
-                )) {
+                row(icon: "NodeSwarm", name: "Swarm", detail: settings.usesExternalSwarmEndpoint
+                    ? "External · \(settings.swarmExternalEndpointURL?.host() ?? "node") · \(beeReadiness.state == .ready ? "ready" : "connecting")"
+                    : peerLine(
+                        running: swarm.status == .running,
+                        status: swarm.status.rawValue,
+                        peers: swarm.peerCount
+                    )) {
                     NodeHomeView().navigationTitle("Swarm node")
                 }
                 row(

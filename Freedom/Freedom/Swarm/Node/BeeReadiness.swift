@@ -36,6 +36,16 @@ final class BeeReadiness {
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private let bee: BeeAPIClient
     @ObservationIgnored private let swarm: SwarmNode
+    /// True while Settings → Swarm points at an external node: the
+    /// embedded node's lifecycle is irrelevant and only the HTTP
+    /// signals count.
+    @ObservationIgnored var usesExternalEndpoint: () -> Bool = { false }
+
+    /// Forget the sticky `.ready` and the chequebook: the endpoint changed.
+    func reset() {
+        state = .initializing
+        chequebookAddress = nil
+    }
 
     init(
         swarm: SwarmNode,
@@ -105,7 +115,7 @@ final class BeeReadiness {
         // we want to poll it during `.starting` to surface the live
         // percent. Without this, step 2 sits on its initializing copy
         // for the entire wait and the user sees no progress.
-        guard swarm.status == .running || swarm.status == .starting else {
+        guard usesExternalEndpoint() || swarm.status == .running || swarm.status == .starting else {
             return .initializing
         }
         // .ready is sticky — only mode flip / restart resets it, both

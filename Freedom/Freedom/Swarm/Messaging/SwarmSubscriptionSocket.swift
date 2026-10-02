@@ -41,9 +41,9 @@ enum SwarmSubscriptionError: Swift.Error, Equatable {
 /// Production WS pipeline against the in-process gateway.
 @MainActor
 final class SwarmSubscriptionSocket: SwarmSubscriptionHandle {
-    /// ws:// base for the embedded gateway — same host/port as
-    /// `BeeAPIClient.baseURL`.
-    static let wsBase = URL(string: "ws://127.0.0.1:1633")!
+    /// ws(s):// twin of `BeeAPIClient.baseURL` — the embedded gateway or
+    /// the external node.
+    static var wsBase: URL { SwarmGateway.shared.webSocketBase }
 
     private static let establishGrace: Duration = .milliseconds(500)
     private static let reconnectBaseDelay: Duration = .seconds(1)

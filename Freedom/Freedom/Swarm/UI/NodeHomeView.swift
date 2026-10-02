@@ -20,14 +20,15 @@ struct NodeHomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                enableCard
-                if settings.swarmNodeEnabled {
+                if isExternal { externalCard } else { enableCard }
+                if settings.swarmNodeEnabled || isExternal {
                     // CTA whenever the user doesn't have a usable stamp —
                     // covers fresh ultralight users, mid-sync, and the
                     // light+ready+no-stamps gap. The setup is only "done"
                     // once the user has a usable stamp (step 4 of the
-                    // checklist).
-                    if !stampService.hasUsableStamps {
+                    // checklist). Node-side funding is a C API on the
+                    // embedded node: an external node buys its own stamps.
+                    if !stampService.hasUsableStamps, !isExternal {
                         publishSetupCTA
                     }
                     statusCard
@@ -45,11 +46,32 @@ struct NodeHomeView: View {
                         stampsRow
                         publishHistoryRow
                     }
-                    logsLink
+                    if !isExternal { logsLink }
                 }
             }
             .padding(20)
         }
+    }
+
+    private var isExternal: Bool { settings.usesExternalSwarmEndpoint }
+
+    /// Settings → Swarm points at an external node: no embedded node to
+    /// enable; everything below reads that node's API.
+    private var externalCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("External node").font(.headline)
+            Text(settings.swarmExternalEndpointURL?.absoluteString ?? settings.swarmExternalEndpoint)
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle)
+            Text("Its identity, storage and stamps are that node's. Change it under Settings → Swarm.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     /// Top-level enable/disable for the Swarm node. When off the rest
@@ -109,15 +131,17 @@ struct NodeHomeView: View {
             HStack(spacing: 10) {
                 Circle()
                     .frame(width: 10, height: 10)
-                    .foregroundStyle(swarm.status.color)
-                Text(swarm.status.rawValue)
+                    .foregroundStyle(isExternal ? (beeReadiness.state == .ready ? Color.green : Color.orange) : swarm.status.color)
+                Text(isExternal ? "external" : swarm.status.rawValue)
                     .font(.headline)
                     .monospaced()
                 Spacer()
-                Text("\(swarm.peerCount) peers")
-                    .font(.subheadline)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                if !isExternal {
+                    Text("\(swarm.peerCount) peers")
+                        .font(.subheadline)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
             }
             Divider().opacity(0.3)
             nodeStateRow
@@ -154,13 +178,13 @@ struct NodeHomeView: View {
             if let addr = beeReadiness.chequebookAddress {
                 CopyableAddressRow(address: addr)
             }
-            settlementDepositRow
+            if !isExternal { settlementDepositRow }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .task(id: beeReadiness.chequebookAddress ?? "") { await funding.refreshDeposit() }
+        .task(id: beeReadiness.chequebookAddress ?? "") { if !isExternal { await funding.refreshDeposit() } }
     }
 
     /// The settlement deposit backs the cheques the node signs for
@@ -302,7 +326,7 @@ struct NodeHomeView: View {
         case .ready: return "ready"
         case .startingUp: return "starting up"
         case .syncingPostage(let percent, _, _): return "syncing \(percent)%"
-        case .initializing: return "starting"
+        case .initializing: return isExternal ? "connecting" : "starting"
         }
     }
 

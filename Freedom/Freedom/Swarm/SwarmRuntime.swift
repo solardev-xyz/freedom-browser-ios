@@ -15,6 +15,8 @@ enum SwarmRuntime {
     /// Boot bee with the current persisted settings (mode, password).
     /// Errors print to console; the user can re-toggle to retry.
     static func enable(swarm: SwarmNode, settings: SettingsStore) async {
+        // An external endpoint replaces the embedded node entirely.
+        guard !settings.usesExternalSwarmEndpoint else { return }
         do {
             let password = try BeePassword.loadOrCreate()
             let config = await BeeBootConfig.build(password: password)

@@ -272,10 +272,9 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
     static func localHTTPURL(for bzzURL: URL, resolvedTo contentRef: String? = nil) -> URL? {
         guard bzzURL.scheme == "bzz", let host = bzzURL.host else { return nil }
 
-        var components = URLComponents()
-        components.scheme = "http"
-        components.host = "127.0.0.1"
-        components.port = beeAPIPort
+        // The embedded gateway, or the external node from Settings → Swarm.
+        guard var components = URLComponents(url: SwarmGateway.shared.baseURL, resolvingAgainstBaseURL: false) else { return nil }
+        let basePath = components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path
 
         // `URL.path` strips trailing slashes (Foundation quirk); the
         // percent-encoded accessor preserves them, so directory-shaped
@@ -284,10 +283,10 @@ final class BzzSchemeHandler: NSObject, WKURLSchemeHandler {
         let raw = bzzURL.path(percentEncoded: false)
         let path = raw.isEmpty ? "/" : raw
         if isBeeGatewayPath(path) {
-            components.path = path
+            components.path = basePath + path
         } else {
             let effectiveHost = contentRef ?? host
-            components.path = "/bzz/\(effectiveHost)\(path)"
+            components.path = basePath + "/bzz/\(effectiveHost)\(path)"
         }
         components.query = bzzURL.query
         return components.url

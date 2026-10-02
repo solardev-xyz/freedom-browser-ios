@@ -20,6 +20,7 @@ struct ContentView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(OpenLVWalletSession.self) private var openlvSession
     @Environment(ChainStore.self) private var chainStore
+    @Environment(BeeReadiness.self) private var beeReadiness
     @Environment(\.scenePhase) private var scenePhase
 
     // Drives the menu's bookmark-toggle row (star fill + label text).
@@ -45,7 +46,7 @@ struct ContentView: View {
     let onShowTabs: () -> Void
     @State private var isShowingSettings = false
     /// DEBUG smoke hook: the settings page to open at launch
-    /// (`FREEDOM_DEBUG_SETTINGS=ens|chains|chain:<id>|about|licenses|license:<id>|find:<q>`), so a simulator
+    /// (`FREEDOM_DEBUG_SETTINGS=<page>|chain:<id>|license:<id>|find:<q>`, pages: wallet, ens, swarm, ipfs, myotis, chains, adblock, search, permissions, about, licenses), so a simulator
     /// run can screenshot a settings page without anyone tapping.
     @State private var debugSettingsPath: [SettingsPath] = []
     @State private var debugSettingsQuery = ""
@@ -156,6 +157,13 @@ struct ContentView: View {
         switch parts.first {
         case "find":
             debugSettingsQuery = String(raw.dropFirst("find:".count))
+        case "wallet": debugSettingsPath = [.wallet]
+        case "swarm": debugSettingsPath = [.swarm]
+        case "ipfs": debugSettingsPath = [.ipfs]
+        case "myotis": debugSettingsPath = [.myotis]
+        case "adblock": debugSettingsPath = [.adblock]
+        case "search": debugSettingsPath = [.search]
+        case "permissions": debugSettingsPath = [.sitePermissions]
         case "about":
             debugSettingsPath = [.about]
         case "licenses":
@@ -747,7 +755,9 @@ struct ContentView: View {
         if settings.swarmNodeEnabled {
             segments.append(.init(
                 name: "Swarm",
-                state: .fromSwarm(swarm.status, peerCount: swarm.peerCount)
+                state: settings.usesExternalSwarmEndpoint
+                    ? (beeReadiness.state == .ready ? .healthy : .warming)
+                    : .fromSwarm(swarm.status, peerCount: swarm.peerCount)
             ))
         }
         if settings.ipfsNodeEnabled {
@@ -794,7 +804,7 @@ struct ContentView: View {
         }.count
         var line = "\(online) of \(segments.count) online"
         var peers = 0
-        if settings.swarmNodeEnabled { peers += swarm.peerCount }
+        if settings.swarmNodeEnabled, !settings.usesExternalSwarmEndpoint { peers += swarm.peerCount }
         if settings.radicleNodeEnabled { peers += radicle.connectedPeers }
         if settings.myotisNodeEnabled {
             for network in MyotisNetwork.allCases {

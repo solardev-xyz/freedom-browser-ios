@@ -161,6 +161,7 @@ struct FreedomApp: App {
             let ipfsInstance = IPFSNode()
             self._ipfs = State(wrappedValue: ipfsInstance)
             let readiness = BeeReadiness(swarm: swarmInstance)
+            readiness.usesExternalEndpoint = { settings.usesExternalSwarmEndpoint }
             self._beeReadiness = State(wrappedValue: readiness)
             let stamps = StampService(swarm: swarmInstance, settings: settings)
             let walletInfo = BeeWalletInfo(swarm: swarmInstance, settings: settings)
@@ -371,6 +372,21 @@ struct FreedomApp: App {
                 // Foreground retry: the 6h gate makes this a cheap no-op most
                 // of the time, and it picks up checks the launch task missed
                 // (node not up yet, app long-suspended).
+                .onChange(of: settings.swarmExternalEndpoint) { _, _ in
+                    // Switching between the embedded node and an external
+                    // one: readiness, stamps and wallet re-read from the
+                    // new endpoint; the embedded node stops or comes back.
+                    beeReadiness.reset()
+                    if settings.usesExternalSwarmEndpoint {
+                        swarm.stop()
+                    } else if settings.swarmNodeEnabled, swarm.status == .idle || swarm.status == .stopped {
+                        Task { await SwarmRuntime.enable(swarm: swarm, settings: settings) }
+                    }
+                    Task {
+                        await stampService.refreshStamps()
+                        await beeWalletInfo.refresh()
+                    }
+                }
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }
                     Task { await adblockUpdate.checkIfDue() }
@@ -556,7 +572,7 @@ struct FreedomApp: App {
     }
 
     private func startNodeIfNeeded() async {
-        guard settings.swarmNodeEnabled else { return }
+        guard settings.swarmNodeEnabled, !settings.usesExternalSwarmEndpoint else { return }
         guard swarm.status == .idle else { return }
         do {
             // Legacy installs encrypted the keystore with the old hardcoded

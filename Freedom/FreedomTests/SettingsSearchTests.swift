@@ -24,8 +24,8 @@ final class SettingsSearchTests: XCTestCase {
 
     func testGroupsBySectionInIndexOrderAndIgnoresBlankQueries() {
         let groups = SettingsSearchIndex.grouped("endpoint", in: entries)
-        XCTAssertEqual(groups.map(\.section), ["Name Resolution", "Chains"])
-        XCTAssertTrue(groups[1].entries.contains { $0.id == "chain:100" })
+        XCTAssertEqual(groups.map(\.section), ["Name Resolution", "Swarm", "Chains"])
+        XCTAssertTrue(groups.first { $0.section == "Chains" }?.entries.contains { $0.id == "chain:100" } == true)
         XCTAssertTrue(SettingsSearchIndex.matches("   ", in: entries).isEmpty)
         XCTAssertTrue(SettingsSearchIndex.grouped("zzzz-nothing", in: entries).isEmpty)
     }
