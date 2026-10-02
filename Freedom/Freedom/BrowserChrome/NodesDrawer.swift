@@ -50,13 +50,13 @@ struct NodesDrawer: View {
                     icon: "NodeEthereum", name: "Ethereum",
                     detail: chainLine(MyotisNetwork.mainnet)
                 ) {
-                    MyotisNodeHomeView().navigationTitle("Light client")
+                    MyotisNodeHomeView(network: .mainnet).navigationTitle("Ethereum")
                 }
                 row(
                     icon: "NodeGnosis", name: "Gnosis",
                     detail: chainLine(MyotisNetwork.gnosis)
                 ) {
-                    MyotisNodeHomeView().navigationTitle("Light client")
+                    MyotisNodeHomeView(network: .gnosis).navigationTitle("Gnosis")
                 }
             }
             .listStyle(.insetGrouped)

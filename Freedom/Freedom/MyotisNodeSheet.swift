@@ -7,11 +7,13 @@ import SwiftUI
 @MainActor
 struct MyotisNodeSheet: View {
     @Binding var isPresented: Bool
+    /// One chain's page; nil shows both under the master switch.
+    var network: MyotisNetwork? = nil
 
     var body: some View {
         NavigationStack {
-            MyotisNodeHomeView()
-                .navigationTitle("Light client")
+            MyotisNodeHomeView(network: network)
+                .navigationTitle(network.map(MyotisNodeHomeView.title) ?? "Light client")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -31,16 +33,35 @@ struct MyotisNodeSheet: View {
 struct MyotisNodeHomeView: View {
     @Environment(MyotisNode.self) private var myotis
     @Environment(SettingsStore.self) private var settings
+    /// One chain's page (the Nodes menu lists Ethereum and Gnosis as
+    /// separate nodes): that chain's card with its own switch, and the
+    /// shared log. nil is the settings-style view of both.
+    var network: MyotisNetwork? = nil
+
+    static func title(_ network: MyotisNetwork) -> String {
+        network == .mainnet ? "Ethereum" : "Gnosis"
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                enableCard
-                if settings.myotisNodeEnabled {
-                    ForEach(MyotisNetwork.allCases, id: \.self) { network in
-                        chainCard(network)
+                if let network {
+                    chainCard(network)
+                    if settings.myotisNodeEnabled, settings.isMyotisNetworkEnabled(network) {
+                        logsLink
+                    } else {
+                        Text("Switch \(Self.title(network)) on to verify its data peer-to-peer on this device. Until then reads fall back to the method chosen under Name Resolution.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    logsLink
+                } else {
+                    enableCard
+                    if settings.myotisNodeEnabled {
+                        ForEach(MyotisNetwork.allCases, id: \.self) { network in
+                            chainCard(network)
+                        }
+                        logsLink
+                    }
                 }
             }
             .padding(20)
@@ -213,12 +234,24 @@ struct MyotisNodeHomeView: View {
         )
     }
 
+    /// A chain's own switch. Switching a chain on while the master is
+    /// off turns the master on too — from a chain's page there is no
+    /// other way to get it running.
     private func networkBinding(_ network: MyotisNetwork) -> Binding<Bool> {
         Binding(
-            get: { settings.isMyotisNetworkEnabled(network) },
+            get: { settings.myotisNodeEnabled && settings.isMyotisNetworkEnabled(network) },
             set: { newValue in
                 settings.setMyotisNetworkEnabled(network, newValue)
-                if newValue { myotis.startChain(network) } else { myotis.stopChain(network) }
+                if newValue {
+                    if settings.myotisNodeEnabled {
+                        myotis.startChain(network)
+                    } else {
+                        settings.myotisNodeEnabled = true
+                        myotis.start(networks: settings.myotisEnabledNetworks)
+                    }
+                } else {
+                    myotis.stopChain(network)
+                }
             }
         )
     }
