@@ -19,6 +19,7 @@ struct ContentView: View {
     @Environment(BeeIdentityCoordinator.self) private var beeIdentity
     @Environment(SettingsStore.self) private var settings
     @Environment(OpenLVWalletSession.self) private var openlvSession
+    @Environment(ChainStore.self) private var chainStore
     @Environment(\.scenePhase) private var scenePhase
 
     // Drives the menu's bookmark-toggle row (star fill + label text).
@@ -48,6 +49,9 @@ struct ContentView: View {
     /// run can screenshot a settings page without anyone tapping.
     @State private var debugSettingsPath: [SettingsPath] = []
     @State private var isShowingWallet = false
+    /// A Send form the wallet sheet pushes once open — an `ethereum:`
+    /// link from a page or the address bar.
+    @State private var walletSendRequest: SendRequest? = nil
     @State private var isShowingNode = false
     @State private var isShowingIpfsNode = false
     @State private var isShowingMyotisNode = false
@@ -227,8 +231,13 @@ struct ContentView: View {
             SettingsView(initialPath: debugSettingsPath)
         }
         .task { openDebugSettingsIfRequested() }
-        .sheet(isPresented: $isShowingWallet) {
-            WalletSheet(isPresented: $isShowingWallet)
+        .sheet(isPresented: $isShowingWallet, onDismiss: { walletSendRequest = nil }) {
+            WalletSheet(isPresented: $isShowingWallet, initialSend: walletSendRequest)
+        }
+        .onChange(of: tabStore.pendingEthereumURI) { _, url in
+            guard let url else { return }
+            tabStore.pendingEthereumURI = nil
+            handleEthereumURI(url.absoluteString)
         }
         .sheet(isPresented: $isShowingNode) {
             NodeSheet(isPresented: $isShowingNode)
@@ -904,6 +913,11 @@ struct ContentView: View {
     }
 
     private func navigate() {
+        // A typed or pasted EIP-681 payment request (desktop parity).
+        if EthereumURI.isEthereumURI(addressText) {
+            handleEthereumURI(addressText)
+            return
+        }
         if let parsed = BrowserURL.parse(addressText) {
             navigate(to: parsed)
             return
@@ -917,6 +931,22 @@ struct ContentView: View {
             return
         }
         navigate(to: .web(url))
+    }
+
+    /// `ethereum:` → the wallet's Send form, prefilled with recipient,
+    /// chain and amount. Setup and unlock still come first; the request
+    /// waits inside the sheet. Refusals (a contract call, an unknown
+    /// chain, garbage) land in the address-bar banner.
+    private func handleEthereumURI(_ raw: String) {
+        switch SendRequest.make(from: raw, chain: { chainStore.chain(id: $0) }) {
+        case .success(let request):
+            banner = nil
+            exitEditMode()
+            walletSendRequest = request
+            isShowingWallet = true
+        case .failure(let refusal):
+            banner = .error(message: refusal.message)
+        }
     }
 
     private func navigate(to browserURL: BrowserURL) {

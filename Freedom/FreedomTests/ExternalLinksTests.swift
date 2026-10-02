@@ -5,7 +5,7 @@ final class ExternalLinksTests: XCTestCase {
     func testBrowserSchemesAreNotExternal() {
         for raw in ["https://a.example/", "http://localhost/", "bzz://x.eth/", "ipfs://x.eth/", "ipns://x.eth/",
                     "ens://x.eth", "rad://z6Mk/", "web3://0x0000000000000000000000000000000000000001:1/", "freedom://openlv?x",
-                    "about:blank", "data:text/plain,hi", "blob:https://a.example/uuid", "javascript:void(0)", "file:///x"] {
+                    "ethereum:vitalik.eth@100?value=1e18", "about:blank", "data:text/plain,hi", "blob:https://a.example/uuid", "javascript:void(0)", "file:///x"] {
             XCTAssertFalse(ExternalLinks.isExternal(URL(string: raw)!), raw)
         }
     }

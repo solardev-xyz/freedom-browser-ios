@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ethereum: link smoke</title>
+<style>body{font:17px -apple-system,system-ui;margin:24px;line-height:1.6} a{display:block;margin:10px 0}</style>
+<h2>EIP-681 links</h2>
+<a href="ethereum:0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045@100?value=10000000000000000">Tip 0.01 xDAI to 0xd8dA… on Gnosis</a>
+<a href="ethereum:vitalik.eth@100?value=2.5e16">Tip 0.025 xDAI to vitalik.eth on Gnosis</a>
+<a href="ethereum:vitalik.eth">vitalik.eth, no chain (→ mainnet), no amount</a>
+<a href="ethereum:0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045@100?value=1e18" target="_blank">target=_blank, 1 xDAI</a>
+<h2>Refusals (banner above the address bar)</h2>
+<a href="ethereum:0xdac17f958d2ee523a2206206994597c13d831ec7@1/transfer?address=0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045&uint256=1">ERC-20 transfer form</a>
+<a href="ethereum:0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045@8453?value=1e18">Chain 8453 (not in wallet)</a>
+<a href="ethereum:0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045?value=0.5">Fractional wei</a>
+<h2>Still external apps</h2>
+<a href="mailto:a@b.example">mailto: (should still prompt to open Mail)</a>
+<script>
+// ?auto=1 fires the first link by script after 3 s (simulator smoke without a tap).
+if (new URLSearchParams(location.search).get('auto')) {
+  setTimeout(() => { location.href = document.querySelector('a').href; }, 3000);
+}
+</script>
