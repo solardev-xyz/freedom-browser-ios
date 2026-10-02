@@ -15,17 +15,27 @@ struct SettingsView: View {
     /// bounce where a value-push from inside a destination-pushed
     /// view forces the visible stack to re-sync.
     @State private var path: [SettingsPath] = []
+    /// Desktop "Search settings": a non-empty query replaces the hub
+    /// with every matching control, grouped by section; tapping a
+    /// result opens its page. The query stays, so Back returns here.
+    @State private var query = ""
     /// Applied one tick after the stack appears: a multi-level path set
     /// before the destinations are registered is dropped by SwiftUI.
     private let initialPath: [SettingsPath]
+    /// A query to start with (the `FREEDOM_DEBUG_SETTINGS=find:<q>` hook).
+    private let initialQuery: String
 
-    init(initialPath: [SettingsPath] = []) {
+    init(initialPath: [SettingsPath] = [], initialQuery: String = "") {
         self.initialPath = initialPath
+        self.initialQuery = initialQuery
     }
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
+                if isSearching {
+                    searchResults
+                } else {
                 NavigationLink(value: SettingsPath.wallet) {
                     Label("Wallet", systemImage: "wallet.bifold.fill")
                 }
@@ -58,6 +68,13 @@ struct SettingsView: View {
                         Label("About", systemImage: "info.circle")
                     }
                 }
+                }
+            }
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search settings")
+            .overlay {
+                if isSearching, searchGroups.isEmpty {
+                    ContentUnavailableView.search(text: query)
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -72,9 +89,42 @@ struct SettingsView: View {
         }
         .environment(\.settingsPath, $path)
         .task {
+            if !initialQuery.isEmpty, query.isEmpty { query = initialQuery }
             guard !initialPath.isEmpty, path.isEmpty else { return }
             await Task.yield()
             path = initialPath
+        }
+    }
+
+    private var isSearching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    private var searchGroups: [(section: String, entries: [SettingsSearchEntry])] {
+        SettingsSearchIndex.grouped(query, in: SettingsSearchIndex.entries(chains: chainStore.allChains()))
+    }
+
+    @ViewBuilder
+    private var searchResults: some View {
+        ForEach(searchGroups, id: \.section) { group in
+            Section(group.section) {
+                ForEach(group.entries) { entry in
+                    Button {
+                        path = entry.path
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.title)
+                                if let detail = entry.detail {
+                                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                }
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
 
