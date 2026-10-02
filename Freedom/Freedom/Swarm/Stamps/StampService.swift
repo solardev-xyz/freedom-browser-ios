@@ -269,7 +269,7 @@ final class StampService {
 
     /// Map a `/stamps` array entry to our model. Returns nil if any
     /// required field is missing — caller drops malformed rows.
-    private static func parseBatch(_ raw: [String: Any]) -> PostageBatch? {
+    static func parseBatch(_ raw: [String: Any]) -> PostageBatch? {
         guard let id = raw["batchID"] as? String,
               let depth = BeeAPIClient.intFromAnyJSON(raw["depth"]),
               let bucketDepth = BeeAPIClient.intFromAnyJSON(raw["bucketDepth"]),
@@ -287,6 +287,7 @@ final class StampService {
         return PostageBatch(
             batchID: id,
             usable: usable,
+            propagating: (raw["propagating"] as? Bool) ?? false,
             usage: usage,
             effectiveBytes: StampMath.effectiveBytes(forDepth: depth),
             ttlSeconds: max(0, batchTTL),

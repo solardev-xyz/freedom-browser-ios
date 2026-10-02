@@ -32,14 +32,26 @@ enum StampFormatting {
 @MainActor
 struct StampStatusBadge: View {
     let usable: Bool
+    /// A fresh batch in ant's propagation window: confirming, not broken.
+    var propagating: Bool = false
+
+    private var label: String {
+        if usable { return "Usable" }
+        return propagating ? "Confirming" : "Not usable"
+    }
+
+    private var tint: Color {
+        if usable { return .green }
+        return propagating ? .orange : .red
+    }
 
     var body: some View {
-        Text(usable ? "Usable" : "Not usable")
+        Text(label)
             .font(.caption2).fontWeight(.semibold)
-            .foregroundStyle(usable ? Color.green : Color.orange)
+            .foregroundStyle(tint)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background((usable ? Color.green : Color.orange).opacity(0.15))
+            .background(tint.opacity(0.15))
             .clipShape(Capsule())
     }
 }

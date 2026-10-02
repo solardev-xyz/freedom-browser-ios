@@ -79,7 +79,7 @@ private struct StampCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                StampStatusBadge(usable: batch.usable)
+                StampStatusBadge(usable: batch.usable, propagating: batch.propagating)
                 Spacer()
                 Text(batch.batchID.shortenedHex())
                     .font(.system(.caption2, design: .monospaced))

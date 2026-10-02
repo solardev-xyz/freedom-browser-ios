@@ -31,7 +31,7 @@ struct StampDetailView: View {
     private func metadataCard(_ batch: PostageBatch) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                StampStatusBadge(usable: batch.usable)
+                StampStatusBadge(usable: batch.usable, propagating: batch.propagating)
                 Spacer()
                 if let label = batch.label, !label.isEmpty {
                     Text(label).font(.caption).foregroundStyle(.secondary)

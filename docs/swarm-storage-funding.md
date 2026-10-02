@@ -25,12 +25,15 @@ to it and ant (via `freedom-mobile-ffi`) does everything on-chain:
    needed. It blocks until the transactions confirm (one to two minutes
    on Gnosis).
 4. On success the running gateway lists the batch at once (the C API and
-   the gateway share the issuer registry); it reports `usable:false` for
-   about 70 s (ant #107), then usable. The app re-runs the idempotent
-   `ant_start_gateway` (`SwarmNode.refreshChainState`) so the gateway
-   adopts the chequebook the buy deployed and its `/chequebook` and
-   `/wallet` surfaces follow; `StampService` polls fast until `/stamps`
-   lists the batch as usable. No mode switch, no restart.
+   the gateway share the issuer registry); it reports `usable:false` and
+   `propagating:true` for about 70 s (ant #107, flag since v0.5.52), then
+   usable — the stamp badge says "Confirming" meanwhile, "Not usable"
+   only when neither holds. Since ant v0.5.52 (#109) the C-API buy,
+   `ant_deploy_chequebook` and the settlement top-up update the running
+   gateway's chequebook slot directly, so `/chequebook` and `/wallet`
+   follow without a gateway re-start; the app only re-reads its own
+   caches. `StampService` polls fast until `/stamps` lists the batch as
+   usable. No mode switch, no restart.
 
 Extending a node-side plan works the same way with
 `ant_storage_topup_quote(days)` / `ant_storage_topup_xdai(amount_per_chunk)`
@@ -94,5 +97,6 @@ deposited xBZZ the node no longer holds.
 ## Follow-ups
 
 - A Rust-side single-flight guard would let the app drop `didAutoActivate`.
-- ant: the running gateway's chequebook slot isn't updated by a C-API
-  buy (hence `refreshChainState`); ant-23 is raising an ant fix.
+- (closed 2026-10-02) the gateway's chequebook slot not following a
+  C-API buy — fixed in ant v0.5.52 (#109); the app's
+  `SwarmNode.refreshChainState` workaround is gone.
