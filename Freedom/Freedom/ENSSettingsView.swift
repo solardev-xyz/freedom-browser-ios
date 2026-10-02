@@ -227,7 +227,7 @@ struct ENSMethodDetailView: View {
     ) -> ChainSourceRows.Badge {
         switch method {
         case .myotis:
-            return ChainSourceRows.myotisBadge(chainID: Chain.mainnetID, node: myotis, enabled: settings.myotisNodeEnabled)
+            return ChainSourceRows.myotisBadge(chainID: Chain.mainnetID, node: myotis, enabled: settings.isMyotisEnabled(chainID: Chain.mainnetID))
         case .colibri:
             return ChainSourceRows.Badge(text: "Verified", kind: .ready)
         case .quorum:

@@ -536,9 +536,10 @@ struct FreedomApp: App {
         // via their config/keychain paths; Myotis needs the explicit
         // guard because it has no such accidental gate.
         guard NSClassFromString("XCTestCase") == nil else { return }
-        guard settings.myotisNodeEnabled else { return }
+        let networks = settings.myotisEnabledNetworks
+        guard !networks.isEmpty else { return }
         guard myotis.status == .idle else { return }
-        myotis.start()
+        myotis.start(networks: networks)
     }
 
     /// Brings the embedded Radicle node up alongside the other nodes.

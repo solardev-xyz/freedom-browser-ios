@@ -78,11 +78,16 @@ struct MyotisNodeHomeView: View {
                 Text(network == .mainnet ? "Ethereum" : "Gnosis")
                     .font(.headline)
                 Spacer()
-                Text(MyotisMenuLine.state(
-                    nodeStatus: myotis.status, chain: status, recovery: myotis.recovery[network.chainId]
-                ))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if settings.isMyotisNetworkEnabled(network) {
+                    Text(MyotisMenuLine.state(
+                        nodeStatus: myotis.status, chain: status, recovery: myotis.recovery[network.chainId]
+                    ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Toggle(network == .mainnet ? "Ethereum" : "Gnosis", isOn: networkBinding(network))
+                    .labelsHidden()
+                    .disabled(myotis.status == .starting)
             }
             if let recovery = myotis.recovery[network.chainId] {
                 recoverySection(network, recovery)
@@ -200,10 +205,20 @@ struct MyotisNodeHomeView: View {
             set: { newValue in
                 settings.myotisNodeEnabled = newValue
                 if newValue {
-                    myotis.start()
+                    myotis.start(networks: settings.myotisEnabledNetworks)
                 } else {
                     myotis.stop()
                 }
+            }
+        )
+    }
+
+    private func networkBinding(_ network: MyotisNetwork) -> Binding<Bool> {
+        Binding(
+            get: { settings.isMyotisNetworkEnabled(network) },
+            set: { newValue in
+                settings.setMyotisNetworkEnabled(network, newValue)
+                if newValue { myotis.startChain(network) } else { myotis.stopChain(network) }
             }
         )
     }
