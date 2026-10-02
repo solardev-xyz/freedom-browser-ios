@@ -45,7 +45,7 @@ struct ContentView: View {
     let onShowTabs: () -> Void
     @State private var isShowingSettings = false
     /// DEBUG smoke hook: the settings page to open at launch
-    /// (`FREEDOM_DEBUG_SETTINGS=ens|chains|chain:<id>`), so a simulator
+    /// (`FREEDOM_DEBUG_SETTINGS=ens|chains|chain:<id>|about|licenses|license:<id>`), so a simulator
     /// run can screenshot a settings page without anyone tapping.
     @State private var debugSettingsPath: [SettingsPath] = []
     @State private var isShowingWallet = false
@@ -150,8 +150,17 @@ struct ContentView: View {
         guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SETTINGS"], !raw.isEmpty else { return }
         Logger(subsystem: "com.browser.Freedom", category: "DebugOpen").notice("[debug-settings] opening \(raw, privacy: .public)")
         // ens | ens:<method> | chains | chain:<id> | chain:<id>:<source>
+        // | about | licenses | license:<inventory id>
         let parts = raw.split(separator: ":").map(String.init)
         switch parts.first {
+        case "about":
+            debugSettingsPath = [.about]
+        case "licenses":
+            debugSettingsPath = [.about, .licenses]
+        case "license":
+            // Inventory ids carry colons (`rust:tokio@1.0`): everything after the first.
+            guard parts.count > 1 else { return }
+            debugSettingsPath = [.about, .licenses, .license(String(raw.dropFirst("license:".count)))]
         case "ens":
             debugSettingsPath = [.ens]
             if parts.count > 1, let method = ENSResolutionMethod(rawValue: parts[1]) {

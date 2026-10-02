@@ -53,6 +53,11 @@ struct SettingsView: View {
                 NavigationLink(value: SettingsPath.sitePermissions) {
                     Label("Site Permissions", systemImage: "hand.raised.fill")
                 }
+                Section {
+                    NavigationLink(value: SettingsPath.about) {
+                        Label("About", systemImage: "info.circle")
+                    }
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -94,6 +99,12 @@ struct SettingsView: View {
             SearchSettingsView()
         case .sitePermissions:
             SitePermissionsSettingsView()
+        case .about:
+            AboutView()
+        case .licenses:
+            LicensesView()
+        case .license(let id):
+            LicenseDetailView(id: id)
         case .chainEditor(let id):
             if let chain = chainStore.chain(id: id) {
                 ChainDetailView(chain: chain, chainStore: chainStore)
