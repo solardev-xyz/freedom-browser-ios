@@ -25,9 +25,9 @@ enum ENSNameEncoding {
         return out
     }
 
-    /// ENSIP-1 namehash. Callers must normalize the name first. For v1 we
-    /// expect lowercase ASCII; full ENSIP-15 unicode normalization is a
-    /// later milestone and is rejected at the parse boundary for now.
+    /// ENSIP-1 namehash over the UTF-8 bytes of each label. Callers must
+    /// ENSIP-15-normalize the name first (`ENSResolver` does, via
+    /// adraffy's `ENSNormalize.swift`); non-ASCII labels are expected.
     static func namehash(_ name: String) -> Data {
         var node = Data(count: 32)
         for label in name.split(separator: ".").reversed() {

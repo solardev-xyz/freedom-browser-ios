@@ -73,16 +73,16 @@ final class ENSNameCandidateTests: XCTestCase {
     // MARK: - BrowserURL
 
     func testExplicitEnsSchemeAcceptsDnsAndUnicodeNames() {
-        guard case .ens(let dns, let dnsPath) = BrowserURL.parse("ens://gregskril.com/docs?x=1") else {
+        guard case .ens(let dns, let dnsPath, _) = BrowserURL.parse("ens://gregskril.com/docs?x=1") else {
             return XCTFail("expected .ens for DNS name")
         }
         XCTAssertEqual(dns, "gregskril.com")
         XCTAssertEqual(dnsPath, "/docs?x=1")
-        guard case .ens(let emoji, _) = BrowserURL.parse("ens://🦇.eth") else {
+        guard case .ens(let emoji, _, _) = BrowserURL.parse("ens://🦇.eth") else {
             return XCTFail("expected .ens for emoji name")
         }
         XCTAssertEqual(emoji, "🦇.eth")
-        guard case .ens(let idn, _) = BrowserURL.parse("ens://Bücher.eth") else {
+        guard case .ens(let idn, _, _) = BrowserURL.parse("ens://Bücher.eth") else {
             return XCTFail("expected .ens for IDN name")
         }
         XCTAssertEqual(idn, "bücher.eth")
@@ -91,7 +91,7 @@ final class ENSNameCandidateTests: XCTestCase {
     }
 
     func testBareUnicodeEthNameWithPathRoutesToENS() {
-        guard case .ens(let name, let path) = BrowserURL.parse("🦇.eth/blog") else {
+        guard case .ens(let name, let path, _) = BrowserURL.parse("🦇.eth/blog") else {
             return XCTFail("expected .ens")
         }
         XCTAssertEqual(name, "🦇.eth")
@@ -106,7 +106,7 @@ final class ENSNameCandidateTests: XCTestCase {
     }
 
     func testContentSchemeDnsHostClassifiesAsENS() {
-        guard case .ens(let name, let path) = BrowserURL.parse("ipfs://gregskril.com/docs") else {
+        guard case .ens(let name, let path, _) = BrowserURL.parse("ipfs://gregskril.com/docs") else {
             return XCTFail("expected .ens")
         }
         XCTAssertEqual(name, "gregskril.com")

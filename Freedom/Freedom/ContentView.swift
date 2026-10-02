@@ -809,10 +809,12 @@ struct ContentView: View {
                     // active tab changes — otherwise it reuses the prior UIView
                     // (which is the *previous* tab's WKWebView) and we show the
                     // wrong page.
+                    // Only the page runs under the status bar and the
+                    // bottom chrome; an interstitial keeps the safe area.
                     BrowserWebView(tab: active).id(active.recordID)
+                        .ignoresSafeArea(edges: webAreaIgnoredEdges)
                 }
             }
-            .ignoresSafeArea(edges: webAreaIgnoredEdges)
         } else {
             HomePage(onNavigate: navigate(to:))
         }

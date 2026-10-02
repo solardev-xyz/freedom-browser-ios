@@ -11,7 +11,12 @@ enum BrowserURL: Hashable {
     /// `<codec>://name/` URI so deep links survive ENS routing — a
     /// bookmark of `bzz://vitalik.eth/blog/post1?q=1#anchor` reaches
     /// `/blog/post1?q=1#anchor` on the resolved transport, not root.
-    case ens(name: String, path: String = "")
+    /// `codec` is the transport the user asserted by typing or clicking
+    /// `bzz://`, `ipfs://` or `ipns://` in front of the name (desktop
+    /// "typed scheme is an assertion"): resolution must land on that
+    /// codec or the tab gates with "resolves to X, not Y". Bare names,
+    /// `ens://` and `https://` forms assert nothing.
+    case ens(name: String, path: String = "", codec: ENSContentCodec? = nil)
     /// Tezos Domains name (`name.tez`), resolved on Tezos to a website
     /// record. Same tail shape as `.ens`; displays as `tez://name`.
     case tez(name: String, path: String = "")
@@ -26,7 +31,7 @@ enum BrowserURL: Hashable {
         switch self {
         case .bzz(let u), .ipfs(let u), .ipns(let u), .web(let u): return u
         case .onchain(let app, let path): return app.displayURL(tail: path)
-        case .ens(let name, let path):
+        case .ens(let name, let path, _):
             return URL(string: "ens://\(name)\(Self.suffix(path))")!
         case .tez(let name, let path):
             return URL(string: "tez://\(name)\(Self.suffix(path))")!
@@ -53,7 +58,7 @@ enum BrowserURL: Hashable {
     /// The name behind `.ens` / `.tez`, else nil.
     var name: String? {
         switch self {
-        case .ens(let name, _), .tez(let name, _): name
+        case .ens(let name, _, _), .tez(let name, _): name
         default: nil
         }
     }
@@ -74,7 +79,7 @@ enum BrowserURL: Hashable {
         // `bzz://vitalik.eth/blog` skips the BrowserTab-level ENS resolve,
         // leaving `currentTrust` nil and the address-bar shield blank.
         if let name = url.ensName {
-            return .ens(name: name, path: extractTail(url))
+            return .ens(name: name, path: extractTail(url), codec: assertedCodec(url))
         }
         switch url.scheme?.lowercased() {
         case OnchainAppRef.scheme:
@@ -91,6 +96,17 @@ enum BrowserURL: Hashable {
             guard let host = url.host?.lowercased(), !TezosDomains.isName(host) else { return nil }
             return .ens(name: host, path: extractTail(url))
         default: return nil
+        }
+    }
+
+    /// The transport a `<codec>://name` URL asserts; nil for `ens://`,
+    /// `https://` and bare names.
+    private static func assertedCodec(_ url: URL) -> ENSContentCodec? {
+        switch url.scheme?.lowercased() {
+        case "bzz": .bzz
+        case "ipfs": .ipfs
+        case "ipns": .ipns
+        default: nil
         }
     }
 

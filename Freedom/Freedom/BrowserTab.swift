@@ -48,6 +48,10 @@ final class BrowserTab {
         /// for. Holds the exact fetched bytes: "Continue once" runs
         /// these, never a fresh fetch (desktop PR #232).
         case unverifiedOnchain(document: OnchainAppDocument, url: URL)
+        /// The name resolved on a transport other than the one the user
+        /// typed or clicked. "Open on <resolved>://" re-navigates
+        /// without the assertion.
+        case codecMismatch(name: String, path: String, requested: ENSContentCodec, resolved: ENSContentCodec)
         /// Contract-hosted app whose `html()` the chain's endpoints
         /// disagreed about, with no verified tier to settle it. No
         /// continue: one of them is lying or the chain is mid-reorg.
@@ -686,9 +690,12 @@ final class BrowserTab {
         switch browserURL {
         case .bzz(let target), .ipfs(let target), .ipns(let target), .web(let target):
             loadInWebView(target)
-        case .ens(let name, let path), .tez(let name, let path):
+        case .ens(let name, let path, let codec):
             ensStatus = .resolving(name: name, url: browserURL.url)
-            activeResolveTask = Task { await resolveAndLoad(name: name, path: path) }
+            activeResolveTask = Task { await resolveAndLoad(name: name, path: path, expectedCodec: codec) }
+        case .tez(let name, let path):
+            ensStatus = .resolving(name: name, url: browserURL.url)
+            activeResolveTask = Task { await resolveAndLoad(name: name, path: path, expectedCodec: nil) }
         case .onchain(let app, let path):
             ensStatus = .fetchingOnchain(app: app, url: browserURL.url)
             activeResolveTask = Task { await fetchAndLoadOnchain(app: app, path: path) }
@@ -896,6 +903,9 @@ final class BrowserTab {
             pendingGate = nil
             ensStatus = .idle
             loadOnchain(document, url: url)
+        case .codecMismatch(let name, let path, _, _):
+            pendingGate = nil
+            navigate(to: .ens(name: name, path: path, codec: nil))
         case .conflict, .anchorDisagreement, .conflictOnchain, nil:
             return
         }
@@ -996,7 +1006,7 @@ final class BrowserTab {
         // re-resolve. Without `classify`, `bzz://vitalik.eth/blog`
         // would lose `/blog` on pull-to-refresh.
         switch url.flatMap(BrowserURL.classify) {
-        case .ens(_, _)?, .tez(_, _)?, .onchain(_, _)?:
+        case .ens(_, _, _)?, .tez(_, _)?, .onchain(_, _)?:
             // Onchain apps re-fetch `html()` too, so a redeployed
             // contract (or changed bytes) is picked up and re-gated.
             navigate(to: BrowserURL.classify(url!)!)
@@ -1052,7 +1062,11 @@ final class BrowserTab {
         return data
     }
 
-    private func resolveAndLoad(name: String, path: String) async {
+    /// `expectedCodec` is the transport the user typed or clicked
+    /// (`bzz://name.eth`); a resolution on another codec gates instead
+    /// of silently switching schemes (desktop parity; the scheme
+    /// handlers enforce the same rule for subresource fetches).
+    private func resolveAndLoad(name: String, path: String, expectedCodec: ENSContentCodec?) async {
         // Paths that never reach webView.load (gates, resolve failures,
         // unsupported codecs, task cancellation) need to stop the pull
         // spinner explicitly; the webview-load path rides the isLoading
@@ -1093,14 +1107,13 @@ final class BrowserTab {
             return
         }
         if Task.isCancelled { return }
-        // bzz / ipfs / ipns all flow through the same trust gate and
-        // load via their respective WKURLSchemeHandlers — kubo handles
-        // ipfs:// and ipns://, bee handles bzz://. The codec switch is
-        // a no-op now but kept for symmetry should we later add
-        // codec-specific gating (e.g. an IPNS-specific advisory).
-        switch result.codec {
-        case .bzz, .ipfs, .ipns:
-            break
+        // Typed scheme is an assertion: `bzz://vitalik.eth` on an IPFS
+        // contenthash stops here with "resolves to ipfs, not bzz" and a
+        // one-tap way through on the resolved transport.
+        if let expectedCodec, result.codec != expectedCodec {
+            ensStatus = .idle
+            pendingGate = .codecMismatch(name: name, path: path, requested: expectedCodec, resolved: result.codec)
+            return
         }
         let finalURL = Self.appendingPath(path, to: result.uri)
         if result.trust.level == .unverified, settings.blockUnverifiedEns {
