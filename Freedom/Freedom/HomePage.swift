@@ -175,9 +175,7 @@ struct HomePage: View {
     }
 
     private static var bookmarksDescriptor: FetchDescriptor<Bookmark> {
-        var d = FetchDescriptor<Bookmark>(
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
-        )
+        var d = FetchDescriptor<Bookmark>(sortBy: Bookmark.order)
         d.fetchLimit = 5
         return d
     }
