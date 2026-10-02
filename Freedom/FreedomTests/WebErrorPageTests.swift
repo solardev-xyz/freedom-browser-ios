@@ -48,4 +48,11 @@ final class WebErrorPageTests: XCTestCase {
         let offline = WebErrorPage.render(.offline, url: URL(string: "https://a.example")!)
         XCTAssertTrue(offline.contains("<h1>You&#39;re offline</h1>"))
     }
+
+    func testNameResolutionFailureRetriesThePseudoURL() {
+        let html = WebErrorPage.render(.notResolved(subject: "nothing.eth", message: "No content set on this ENS name."), url: URL(string: "ens://nothing.eth")!)
+        XCTAssertTrue(html.contains("<h1>Couldn&#39;t open nothing.eth</h1>"))
+        XCTAssertTrue(html.contains("<p>No content set on this ENS name.</p>"))
+        XCTAssertTrue(html.contains("<a href=\"ens://nothing.eth\">Try again</a>"))
+    }
 }

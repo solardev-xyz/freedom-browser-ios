@@ -360,7 +360,9 @@ struct ContentView: View {
             // LoadingPill above the URL pill surfaces it instead.
             switch new {
             case .idle, .resolving, .fetchingOnchain: banner = nil
-            case .failed(let message): banner = .error(message: message)
+            // A failure with an error page explains itself there; the
+            // banner is for the rest (a popup tab that can't run an app).
+            case .failed(let message): banner = tabStore.activeTab?.errorPageURL == nil ? .error(message: message) : nil
             }
         }
         .onChange(of: scenePhase) { _, new in

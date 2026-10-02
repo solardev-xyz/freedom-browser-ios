@@ -20,6 +20,10 @@ enum WebErrorPage {
         case clientCertificate
         /// App Transport Security refused a cleartext or weak connection.
         case insecureBlocked
+        /// A name that didn't resolve or a contract-hosted app whose
+        /// code couldn't be fetched: `subject` is the name or app, the
+        /// message is `ENSErrorFormatting`'s.
+        case notResolved(subject: String, message: String)
         case generic(message: String)
     }
 
@@ -70,6 +74,7 @@ enum WebErrorPage {
         case .certificate: "This connection isn't private"
         case .clientCertificate: "This site needs a certificate"
         case .insecureBlocked: "Insecure connection blocked"
+        case .notResolved(let subject, _): "Couldn't open \(subject)"
         case .generic: "Can't open this page"
         }
     }
@@ -83,6 +88,7 @@ enum WebErrorPage {
         case .certificate(let reason): "Freedom couldn't verify \(host): \(reason). The page was not loaded, and Freedom never bypasses certificate errors."
         case .clientCertificate: "\(host) asked for a client certificate. Freedom doesn't support client certificates yet."
         case .insecureBlocked: "\(host) uses a cleartext or weak connection that iOS blocks."
+        case .notResolved(_, let message): message
         case .generic(let message): message
         }
     }

@@ -700,10 +700,10 @@ final class BrowserTab {
             loadInWebView(target)
         case .ens(let name, let path, let codec):
             ensStatus = .resolving(name: name, url: browserURL.url)
-            activeResolveTask = Task { await resolveAndLoad(name: name, path: path, expectedCodec: codec) }
+            activeResolveTask = Task { await resolveAndLoad(name: name, path: path, expectedCodec: codec, displayURL: browserURL.url) }
         case .tez(let name, let path):
             ensStatus = .resolving(name: name, url: browserURL.url)
-            activeResolveTask = Task { await resolveAndLoad(name: name, path: path, expectedCodec: nil) }
+            activeResolveTask = Task { await resolveAndLoad(name: name, path: path, expectedCodec: nil, displayURL: browserURL.url) }
         case .onchain(let app, let path):
             ensStatus = .fetchingOnchain(app: app, url: browserURL.url)
             activeResolveTask = Task { await fetchAndLoadOnchain(app: app, path: path) }
@@ -728,7 +728,10 @@ final class BrowserTab {
             document = try await onchainLoader.load(app)
         } catch {
             if Task.isCancelled { return }
-            ensStatus = .failed(message: ENSErrorFormatting.describe(error))
+            let message = ENSErrorFormatting.describe(error)
+            ensStatus = .failed(message: message)
+            let friendly = BrowserURL.onchain(app: app, path: path).url
+            presentResolutionFailure(subject: friendly.host(percentEncoded: false) ?? friendly.absoluteString, url: friendly, message: message)
             return
         }
         if Task.isCancelled { return }
@@ -791,6 +794,15 @@ final class BrowserTab {
         errorPageURL = failed
         expectingErrorPageLoad = true
         webView.loadSimulatedRequest(URLRequest(url: failed), responseHTML: WebErrorPage.render(kind, url: failed))
+    }
+
+    /// A name that didn't resolve, or an onchain app whose code couldn't
+    /// be fetched: the same page as a failed web load, for the pseudo
+    /// URL (`ens://name`, `web3://…`) so reload re-resolves.
+    func presentResolutionFailure(subject: String, url: URL, message: String) {
+        errorPageURL = url
+        expectingErrorPageLoad = true
+        webView.loadSimulatedRequest(URLRequest(url: url), responseHTML: WebErrorPage.render(.notResolved(subject: subject, message: message), url: url))
     }
 
     /// Navigation bookkeeping for the error page: a real navigation
@@ -1111,7 +1123,7 @@ final class BrowserTab {
     /// (`bzz://name.eth`); a resolution on another codec gates instead
     /// of silently switching schemes (desktop parity; the scheme
     /// handlers enforce the same rule for subresource fetches).
-    private func resolveAndLoad(name: String, path: String, expectedCodec: ENSContentCodec?) async {
+    private func resolveAndLoad(name: String, path: String, expectedCodec: ENSContentCodec?, displayURL: URL) async {
         // Paths that never reach webView.load (gates, resolve failures,
         // unsupported codecs, task cancellation) need to stop the pull
         // spinner explicitly; the webview-load path rides the isLoading
@@ -1148,7 +1160,9 @@ final class BrowserTab {
             return
         } catch {
             if Task.isCancelled { return }
-            ensStatus = .failed(message: ENSErrorFormatting.describe(error))
+            let message = ENSErrorFormatting.describe(error)
+            ensStatus = .failed(message: message)
+            presentResolutionFailure(subject: name, url: displayURL, message: message)
             return
         }
         if Task.isCancelled { return }
