@@ -138,7 +138,7 @@ Nothing here imports anything outside `Wallet/` except `EthereumRPCPool` (for `e
 
 - **Locked by default at app launch**. First unlock every app session requires biometric (Face ID / Touch ID) with passcode fallback. Subsequent unlocks within the session are free until the idle timer fires.
 - **Idle auto-lock**: configurable (1 min / 5 min / 15 min / never), default 5. Timer resets on any **wallet UI interaction** *and* on any **successful privileged dapp operation** (`personal_sign`, `eth_signTypedData_v4`, `eth_sendTransaction`) — an active dapp session shouldn't relock mid-flow. Matches desktop `wallet-ipc.js:289`. Plain RPC reads (`eth_call`, `eth_getBalance`, etc.) do **not** reset the timer — otherwise a polling dapp keeps the wallet unlocked indefinitely.
-- **No seed view without re-auth**. "Show recovery phrase" is the only path; it re-prompts biometric every time. The phrase is never shown at setup.
+- **No seed view without re-auth**. "Show recovery phrase" re-prompts biometric every time. The phrase is never shown at setup. "Show private key" (2026-10-02, desktop "Export Private Key" parity) sits next to it: `Vault.revealPrivateKey(at:)` re-reads the mnemonic through the same gate and derives the one account's key (`m/44'/60'/0'/0/0` today; the path parameter is ready for multi-account), shown by `PrivateKeyView` with the same hide-on-background and 60 s pasteboard posture.
 
 ### 5.2 At-rest encryption
 
