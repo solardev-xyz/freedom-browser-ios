@@ -397,23 +397,6 @@ public final class SwarmNode {
         }
     }
 
-    /// Re-run `ant_start_gateway` on the live node. Idempotent on a
-    /// running gateway: ant re-runs its chain init, which adopts a
-    /// chequebook a storage call just deployed and refreshes the
-    /// gateway's `/chequebook` and `/wallet` surfaces. No stop, no
-    /// restart, nothing deployed or funded.
-    public func refreshChainState() async throws {
-        guard let handle = node, let rpc = lastConfig?.rpcEndpoint else { throw StorageError.notRunning }
-        try await Task.detached(priority: .userInitiated) {
-            var err: UnsafeMutablePointer<CChar>?
-            let ok = Self.gatewayAuthority.withCString { addr in
-                rpc.withCString { ant_start_gateway(handle, addr, true, $0, &err) }
-            }
-            guard ok else { throw StorageError.failed(Self.takeError(err)) }
-        }.value
-        append("chain state refreshed")
-    }
-
     /// Deploy (or rediscover / reuse) the node's chequebook and switch
     /// settlement on. Idempotent; a deploy costs xDAI gas. Returns the
     /// chequebook address.

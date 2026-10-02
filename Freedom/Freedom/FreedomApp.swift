@@ -174,8 +174,10 @@ struct FreedomApp: App {
             // The running gateway lists a bought batch at once, but only
             // a repeated (idempotent) gateway start lets it adopt the
             // chequebook the buy deployed.
+            // ant v0.5.52+: a C-API buy / deploy updates the running
+            // gateway's chequebook slot itself; only the app's caches
+            // need a re-read.
             let adoptChainState: @MainActor () async -> Void = {
-                try? await swarmInstance.refreshChainState()
                 await readiness.refreshChequebookAddress()
                 await walletInfo.refresh()
             }

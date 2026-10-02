@@ -11,6 +11,10 @@ struct PostageBatch: Equatable, Identifiable {
     /// Bee marks a batch usable once enough on-chain confirmations have
     /// accrued (~5–10s after purchase). Until then the UI greys it out.
     let usable: Bool
+    /// ant v0.5.52+: true while a just-bought batch sits in the ~70 s
+    /// propagation window — `usable == false` but uploads are accepted
+    /// and wait it out. Distinguishes "confirming" from "rejected".
+    var propagating: Bool = false
     /// Fraction in `[0, 1]`: utilization / 2^(depth − bucketDepth).
     let usage: Double
     /// Effective storage in bytes derived from `depth`, the source of
