@@ -69,20 +69,7 @@ struct SitePermissionsSettingsView: View {
             } else {
                 ForEach(store.origins, id: \.self) { origin in
                     Section {
-                        ForEach(SitePermissionKind.allCases) { kind in
-                            if let row = rowText(origin: origin, kind: kind) {
-                                HStack {
-                                    Label(kind.label, systemImage: kind.symbol)
-                                    Spacer()
-                                    Text(row).foregroundStyle(.secondary)
-                                }
-                                .swipeActions {
-                                    Button(role: .destructive) { store.revoke(origin: origin, kind: kind) } label: {
-                                        Label("Remove", systemImage: "trash")
-                                    }
-                                }
-                            }
-                        }
+                        SitePermissionRows(origin: origin, store: store)
                     } header: {
                         Text(origin)
                     }
@@ -98,12 +85,96 @@ struct SitePermissionsSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func rowText(origin: String, kind: SitePermissionKind) -> String? {
-        if store.isSessionBlocked(origin: origin, kind: kind) { return "Blocked this session" }
-        switch store.decision(origin: origin, kind: kind) {
-        case .allow?: return "Allowed"
-        case .block?: return "Blocked"
-        case nil: return nil
+}
+
+/// One site's rows: permission, state, swipe to Remove (which lets the
+/// site ask again). Shared by Settings → Site Permissions, the
+/// address-bar indicator's sheet and the trust sheet.
+struct SitePermissionRows: View {
+    let origin: String
+    let store: SitePermissionStore
+
+    var body: some View {
+        ForEach(store.entries(origin: origin)) { entry in
+            HStack {
+                Label(entry.kind.label, systemImage: entry.kind.symbol)
+                Spacer()
+                Text(entry.state.label).foregroundStyle(.secondary)
+            }
+            .swipeActions {
+                Button(role: .destructive) { store.revoke(origin: origin, kind: entry.kind) } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+            }
         }
+    }
+}
+
+/// The site the address bar is showing and the store its decisions
+/// live in — a private tab's own ephemeral store, else the shared one
+/// (desktop: the indicator lists, and its Remove lifts, what applies in
+/// the window you are looking at).
+struct SitePermissionContext {
+    let origin: String
+    let store: SitePermissionStore
+
+    @MainActor var entries: [SitePermissionEntry] { store.entries(origin: origin) }
+}
+
+/// Address-bar indicator for a site with remembered or embargoed
+/// permissions; opens the per-site sheet.
+struct SitePermissionIndicator: View {
+    let context: SitePermissionContext
+    @State private var showingSheet = false
+
+    var body: some View {
+        Button { showingSheet = true } label: {
+            Image(systemName: "hand.raised.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Site permissions")
+        .sheet(isPresented: $showingSheet) {
+            SitePermissionsSheet(context: context)
+        }
+    }
+}
+
+/// "Permissions for this site" from the page, with Remove per row and
+/// for the whole site.
+struct SitePermissionsSheet: View {
+    let context: SitePermissionContext
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    SitePermissionRows(origin: context.origin, store: context.store)
+                } header: {
+                    Text(context.origin)
+                } footer: {
+                    Text("Removing a decision lets the site ask again. Decisions blocked after repeated dismissals last only for this session.")
+                }
+                if !context.entries.isEmpty {
+                    Section {
+                        Button("Remove all for this site", role: .destructive) {
+                            context.store.revokeAll(origin: context.origin)
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Site Permissions")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }

@@ -479,6 +479,7 @@ struct ContentView: View {
                         isFocused: $addressFocused,
                         trust: active?.currentTrust,
                         onchain: active?.currentOnchain,
+                        permissions: active?.permissionContext,
                         isPrivate: active?.isPrivate == true,
                         isLoading: active?.isLoading == true,
                         progress: active?.progress ?? 0,

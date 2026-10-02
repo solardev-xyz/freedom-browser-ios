@@ -165,6 +165,14 @@ final class BrowserTab {
     /// is parked for the prompt under the address bar. Desktop parity:
     /// dismissing denies once without recording; three dismissals in a
     /// row embargo the site + permission for this run.
+    /// The page's origin and the store its permission decisions live in
+    /// (a private tab's own ephemeral store, else the shared one) — what
+    /// the address bar lists and lets the user revoke.
+    var permissionContext: SitePermissionContext? {
+        guard let origin = (url ?? displayURL).flatMap(SitePermissionStore.origin(for:)) else { return nil }
+        return SitePermissionContext(origin: origin, store: sitePermissions)
+    }
+
     func requestSitePermission(
         origin: String?, kinds: [SitePermissionKind], detail: String? = nil,
         decide: @escaping (SitePermissionDecision) -> Void

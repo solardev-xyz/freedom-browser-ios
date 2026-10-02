@@ -5,6 +5,9 @@ struct TrustShield: View {
     /// Set when the page is a contract-hosted app; adds the app's
     /// network, contract, document hash and source to the sheet.
     var onchain: OnchainAppProvenance? = nil
+    /// The site's permissions, listed in the sheet (the shield occupies
+    /// the slot the permission indicator would otherwise use).
+    var permissions: SitePermissionContext? = nil
     @State private var showingDetails = false
 
     var body: some View {
@@ -15,7 +18,7 @@ struct TrustShield: View {
                 .frame(width: 28, height: 28)
         }
         .sheet(isPresented: $showingDetails) {
-            TrustDetailsSheet(trust: trust, onchain: onchain)
+            TrustDetailsSheet(trust: trust, onchain: onchain, permissions: permissions)
         }
     }
 }
@@ -23,12 +26,23 @@ struct TrustShield: View {
 private struct TrustDetailsSheet: View {
     let trust: ENSTrust
     var onchain: OnchainAppProvenance? = nil
+    var permissions: SitePermissionContext? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
                 Section { levelHeader }
+
+                if let permissions, !permissions.entries.isEmpty {
+                    Section {
+                        SitePermissionRows(origin: permissions.origin, store: permissions.store)
+                    } header: {
+                        Text("Permissions for this site")
+                    } footer: {
+                        Text("Swipe to remove; the site can then ask again.")
+                    }
+                }
 
                 if let onchain {
                     Section("Onchain app") {
