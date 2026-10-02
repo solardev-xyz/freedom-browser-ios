@@ -135,6 +135,16 @@ final class Vault {
         }.value
     }
 
+    /// One account's secp256k1 private key for export, behind the same
+    /// fresh re-auth as `revealMnemonic` (desktop "Export Private Key"
+    /// unlocks first too). Derived from the re-read mnemonic, not the
+    /// cached seed, so an unlocked vault still costs a prompt. Same
+    /// one-shot lifetime contract: the caller scopes the bytes.
+    func revealPrivateKey(at path: HDKey.Path = .mainUser) async throws -> Data {
+        let mnemonic = try await revealMnemonic()
+        return try HDKey(seed: mnemonic.seed()).derive(path).privateKey
+    }
+
     func wipe() async throws {
         try await Task.detached(priority: .userInitiated) { [crypto] in
             try crypto.wipe()

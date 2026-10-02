@@ -44,6 +44,18 @@ final class VaultTests: XCTestCase {
         XCTAssertEqual(v2.securityLevel, .deviceBound)
     }
 
+    /// "Show private key": Hardhat's default mnemonic, account 0 at
+    /// m/44'/60'/0'/0/0, a vector every Ethereum dev recognises.
+    func testRevealPrivateKeyMatchesTheSigningKey() async throws {
+        let mnemonic = try Mnemonic(phrase: "test test test test test test test test test test test junk")
+        let v = Vault(crypto: makeCrypto())
+        try await v.create(mnemonic: mnemonic)
+        let key = try await v.revealPrivateKey()
+        XCTAssertEqual(PrivateKeyExport.hex(key), "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+        XCTAssertEqual(key, try v.signingKey(at: .mainUser).privateKey)
+        XCTAssertEqual(Hex.checksummed(try v.signingKey(at: .mainUser).ethereumAddress), "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
+    }
+
     // MARK: - Background auto-lock grace
 
     func testQuickBackgroundRoundTripStaysUnlocked() async throws {

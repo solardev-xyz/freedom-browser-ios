@@ -8,6 +8,7 @@ struct WalletSettingsView: View {
     @Environment(Vault.self) private var vault
 
     @State private var revealedPhrase: [String]?
+    @State private var revealedKey: RevealedPrivateKey?
     @State private var revealError: String?
 
     var body: some View {
@@ -26,11 +27,16 @@ struct WalletSettingsView: View {
                 } label: {
                     Label("Show recovery phrase", systemImage: "key.fill")
                 }
+                Button {
+                    Task { await revealKey() }
+                } label: {
+                    Label("Show private key", systemImage: "key.horizontal.fill")
+                }
                 if let revealError {
                     Text(revealError).font(.caption).foregroundStyle(.red)
                 }
             } footer: {
-                Text("Re-prompts for biometrics. Treat the words like a password — anyone with them can drain this wallet.")
+                Text("Both re-prompt for biometrics. The recovery phrase controls every account and identity; the private key controls this one account and is what other wallets' \"import private key\" fields take. Anyone with either can drain this wallet.")
             }
 
             Section {
@@ -43,6 +49,20 @@ struct WalletSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(item: $revealedPhrase) { words in
             RecoveryPhraseView(words: words)
+        }
+        .navigationDestination(item: $revealedKey) { key in
+            PrivateKeyView(key: key)
+        }
+    }
+
+    private func revealKey() async {
+        revealError = nil
+        do {
+            let address = Hex.checksummed(try vault.signingKey(at: .mainUser).ethereumAddress)
+            let key = try await vault.revealPrivateKey(at: .mainUser)
+            revealedKey = RevealedPrivateKey(address: address, hex: PrivateKeyExport.hex(key))
+        } catch {
+            revealError = error.localizedDescription
         }
     }
 
