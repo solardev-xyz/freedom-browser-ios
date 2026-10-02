@@ -84,9 +84,9 @@ final class BeeReadiness {
         }
     }
 
-    /// Re-read `/chequebook/address` — after a storage buy set the
-    /// chequebook up and `SwarmNode.refreshChainState` let the gateway
-    /// adopt it.
+    /// Re-read `/chequebook/address` — after a storage buy or a
+    /// settlement setup changed the gateway's chequebook (ant v0.5.52+
+    /// updates its slot from the C API directly).
     func refreshChequebookAddress() async {
         chequebookAddress = await fetchChequebookAddress()
     }
