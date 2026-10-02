@@ -12,6 +12,10 @@ struct URLPill: View {
     @FocusState.Binding var isFocused: Bool
     let trust: ENSTrust?
     var onchain: OnchainAppProvenance? = nil
+    /// The page's site permissions: an indicator where the shield sits
+    /// when the site has remembered or embargoed decisions, or a section
+    /// in the shield's sheet when there is a shield.
+    var permissions: SitePermissionContext? = nil
     /// Private tab: a glyph where the shield sits, and a darker field.
     var isPrivate: Bool = false
     let isLoading: Bool
@@ -32,7 +36,9 @@ struct URLPill: View {
         HStack(spacing: 8) {
             Group {
                 if let trust {
-                    TrustShield(trust: trust, onchain: onchain)
+                    TrustShield(trust: trust, onchain: onchain, permissions: permissions)
+                } else if let permissions, !permissions.entries.isEmpty {
+                    SitePermissionIndicator(context: permissions)
                 } else if isPrivate {
                     Image(systemName: "eye.slash.fill")
                         .foregroundStyle(.secondary)

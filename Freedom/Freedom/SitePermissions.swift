@@ -47,6 +47,26 @@ enum SitePermissionDecision: String, Codable, Sendable {
     case allow, block
 }
 
+/// What applies to one site + permission right now: a remembered
+/// decision, or this run's embargo after repeated dismissals.
+enum SitePermissionState: Equatable, Sendable {
+    case allowed, blocked, blockedThisSession
+
+    var label: String {
+        switch self {
+        case .allowed: "Allowed"
+        case .blocked: "Blocked"
+        case .blockedThisSession: "Blocked this session"
+        }
+    }
+}
+
+struct SitePermissionEntry: Identifiable, Equatable {
+    let kind: SitePermissionKind
+    let state: SitePermissionState
+    var id: String { kind.rawValue }
+}
+
 /// A request WebKit parked on the tab: the site, what it asked for, and
 /// the one-shot answer. `remember` writes the decision to the store.
 struct SitePermissionRequest: Identifiable {
@@ -132,6 +152,23 @@ final class SitePermissionStore {
 
     func isSessionBlocked(origin: String, kind: SitePermissionKind) -> Bool {
         sessionBlocks.contains(Self.sessionKey(origin, kind))
+    }
+
+    func state(origin: String, kind: SitePermissionKind) -> SitePermissionState? {
+        if isSessionBlocked(origin: origin, kind: kind) { return .blockedThisSession }
+        switch decision(origin: origin, kind: kind) {
+        case .allow?: return .allowed
+        case .block?: return .blocked
+        case nil: return nil
+        }
+    }
+
+    /// Everything that applies to a site, in `SitePermissionKind` order —
+    /// what the address-bar indicator lists and its Remove lifts.
+    func entries(origin: String) -> [SitePermissionEntry] {
+        SitePermissionKind.allCases.compactMap { kind in
+            state(origin: origin, kind: kind).map { SitePermissionEntry(kind: kind, state: $0) }
+        }
     }
 
     /// What to do with a request before asking: `.allow` when every kind

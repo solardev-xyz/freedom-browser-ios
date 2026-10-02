@@ -82,4 +82,26 @@ final class SitePermissionStoreTests: XCTestCase {
         XCTAssertTrue(second.origins.isEmpty)
         XCTAssertTrue(store(defaults: defaults).origins.isEmpty)
     }
+
+    /// What the address-bar indicator lists for a site, in kind order,
+    /// and that Remove lifts it.
+    func testEntriesForAnOriginListWhatApplies() {
+        let store = SitePermissionStore(ephemeral: true)
+        keep.append(store)
+        let origin = "https://a.example"
+        XCTAssertTrue(store.entries(origin: origin).isEmpty)
+        store.remember(origin: origin, kinds: [.microphone], decision: .block)
+        store.remember(origin: origin, kinds: [.camera], decision: .allow)
+        for _ in 0..<SitePermissionStore.maxDismissals { store.noteDismissal(origin: origin, kinds: [.motion]) }
+        XCTAssertEqual(store.entries(origin: origin), [
+            SitePermissionEntry(kind: .camera, state: .allowed),
+            SitePermissionEntry(kind: .microphone, state: .blocked),
+            SitePermissionEntry(kind: .motion, state: .blockedThisSession),
+        ])
+        XCTAssertTrue(store.entries(origin: "https://b.example").isEmpty)
+        store.revoke(origin: origin, kind: .motion)
+        XCTAssertEqual(store.entries(origin: origin).map(\.kind), [.camera, .microphone])
+        store.revokeAll(origin: origin)
+        XCTAssertTrue(store.entries(origin: origin).isEmpty)
+    }
 }
