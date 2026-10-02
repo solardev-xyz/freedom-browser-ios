@@ -45,9 +45,10 @@ struct ContentView: View {
     let onShowTabs: () -> Void
     @State private var isShowingSettings = false
     /// DEBUG smoke hook: the settings page to open at launch
-    /// (`FREEDOM_DEBUG_SETTINGS=ens|chains|chain:<id>|about|licenses|license:<id>`), so a simulator
+    /// (`FREEDOM_DEBUG_SETTINGS=ens|chains|chain:<id>|about|licenses|license:<id>|find:<q>`), so a simulator
     /// run can screenshot a settings page without anyone tapping.
     @State private var debugSettingsPath: [SettingsPath] = []
+    @State private var debugSettingsQuery = ""
     @State private var isShowingWallet = false
     /// A Send form the wallet sheet pushes once open — an `ethereum:`
     /// link from a page or the address bar.
@@ -150,9 +151,11 @@ struct ContentView: View {
         guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SETTINGS"], !raw.isEmpty else { return }
         Logger(subsystem: "com.browser.Freedom", category: "DebugOpen").notice("[debug-settings] opening \(raw, privacy: .public)")
         // ens | ens:<method> | chains | chain:<id> | chain:<id>:<source>
-        // | about | licenses | license:<inventory id>
+        // | about | licenses | license:<inventory id> | find:<query>
         let parts = raw.split(separator: ":").map(String.init)
         switch parts.first {
+        case "find":
+            debugSettingsQuery = String(raw.dropFirst("find:".count))
         case "about":
             debugSettingsPath = [.about]
         case "licenses":
@@ -237,7 +240,7 @@ struct ContentView: View {
         .animation(.snappy(duration: 0.25), value: tabStore.activeTab?.isFinding)
         .animation(.snappy(duration: 0.25), value: tabStore.activeTab?.chromeIsCompact)
         .sheet(isPresented: $isShowingSettings) {
-            SettingsView(initialPath: debugSettingsPath)
+            SettingsView(initialPath: debugSettingsPath, initialQuery: debugSettingsQuery)
         }
         .task { openDebugSettingsIfRequested() }
         .sheet(isPresented: $isShowingWallet, onDismiss: { walletSendRequest = nil }) {
