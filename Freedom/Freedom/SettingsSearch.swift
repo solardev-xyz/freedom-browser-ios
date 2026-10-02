@@ -77,6 +77,7 @@ enum SettingsSearchIndex {
         e("ipfs.routing", "Routing", "How content is found: DHT, delegated routing, providers. Applies on the next gateway restart.", "IPFS", [.ipfs], ["dht", "delegated", "providers", "transport"]),
         e("ipfs.lowResource", "Low resource", "Fewer connections and less background work; slower first loads.", "IPFS", [.ipfs], ["battery", "memory", "connections"]),
         e("myotis", "Light Client", "Verify Ethereum and Gnosis data peer-to-peer on this device — no RPC provider or prover in the loop.", "Light Client", [.myotis], ["myotis", "ethereum", "gnosis", "p2p", "enable", "sync"]),
+        e("myotis.networks", "Ethereum and Gnosis switches", "Each network runs its own light client; switch one off to save data and battery.", "Light Client", [.myotis], ["mainnet", "xdai", "per chain", "network"]),
         // Chains
         e("chains", "Chains", "The chains Freedom resolves names and balances on; add a chain from Chainlist or by hand.", "Chains", [.rpc], ["rpc", "network", "add chain", "chainlist", "custom", "endpoint", "provider"]),
         e("chains.add", "Add Chain", "Search Chainlist or enter a chain id, RPC URL and native symbol by hand.", "Chains", [.rpc, .chainlistSearch], ["chainlist", "custom", "network"]),

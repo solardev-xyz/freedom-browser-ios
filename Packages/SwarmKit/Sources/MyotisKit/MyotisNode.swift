@@ -326,13 +326,60 @@ public final class MyotisNode {
         networks: [MyotisNetwork] = MyotisNetwork.allCases,
         dataDir: URL = MyotisNode.defaultDataDir()
     ) {
-        guard handles.isEmpty, status != .starting else { return }
+        guard handles.isEmpty, status != .starting, !networks.isEmpty else { return }
         lifecycleGeneration += 1
         let myGeneration = lifecycleGeneration
         status = .starting
         let store = MyotisGenerationStore(baseDir: dataDir)
         self.store = store
         append("starting myotis (\(networks.map(\.rawValue).joined(separator: ", ")))…")
+        boot(networks: networks, store: store, generation: myGeneration, firstStart: true)
+    }
+
+    /// Bring one chain up: a cold start when nothing runs, else an
+    /// extra engine beside the running ones (the user switched Ethereum
+    /// or Gnosis on by itself). Ignored while a start is in flight.
+    public func startChain(_ network: MyotisNetwork, dataDir: URL = MyotisNode.defaultDataDir()) {
+        guard handles[network.chainId] == nil else { return }
+        if handles.isEmpty, status != .starting {
+            start(networks: [network], dataDir: dataDir)
+            return
+        }
+        guard status == .running, let store else { return }
+        recovery[network.chainId] = nil
+        append("starting \(network.rawValue)…")
+        boot(networks: [network], store: store, generation: lifecycleGeneration, firstStart: false)
+    }
+
+    /// Take one chain down and forget its state; the other chain keeps
+    /// running. The last chain down is a full `stop()`.
+    public func stopChain(_ network: MyotisNetwork) {
+        let chainId = network.chainId
+        if handles.count <= 1, handles[chainId] != nil || handles.isEmpty {
+            if handles[chainId] != nil || recovery[chainId] != nil { stop() }
+            return
+        }
+        recoveryTask[chainId]?.cancel()
+        retryTask[chainId]?.cancel()
+        recoveryTask[chainId] = nil
+        retryTask[chainId] = nil
+        recovery[chainId] = nil
+        recoveryAttempt[chainId] = nil
+        notReadySince[chainId] = nil
+        if lastReady[chainId] == true { onAvailabilityChange?(chainId, false) }
+        lastReady[chainId] = nil
+        chainStatus[chainId] = nil
+        generations[chainId] = nil
+        networks[chainId] = nil
+        guard let handle = handles.removeValue(forKey: chainId) else { return }
+        append("\(network.rawValue) stopped")
+        Task.detached(priority: .userInitiated) { myotis_stop(handle) }
+    }
+
+    /// Launch engines off the main actor and adopt them when done. For
+    /// the first start the node becomes `.running` and starts polling;
+    /// an extra chain joins the running set.
+    private func boot(networks: [MyotisNetwork], store: MyotisGenerationStore, generation myGeneration: Int, firstStart: Bool) {
         let seeds = seedEnodes
 
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -374,6 +421,11 @@ public final class MyotisNode {
                 var started = 0
                 for (network, boot) in boots {
                     let chainId = network.chainId
+                    if !firstStart, self.handles[chainId] != nil, case .success(let (handle, _)) = boot {
+                        // Switched on twice while booting: keep the first.
+                        myotis_stop(handle)
+                        continue
+                    }
                     self.networks[chainId] = network
                     switch boot {
                     case .success(let (handle, generation)):
@@ -389,6 +441,10 @@ public final class MyotisNode {
                             canRetry: failure.reason.canRetry
                         )
                     }
+                }
+                guard firstStart else {
+                    self.append("chains now \(self.handles.keys.sorted())")
+                    return
                 }
                 guard started > 0 || !self.recovery.isEmpty else {
                     self.failStart("no engine started", generation: myGeneration)
@@ -432,10 +488,14 @@ public final class MyotisNode {
         }
         status = .stopping
         append("shutting down…")
+        let stopGeneration = lifecycleGeneration
         Task.detached(priority: .userInitiated) { [weak self] in
             for handle in stopping.values { myotis_stop(handle) }
             await MainActor.run {
                 guard let self else { return }
+                // A start that began while the engines were shutting down
+                // owns the status now.
+                guard self.lifecycleGeneration == stopGeneration else { return }
                 self.status = .stopped
                 self.append("stopped")
             }

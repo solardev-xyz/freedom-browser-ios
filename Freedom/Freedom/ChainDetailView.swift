@@ -178,7 +178,7 @@ struct ChainDetailView: View {
     private func readBadge(_ source: ChainSource) -> ChainSourceRows.Badge {
         switch source {
         case .myotis:
-            return ChainSourceRows.myotisBadge(chainID: chain.id, node: myotis, enabled: settings.myotisNodeEnabled)
+            return ChainSourceRows.myotisBadge(chainID: chain.id, node: myotis, enabled: settings.isMyotisEnabled(chainID: chain.id))
         case .colibri:
             return ChainSourceRows.Badge(text: "Verified", kind: .ready)
         case .quorum:
@@ -192,7 +192,7 @@ struct ChainDetailView: View {
 
     private func broadcastBadge(_ source: ChainSource) -> ChainSourceRows.Badge {
         if source == .myotis {
-            return ChainSourceRows.myotisBadge(chainID: chain.id, node: myotis, enabled: settings.myotisNodeEnabled)
+            return ChainSourceRows.myotisBadge(chainID: chain.id, node: myotis, enabled: settings.isMyotisEnabled(chainID: chain.id))
         }
         return urls.isEmpty
             ? ChainSourceRows.Badge(text: "No endpoints", kind: .warning)
@@ -326,7 +326,7 @@ struct ChainSourceDetailView: View {
     private var badge: ChainSourceRows.Badge {
         switch source {
         case .myotis:
-            ChainSourceRows.myotisBadge(chainID: chain.id, node: myotis, enabled: settings.myotisNodeEnabled)
+            ChainSourceRows.myotisBadge(chainID: chain.id, node: myotis, enabled: settings.isMyotisEnabled(chainID: chain.id))
         case .colibri:
             ChainSourceRows.Badge(text: "Verified", kind: .ready)
         case .quorum:

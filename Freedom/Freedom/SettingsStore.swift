@@ -1,5 +1,6 @@
 import Foundation
 import IPFSKit
+import MyotisKit
 
 enum BlockAnchor: String, CaseIterable, Hashable {
     case latest
@@ -279,6 +280,41 @@ final class SettingsStore {
     var myotisNodeEnabled: Bool {
         didSet { defaults.set(myotisNodeEnabled, forKey: Keys.myotisNodeEnabled) }
     }
+    /// Per-network switches under the master (desktop: Ethereum and
+    /// Gnosis start and stop separately). Both default on.
+    var myotisMainnetEnabled: Bool {
+        didSet { defaults.set(myotisMainnetEnabled, forKey: Keys.myotisMainnetEnabled) }
+    }
+    var myotisGnosisEnabled: Bool {
+        didSet { defaults.set(myotisGnosisEnabled, forKey: Keys.myotisGnosisEnabled) }
+    }
+
+    func isMyotisNetworkEnabled(_ network: MyotisNetwork) -> Bool {
+        switch network {
+        case .mainnet: myotisMainnetEnabled
+        case .gnosis: myotisGnosisEnabled
+        }
+    }
+
+    func setMyotisNetworkEnabled(_ network: MyotisNetwork, _ enabled: Bool) {
+        switch network {
+        case .mainnet: myotisMainnetEnabled = enabled
+        case .gnosis: myotisGnosisEnabled = enabled
+        }
+    }
+
+    /// The light client serves this chain: master on and the chain's
+    /// own switch on. False for chains Myotis doesn't support.
+    func isMyotisEnabled(chainID: Int) -> Bool {
+        guard myotisNodeEnabled, let network = MyotisNetwork.allCases.first(where: { Int($0.chainId) == chainID }) else { return false }
+        return isMyotisNetworkEnabled(network)
+    }
+
+    /// What `start` boots: the enabled networks, in `MyotisNetwork` order.
+    var myotisEnabledNetworks: [MyotisNetwork] {
+        guard myotisNodeEnabled else { return [] }
+        return MyotisNetwork.allCases.filter(isMyotisNetworkEnabled)
+    }
     /// Whether the embedded Radicle node should be running. Default
     /// **true** on this branch so the publish path is exercisable
     /// out of the box; the toggle is the kill switch (and the
@@ -322,6 +358,8 @@ final class SettingsStore {
             Keys.swarmNodeEnabled: true,
             Keys.ipfsNodeEnabled: true,
             Keys.myotisNodeEnabled: true,
+            Keys.myotisMainnetEnabled: true,
+            Keys.myotisGnosisEnabled: true,
             Keys.radicleNodeEnabled: true,
         ])
         self.ensRpcUrl = defaults.string(forKey: Keys.ensRpcUrl) ?? ""
@@ -357,6 +395,8 @@ final class SettingsStore {
         self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
         self.ipfsNodeEnabled = defaults.bool(forKey: Keys.ipfsNodeEnabled)
         self.myotisNodeEnabled = defaults.bool(forKey: Keys.myotisNodeEnabled)
+        self.myotisMainnetEnabled = defaults.bool(forKey: Keys.myotisMainnetEnabled)
+        self.myotisGnosisEnabled = defaults.bool(forKey: Keys.myotisGnosisEnabled)
         self.radicleNodeEnabled = defaults.bool(forKey: Keys.radicleNodeEnabled)
     }
 
@@ -481,6 +521,8 @@ final class SettingsStore {
         static let swarmNodeEnabled = "swarmNodeEnabled"
         static let ipfsNodeEnabled = "ipfsNodeEnabled"
         static let myotisNodeEnabled = "myotisNodeEnabled"
+        static let myotisMainnetEnabled = "myotisMainnetEnabled"
+        static let myotisGnosisEnabled = "myotisGnosisEnabled"
         static let radicleNodeEnabled = "radicleNodeEnabled"
     }
 }

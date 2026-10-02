@@ -23,6 +23,17 @@ struct MyotisSettingsView: View {
             }
 
             Section {
+                ForEach(MyotisNetwork.allCases, id: \.self) { network in
+                    Toggle(network == .mainnet ? "Ethereum" : "Gnosis", isOn: networkBinding(network))
+                        .disabled(!settings.myotisNodeEnabled || myotis.status == .starting)
+                }
+            } header: {
+                Text("Networks")
+            } footer: {
+                Text("Each network runs its own light client; switch one off to save data and battery. Reads on a switched-off network fall back to the next method.")
+            }
+
+            Section {
                 LabeledContent("Status", value: myotis.status.rawValue.capitalized)
                 ForEach(MyotisNetwork.allCases, id: \.self) { network in
                     chainRow(network)
@@ -66,10 +77,21 @@ struct MyotisSettingsView: View {
             set: { newValue in
                 settings.myotisNodeEnabled = newValue
                 if newValue {
-                    myotis.start()
+                    myotis.start(networks: settings.myotisEnabledNetworks)
                 } else {
                     myotis.stop()
                 }
+            }
+        )
+    }
+
+    private func networkBinding(_ network: MyotisNetwork) -> Binding<Bool> {
+        Binding(
+            get: { settings.isMyotisNetworkEnabled(network) },
+            set: { newValue in
+                settings.setMyotisNetworkEnabled(network, newValue)
+                guard settings.myotisNodeEnabled else { return }
+                if newValue { myotis.startChain(network) } else { myotis.stopChain(network) }
             }
         )
     }
