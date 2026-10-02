@@ -65,7 +65,7 @@ enum SchemeHandlerErrorPage {
         }
     }
 
-    private static func page(title: String, heading: String, body: String) -> String {
+    static func page(title: String, heading: String, body: String) -> String {
         """
         <!doctype html>
         <html><head><meta charset="utf-8"><title>\(title)</title>
@@ -89,7 +89,7 @@ enum SchemeHandlerErrorPage {
         """
     }
 
-    private static func escape(_ s: String) -> String {
+    static func escape(_ s: String) -> String {
         var out = ""
         out.reserveCapacity(s.count)
         for ch in s {

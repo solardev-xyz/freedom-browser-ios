@@ -775,6 +775,36 @@ final class BrowserTab {
     /// of subresources can be blocked under the previous tab's allowlist
     /// state. The KVO observer on `webView.url` catches subsequent
     /// changes (redirects, anchor clicks, pushState).
+    /// The URL whose friendly error page the web view is showing, so
+    /// reload retries the real request instead of the page.
+    @ObservationIgnored private(set) var errorPageURL: URL?
+    /// Set around `loadSimulatedRequest` so the error page's own
+    /// start/finish callbacks don't count as a new navigation.
+    @ObservationIgnored private var expectingErrorPageLoad = false
+
+    /// A navigation WebKit gave up on: show what went wrong, for the URL
+    /// that failed, in place of the blank view. Cancels (a new
+    /// navigation, stop, a download) show nothing.
+    func presentLoadFailure(_ error: Error) {
+        guard let kind = WebErrorPage.kind(for: error) else { return }
+        guard let failed = WebErrorPage.failedURL(error) ?? url else { return }
+        errorPageURL = failed
+        expectingErrorPageLoad = true
+        webView.loadSimulatedRequest(URLRequest(url: failed), responseHTML: WebErrorPage.render(kind, url: failed))
+    }
+
+    /// Navigation bookkeeping for the error page: a real navigation
+    /// elsewhere forgets it; the page's own callbacks are skipped once.
+    func noteNavigationStarted() {
+        if expectingErrorPageLoad { return }
+        if let errorPageURL, webView.url != errorPageURL { self.errorPageURL = nil }
+    }
+
+    func noteNavigationFinished() {
+        if expectingErrorPageLoad { expectingErrorPageLoad = false; return }
+        errorPageURL = nil
+    }
+
     private func loadInWebView(_ url: URL) {
         adblock.updateURL(url, for: contentController)
         webView.load(URLRequest(url: url))
@@ -1009,6 +1039,13 @@ final class BrowserTab {
     /// resolve every time, matching the "pull-to-refresh = bypass cache"
     /// contract.
     func reload() {
+        // An error page: retry the request that failed (desktop "retry
+        // on reload"), through the name pipeline when it is a name.
+        if let failed = errorPageURL {
+            errorPageURL = nil
+            navigate(to: BrowserURL.classify(failed) ?? .web(failed))
+            return
+        }
         // `classify` rewrites any `.eth`-host URL — regardless of codec
         // scheme — to `.ens(name:, path:)` so the path survives the
         // re-resolve. Without `classify`, `bzz://vitalik.eth/blog`
@@ -1758,6 +1795,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // than carrying the previous page's brand color or layout
         // negotiation into a fresh navigation.
         MainActor.assumeIsolated {
+            owner?.noteNavigationStarted()
             owner?.reinstallPreloads()
             owner?.resetPerPageSurfaceState()
             // A navigation withdraws the departing page's prompts and
@@ -1774,6 +1812,9 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // pattern as the KVO observers in BrowserTab.
         MainActor.assumeIsolated {
             owner?.tearDownActiveIpfsNavigation()
+            owner?.noteNavigationFinished()
+            // An error page is not a visit.
+            if owner?.errorPageURL == url { return }
             // History / favicons see the friendly `web3://…` form.
             owner?.onNavigationFinish?(BrowserTab.presented(url), title)
             owner?.extractThemeColor()
@@ -1784,6 +1825,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         MainActor.assumeIsolated {
             owner?.tearDownActiveIpfsNavigation()
+            owner?.presentLoadFailure(error)
         }
     }
 
@@ -1794,6 +1836,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
     ) {
         MainActor.assumeIsolated {
             owner?.tearDownActiveIpfsNavigation()
+            owner?.presentLoadFailure(error)
         }
     }
 }
