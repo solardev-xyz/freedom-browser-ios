@@ -13,6 +13,8 @@
 	<string>Freedom uses the camera to scan the connection QR code shown by Freedom on your computer, and for websites you allow to use it.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Freedom saves images you choose from a web page to your photo library.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Websites you allow can use your location.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Websites you allow can use the microphone.</string>
 	<key>NSMotionUsageDescription</key>
