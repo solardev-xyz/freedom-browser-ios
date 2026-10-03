@@ -28,6 +28,8 @@ struct RadicleNodeHomeView: View {
     @Environment(RadicleNode.self) private var radicle
     @Environment(RadicleSeedTracker.self) private var seedTracker
     @Environment(SettingsStore.self) private var settings
+    @Environment(Vault.self) private var vault
+    @Environment(RadicleIdentityCoordinator.self) private var radicleIdentity
 
     @State private var seededRepos: [(rid: String, name: String?)] = []
     @State private var seedInput: String = ""
@@ -124,6 +126,9 @@ struct RadicleNodeHomeView: View {
                         .lineLimit(2)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
+                    Text(identityNote)
+                        .font(.caption)
+                        .foregroundStyle(radicleIdentity.isSwapping ? .orange : .tertiary)
                 }
             } else {
                 Text("Not started")
@@ -135,6 +140,18 @@ struct RadicleNodeHomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Where the identity comes from: the recovery phrase once the vault
+    /// has been unlocked since this install derived it, else the node's
+    /// own key — with the one-time unlock spelled out.
+    private var identityNote: String {
+        if radicleIdentity.isSwapping { return "Switching to the identity from your recovery phrase…" }
+        if (try? RadicleIdentityStore.shared.load()) != nil { return "From your recovery phrase — the same on every device." }
+        switch vault.state {
+        case .empty: return "This node's own key. Set up the wallet to derive it from your recovery phrase."
+        case .locked, .unlocked: return "Updates to your recovery phrase's identity after you unlock the wallet once."
+        }
     }
 
     private var seedCard: some View {
