@@ -5,8 +5,10 @@ import WebKit
 /// Per-site web permissions (desktop "Site Permissions" parity, scoped to
 /// what WKWebView lets the host decide: camera, microphone, and device
 /// motion / orientation). Location, notifications, clipboard and MIDI
-/// have no host hook on iOS — WebKit prompts for location itself, the
-/// rest are unsupported in WKWebView.
+/// have no host hook on iOS — WebKit prompts for location itself (its
+/// own per-site alert, remembered for the session; the app only
+/// supplies `NSLocationWhenInUseUsageDescription`), the rest are
+/// unsupported in WKWebView.
 enum SitePermissionKind: String, CaseIterable, Codable, Sendable, Identifiable {
     case camera, microphone, motion
     /// Opening links in other apps (mailto:, tel:, magnet:, app schemes).
