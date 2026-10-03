@@ -530,6 +530,24 @@ fileprivate struct FfiConverterString: FfiConverter {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterData: FfiConverterRustBuffer {
+    typealias SwiftType = Data
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        let len: Int32 = try readInt(&buf)
+        return Data(try readBytes(&buf, count: Int(len)))
+    }
+
+    public static func write(_ value: Data, into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        writeBytes(&buf, value)
+    }
+}
+
 
 
 
@@ -1019,6 +1037,27 @@ public func start(home: String, alias: String) -> String  {
 })
 }
 /**
+ * Start the embedded node as `secret_key`, an identity the host keeps
+ * (a 32-byte Ed25519 secret seed), instead of the profile's own key file.
+ * Nothing secret is written to `home`. `{"did": "..."}` on success.
+ *
+ * Only the Rust-side copy of `secret_key` is zeroed before this returns.
+ * The foreign array the host passed in (Kotlin `ByteArray`, Swift `Data`)
+ * and the buffer UniFFI copied it through are *not* wiped here — the host
+ * must clear its own array after the call and should keep the key out of
+ * long-lived managed objects.
+ */
+public func startWithKey(home: String, alias: String, secretKey: Data) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_libradicle_uniffi_fn_func_start_with_key(
+        FfiConverterString.lower(home),
+        FfiConverterString.lower(alias),
+        FfiConverterData.lower(secretKey),uniffiCallStatus
+    )
+})
+}
+/**
  * Node status: `{"connectedPeers": n}`.
  */
 public func status() -> String  {
@@ -1159,6 +1198,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_libradicle_uniffi_checksum_func_start() != 34743) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_libradicle_uniffi_checksum_func_start_with_key() != 47074) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_libradicle_uniffi_checksum_func_status() != 14863) {

@@ -26,6 +26,10 @@ heartwood → libradicle (re-pin rev ×3 Cargo.tomls) → freedom-mobile-ffi →
 rebuild xcframework (`scripts/build-xcframework.sh`) → copy regenerated
 Swift into `RadicleKit/Generated/` → new release + Package.swift checksum.
 
+## Identity (2026-10-03)
+
+The node's key is derived from the wallet's recovery phrase at SLIP-0010 `m/44'/73404'/0'/0'/0'` (`RadicleIdentityKey`, desktop `PATHS.RADICLE`), so the same phrase gives the same DID on desktop and iOS. The 32-byte secret is kept in the Keychain (`RadicleIdentityStore`, device-only) because the node boots at launch while the vault is locked, and handed to libradicle v0.8.0's `start_with_key` in memory — no key file is written. `RadicleIdentityCoordinator.checkAndHeal` runs on vault and node state changes: a created/imported phrase stores the key and restarts the node under it; a wiped vault deletes it and restarts the node on its own generated key. The switch is silent (pre-release). Golden vectors in `docs/ipfs-identity-golden-vectors.md` (`RadicleIdentityKeyTests`).
+
 ## Hard-won integration constraints (do not regress)
 
 - **Non-delta packfile**: libgit2's packbuilder only emits `REF_DELTA`,
