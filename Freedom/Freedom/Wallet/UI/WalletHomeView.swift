@@ -189,8 +189,8 @@ struct WalletHomeView: View {
                         .frame(width: 28)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(wallets.activeWallet.name).font(.callout.weight(.semibold)).foregroundStyle(.primary)
-                        Text(wallets.visibleWallets.count == 1 ? "Tap to add another wallet" : "\(wallets.visibleWallets.count) wallets")
-                            .font(.caption2).foregroundStyle(.secondary)
+                        Text(wallets.address(of: wallets.activeWallet)?.shortenedHex() ?? "Locked")
+                            .font(.caption2).monospaced().foregroundStyle(.secondary)
                     }
                     Spacer()
                     Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
