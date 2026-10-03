@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Settings → About: version, source, what the app is built with, and
 /// the open-source licences of everything bundled.
@@ -20,6 +21,11 @@ struct AboutView: View {
                     Link(destination: url) {
                         Label("Source code", systemImage: "chevron.left.forwardslash.chevron.right")
                     }
+                }
+                Button {
+                    Self.openDefaultBrowserSettings()
+                } label: {
+                    Label("Make Freedom the default browser", systemImage: "safari")
                 }
             } footer: {
                 if let license = inventory?.app.license {
@@ -50,6 +56,18 @@ struct AboutView: View {
         }
         .navigationTitle("About")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// iOS 18.3+ opens Settings → Default Apps directly; older systems
+    /// land on Freedom's own settings page, where the browser choice sits.
+    static func openDefaultBrowserSettings() {
+        let target: URL?
+        if #available(iOS 18.3, *) {
+            target = URL(string: UIApplication.openDefaultApplicationsSettingsURLString)
+        } else {
+            target = URL(string: UIApplication.openSettingsURLString)
+        }
+        if let target { UIApplication.shared.open(target) }
     }
 
     static var version: String {

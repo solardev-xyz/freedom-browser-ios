@@ -29,6 +29,25 @@
 				<string>freedom</string>
 			</array>
 		</dict>
+		<dict>
+			<!-- Links from other apps (and the default-browser role for http/https). -->
+			<key>CFBundleURLName</key>
+			<string>baby.freedom.browser.links</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>http</string>
+				<string>https</string>
+				<string>bzz</string>
+				<string>ipfs</string>
+				<string>ipns</string>
+				<string>ens</string>
+				<string>web3</string>
+				<string>rad</string>
+				<string>ethereum</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>

@@ -81,6 +81,18 @@ final class TabStore {
         (activeTab ?? ensureActiveTab()).navigate(to: browserURL)
     }
 
+    /// Bumped when a URL from outside the app opened a tab; `TabsRoot`
+    /// brings the page up over the overview on each change.
+    var externalOpenToken = 0
+
+    /// A link from another app (or the default-browser role): always a
+    /// new, non-private tab, brought to the front.
+    func openFromOutside(_ browserURL: BrowserURL) {
+        newTab(isPrivate: false)
+        navigateActive(to: browserURL)
+        externalOpenToken += 1
+    }
+
     /// Context-menu "Open in New Tab" / "Open in Background": a new tab
     /// navigated to `url`, activated or left behind the current one.
     func open(_ url: URL, inBackground background: Bool, from opener: BrowserTab?) {

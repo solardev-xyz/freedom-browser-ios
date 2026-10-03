@@ -33,6 +33,8 @@ struct TabsRoot: View {
             ContentView(onShowTabs: showTabs)
                 .navigationTransition(.zoom(sourceID: tabStore.activeRecordID ?? TabsRoot.noTab, in: tabZoom))
         }
+        // A link from another app opened a tab: show it, overview or not.
+        .onChange(of: tabStore.externalOpenToken) { _, _ in isBrowsing = true }
     }
 
     /// A source id no card carries: with no active tab the presentation

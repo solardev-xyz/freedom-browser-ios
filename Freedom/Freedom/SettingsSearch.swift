@@ -92,6 +92,7 @@ enum SettingsSearchIndex {
         e("sitePermissions", "Site Permissions", "Remembered camera, microphone, motion and open-other-apps decisions per site, with removal.", "Site Permissions", [.sitePermissions], ["camera", "microphone", "motion", "orientation", "external apps", "mailto", "revoke", "remove", "blocked"]),
         // About
         e("about", "About", "Version, source code, what the app is built with.", "About", [.about], ["version", "build", "source"]),
+        e("about.defaultBrowser", "Make Freedom the default browser", "Opens Settings → Default Apps, where links from other apps get a browser.", "About", [.about], ["default", "browser", "links", "open with", "safari"]),
         e("about.licenses", "Open-source licences", "Every bundled component: native components, filter lists, Swift packages, Rust crates — with licence texts.", "About", [.about, .licenses], ["license", "notice", "acknowledgements", "credits", "third party", "open source"]),
     ]
 }
