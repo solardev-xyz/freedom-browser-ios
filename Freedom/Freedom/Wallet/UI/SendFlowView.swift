@@ -387,7 +387,7 @@ struct SendFlowView: View {
     }
 
     private func refreshQuote(recipient: EthereumAddress, amount: BigUInt) async {
-        guard let fromHex = try? vault.signingKey(at: vault.activeAccountPath).ethereumAddress else {
+        guard let fromHex = try? vault.signingKey(at: vault.activeWalletPath).ethereumAddress else {
             quoteState = .failed("Wallet locked — reopen to retry.")
             return
         }
@@ -434,7 +434,7 @@ struct SendFlowView: View {
 
     /// The cached balance shows at once; the store refreshes it silently.
     private func refreshBalance() async {
-        guard let derived = try? vault.signingKey(at: vault.activeAccountPath).ethereumAddress else {
+        guard let derived = try? vault.signingKey(at: vault.activeWalletPath).ethereumAddress else {
             balance = nil
             return
         }

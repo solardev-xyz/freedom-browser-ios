@@ -69,7 +69,7 @@ struct ReceiveView: View {
     }
 
     private func loadAddress() async {
-        guard let derived = try? vault.signingKey(at: vault.activeAccountPath).ethereumAddress else { return }
+        guard let derived = try? vault.signingKey(at: vault.activeWalletPath).ethereumAddress else { return }
         self.address = derived
         self.qrImage = Self.generateQR(content: derived)
         // ENS reverse runs in the background — we already show address

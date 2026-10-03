@@ -44,10 +44,7 @@ struct WalletHomeView: View {
         return grants.first { $0.origin == key }
     }
 
-    @Environment(WalletAccountStore.self) private var accounts
-    @State private var isAddingAccount = false
-    @State private var isRenamingAccount = false
-    @State private var accountNameDraft = ""
+    @Environment(UserWalletStore.self) private var wallets
     @State private var address: String?
     @State private var primaryName: ENSReverseResolution = .none
     @State private var assetsState: AssetsState = .loading
@@ -71,7 +68,7 @@ struct WalletHomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                accountMenu
+                walletRow
                 if let address {
                     VStack(alignment: .leading, spacing: 4) {
                         ENSNameLabel(resolution: primaryName)
@@ -93,20 +90,8 @@ struct WalletHomeView: View {
         // No `.refreshable` here: pull-to-refresh inside an iOS sheet has a
         // gesture-arbiter conflict with drag-to-dismiss that cancels the
         // refresh task. Refresh is button-driven instead (see balanceCard).
-        .task(id: "\(activeChainID)/\(accounts.activeIndex)") {
+        .task(id: "\(activeChainID)/\(wallets.activeIndex)") {
             await refreshAssets(force: false)
-        }
-        .alert("New account", isPresented: $isAddingAccount) {
-            TextField("Name", text: $accountNameDraft)
-            Button("Add") { accounts.addAccount(name: accountNameDraft) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Account \((accounts.accounts.map(\.index).max() ?? 0) + 2) under the same recovery phrase.")
-        }
-        .alert("Rename account", isPresented: $isRenamingAccount) {
-            TextField("Name", text: $accountNameDraft)
-            Button("Save") { accounts.rename(index: accounts.activeIndex, to: accountNameDraft) }
-            Button("Cancel", role: .cancel) {}
         }
         // Re-runs whenever the address changes (vault create / wipe / import) —
         // can't dedup by `primaryName != .none` because that's stale across rotations.
@@ -190,44 +175,34 @@ struct WalletHomeView: View {
         .buttonStyle(.plain)
     }
 
-    /// Which account the wallet acts as (desktop "multiple accounts"):
-    /// switch, add the next one under the seed, rename the active one.
-    private var accountMenu: some View {
-        Menu {
-            ForEach(accounts.accounts) { account in
-                Button {
-                    accounts.setActive(index: account.index)
-                } label: {
-                    if account.index == accounts.activeIndex {
-                        Label(account.name, systemImage: "checkmark")
-                    } else {
-                        Text(account.name)
+    /// Which wallet the app acts as (desktop "multiple accounts"): the
+    /// Send screen's asset-picker shape — a row that pushes the list.
+    private var walletRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Wallet").font(.caption).foregroundStyle(.secondary)
+            NavigationLink {
+                WalletsListView()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: wallets.activeWallet.isMain ? "wallet.bifold.fill" : "wallet.bifold")
+                        .font(.title3)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(wallets.activeWallet.name).font(.callout.weight(.semibold)).foregroundStyle(.primary)
+                        Text(wallets.visibleWallets.count == 1 ? "Tap to add another wallet" : "\(wallets.visibleWallets.count) wallets")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
-                    if let address = accounts.address(of: account) {
-                        Text(address.shortenedHex())
-                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                 }
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
             }
-            Divider()
-            Button {
-                accountNameDraft = ""
-                isAddingAccount = true
-            } label: {
-                Label("Add account", systemImage: "plus")
-            }
-            Button {
-                accountNameDraft = accounts.activeAccount.name
-                isRenamingAccount = true
-            } label: {
-                Label("Rename account", systemImage: "pencil")
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Text(accounts.activeAccount.name).font(.headline)
-                Image(systemName: "chevron.up.chevron.down").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Wallet: \(wallets.activeWallet.name)")
         }
-        .accessibilityLabel("Account: \(accounts.activeAccount.name)")
     }
 
     private var chainPicker: some View {
@@ -357,7 +332,7 @@ struct WalletHomeView: View {
     private func refreshAssets(force: Bool) async {
         let addressString: String
         do {
-            addressString = try vault.signingKey(at: vault.activeAccountPath).ethereumAddress
+            addressString = try vault.signingKey(at: vault.activeWalletPath).ethereumAddress
         } catch {
             // Derivation only throws if the seed is gone (lock mid-view).
             assetsState = .failed

@@ -23,7 +23,7 @@ struct FreedomApp: App {
     @State private var tabStore: TabStore
     @State private var ensResolver: ENSResolver
     @State private var vault: Vault
-    @State private var walletAccounts: WalletAccountStore
+    @State private var userWallets: UserWalletStore
     @State private var chainRegistry: ChainRegistry
     @State private var chainStore: ChainStore
     @State private var transactionService: TransactionService
@@ -113,8 +113,8 @@ struct FreedomApp: App {
             self._settings = State(wrappedValue: settings)
             self._ensResolver = State(wrappedValue: resolver)
             let vault = Vault()
-            let walletAccounts = WalletAccountStore(vault: vault)
-            self._walletAccounts = State(wrappedValue: walletAccounts)
+            let userWallets = UserWalletStore(vault: vault)
+            self._userWallets = State(wrappedValue: userWallets)
             let registry = ChainRegistry(chainStore: chainStore, mainnetPool: pool)
             // Verified chain-data sources for wallet + dApp reads
             // (desktop chain-data-router parity): Myotis answers first
@@ -318,7 +318,7 @@ struct FreedomApp: App {
                 .environment(faviconStore)
                 .environment(ensResolver)
                 .environment(vault)
-                .environment(walletAccounts)
+                .environment(userWallets)
                 .environment(chainRegistry)
                 .environment(chainStore)
                 .environment(transactionService)
@@ -375,16 +375,16 @@ struct FreedomApp: App {
                 // Foreground retry: the 6h gate makes this a cheap no-op most
                 // of the time, and it picks up checks the launch task missed
                 // (node not up yet, app long-suspended).
-                .onChange(of: walletAccounts.activeIndex) { _, _ in
-                    // One active account: every dapp grant follows it, and
+                .onChange(of: userWallets.activeIndex) { _, _ in
+                    // One active wallet: every dapp grant follows it, and
                     // each connected tab's bridge emits accountsChanged.
                     if let address = try? vault.activeAddress() {
                         permissionStore.reassignAllGrants(to: address)
                     }
                 }
                 .onChange(of: vault.state) { _, state in
-                    // A new or wiped vault starts over with account 1.
-                    if state == .empty { walletAccounts.reset() }
+                    // A new or wiped vault starts over with Main Wallet.
+                    if state == .empty { userWallets.reset() }
                 }
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }

@@ -75,7 +75,7 @@ struct ApproveConnectSheet: View {
     private func deriveAddressIfUnlocked() async {
         guard vault.state == .unlocked else { return }
         do {
-            address = try vault.signingKey(at: vault.activeAccountPath).ethereumAddress
+            address = try vault.signingKey(at: vault.activeWalletPath).ethereumAddress
         } catch {
             deriveError = error.localizedDescription
         }

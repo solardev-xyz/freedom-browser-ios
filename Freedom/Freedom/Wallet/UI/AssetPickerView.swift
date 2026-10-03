@@ -82,7 +82,7 @@ struct AssetPickerView: View {
     /// Cached balances render immediately; each chain is then refreshed
     /// silently (the store skips chains fetched moments ago).
     private func load() async {
-        guard let derived = try? vault.signingKey(at: vault.activeAccountPath).ethereumAddress else {
+        guard let derived = try? vault.signingKey(at: vault.activeWalletPath).ethereumAddress else {
             isLoading = false
             return
         }
