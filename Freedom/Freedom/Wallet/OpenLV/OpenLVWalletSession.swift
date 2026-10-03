@@ -187,10 +187,11 @@ final class OpenLVWalletSession {
         message: "User rejected the request."
     )
 
-    /// Main-user address. Only callable after an approval — the sheets
-    /// gate their approve button on vault unlock (`ApprovalUnlockStrip`).
+    /// The active account's address. Only callable after an approval —
+    /// the sheets gate their approve button on vault unlock
+    /// (`ApprovalUnlockStrip`).
     private func vaultAddress() throws -> String {
-        try services.vault.signingKey(at: .mainUser).ethereumAddress
+        try services.vault.activeAddress()
     }
 
     private func matchesVaultAccount(_ declared: String) -> Bool {

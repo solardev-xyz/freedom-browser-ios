@@ -97,6 +97,16 @@ final class Vault {
         }
     }
 
+    /// The wallet the app acts as: signing, the address it shows and
+    /// grants, the key it exports. `UserWalletStore` owns it; index 0 is
+    /// the Main Wallet.
+    var activeWalletPath: HDKey.Path = .mainUser
+
+    /// The active wallet's address.
+    func activeAddress() throws -> String {
+        try signingKey(at: activeWalletPath).ethereumAddress
+    }
+
     /// Derive the key at `path` from the current unlocked seed. The returned
     /// `HDKey` is the caller's to use and drop — the Data inside it is not
     /// zeroed on drop (Swift's Data doesn't guarantee that). Keep it scoped
@@ -109,8 +119,8 @@ final class Vault {
     /// Sugar over `signingKey(at:)` for callers that want to hand the
     /// derived key straight to Argent's `EthereumAccount` for signing.
     /// Same one-shot lifetime contract.
-    func signingAccount(at path: HDKey.Path = .mainUser) throws -> EthereumAccount {
-        let hdKey = try signingKey(at: path)
+    func signingAccount(at path: HDKey.Path? = nil) throws -> EthereumAccount {
+        let hdKey = try signingKey(at: path ?? activeWalletPath)
         return try EthereumAccount(keyStorage: HDKeyStorage(privateKey: hdKey.privateKey))
     }
 
@@ -140,9 +150,9 @@ final class Vault {
     /// unlocks first too). Derived from the re-read mnemonic, not the
     /// cached seed, so an unlocked vault still costs a prompt. Same
     /// one-shot lifetime contract: the caller scopes the bytes.
-    func revealPrivateKey(at path: HDKey.Path = .mainUser) async throws -> Data {
+    func revealPrivateKey(at path: HDKey.Path? = nil) async throws -> Data {
         let mnemonic = try await revealMnemonic()
-        return try HDKey(seed: mnemonic.seed()).derive(path).privateKey
+        return try HDKey(seed: mnemonic.seed()).derive(path ?? activeWalletPath).privateKey
     }
 
     func wipe() async throws {

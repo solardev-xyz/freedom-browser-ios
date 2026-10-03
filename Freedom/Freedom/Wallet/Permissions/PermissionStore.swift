@@ -39,6 +39,17 @@ final class PermissionStore {
         save()
     }
 
+    /// The active wallet changed: every grant now authorizes the new
+    /// address (one active wallet, as desktop and MetaMask do).
+    func reassignAllGrants(to account: String) {
+        let descriptor = FetchDescriptor<DappPermission>()
+        for grant in (try? context.fetch(descriptor)) ?? [] where grant.account != account {
+            grant.account = account
+        }
+        for key in accountByOrigin.keys { accountByOrigin[key] = account }
+        save()
+    }
+
     func revoke(origin: String) {
         guard let existing = fetch(origin: origin) else { return }
         context.delete(existing)

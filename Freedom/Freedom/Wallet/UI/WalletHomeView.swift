@@ -9,7 +9,6 @@ struct WalletHomeView: View {
     @Environment(ChainRegistry.self) private var chains
     @Environment(ChainStore.self) private var chainStore
     @Environment(PermissionStore.self) private var permissions
-    @Environment(ENSResolver.self) private var ensResolver
     @Environment(TabStore.self) private var tabStore
     @Environment(OpenLVWalletSession.self) private var openlvSession
     @Environment(WalletTransactionHistoryStore.self) private var txHistory
@@ -44,8 +43,8 @@ struct WalletHomeView: View {
         return grants.first { $0.origin == key }
     }
 
+    @Environment(UserWalletStore.self) private var wallets
     @State private var address: String?
-    @State private var primaryName: ENSReverseResolution = .none
     @State private var assetsState: AssetsState = .loading
     @State private var balanceRefreshGeneration: Int = 0
 
@@ -67,12 +66,7 @@ struct WalletHomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                if let address {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ENSNameLabel(resolution: primaryName)
-                        AddressPill(address: address)
-                    }
-                }
+                walletRow
                 chainPicker
                 assetsCard
                 sendReceiveButtons
@@ -88,16 +82,8 @@ struct WalletHomeView: View {
         // No `.refreshable` here: pull-to-refresh inside an iOS sheet has a
         // gesture-arbiter conflict with drag-to-dismiss that cancels the
         // refresh task. Refresh is button-driven instead (see balanceCard).
-        .task(id: activeChainID) {
+        .task(id: "\(activeChainID)/\(wallets.activeIndex)") {
             await refreshAssets(force: false)
-        }
-        // Re-runs whenever the address changes (vault create / wipe / import) —
-        // can't dedup by `primaryName != .none` because that's stale across rotations.
-        .task(id: address) {
-            guard let address else { return }
-            primaryName = (try? await ensResolver.reverseResolve(
-                address: EthereumAddress(address)
-            )) ?? .none
         }
     }
 
@@ -171,6 +157,36 @@ struct WalletHomeView: View {
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
+    }
+
+    /// Which wallet the app acts as (desktop "multiple accounts"): the
+    /// Send screen's asset-picker shape — a row that pushes the list.
+    private var walletRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Wallet").font(.caption).foregroundStyle(.secondary)
+            NavigationLink {
+                WalletsListView()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: wallets.activeWallet.isMain ? "wallet.bifold.fill" : "wallet.bifold")
+                        .font(.title3)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(wallets.activeWallet.name).font(.callout.weight(.semibold)).foregroundStyle(.primary)
+                        Text(wallets.address(of: wallets.activeWallet)?.shortenedHex() ?? "Locked")
+                            .font(.caption2).monospaced().foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Wallet: \(wallets.activeWallet.name)")
+        }
     }
 
     private var chainPicker: some View {
@@ -300,7 +316,7 @@ struct WalletHomeView: View {
     private func refreshAssets(force: Bool) async {
         let addressString: String
         do {
-            addressString = try vault.signingKey(at: .mainUser).ethereumAddress
+            addressString = try vault.signingKey(at: vault.activeWalletPath).ethereumAddress
         } catch {
             // Derivation only throws if the seed is gone (lock mid-view).
             assetsState = .failed
