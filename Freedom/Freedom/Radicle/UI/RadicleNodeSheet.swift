@@ -128,7 +128,7 @@ struct RadicleNodeHomeView: View {
                         .textSelection(.enabled)
                     Text(identityNote)
                         .font(.caption)
-                        .foregroundStyle(radicleIdentity.isSwapping ? .orange : .tertiary)
+                        .foregroundStyle(radicleIdentity.isSwapping ? Color.orange : Color(.tertiaryLabel))
                 }
             } else {
                 Text("Not started")
