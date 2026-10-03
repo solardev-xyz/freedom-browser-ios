@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Default web browser role (Settings → Default Apps → Browser). Apple grants
+	     this managed entitlement per App ID on request; the simulator ignores it,
+	     a device build needs the capability on the App ID. See docs/architecture.md. -->
+	<key>com.apple.developer.web-browser</key>
+	<true/>
+</dict>
+</plist>

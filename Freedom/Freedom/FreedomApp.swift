@@ -338,14 +338,25 @@ struct FreedomApp: App {
                 .environment(swarmUserPublisher)
                 .environment(adblock)
                 .environment(openlvSession)
-                // openlv links arrive via the custom `freedom://` scheme
-                // (and, once the production bridge deploy serves an AASA
-                // file + the Associated Domains entitlement lands, via
-                // universal links on the bridge origin). Anything else
-                // is not ours to handle here.
+                // URLs from outside: the phone-signing pairing link
+                // (`freedom://…#openlv://…`; universal links on the bridge
+                // origin once an AASA file + the Associated Domains
+                // entitlement land), and any page the browser can show —
+                // a link tapped in another app, or http(s) once Freedom is
+                // the default browser — which opens in a new tab.
                 .onOpenURL { url in
-                    guard let uri = OpenLVWalletSession.extractOpenLVURI(from: url.absoluteString) else { return }
-                    Task { try? await openlvSession.start(uri: uri) }
+                    switch IncomingLink.classify(url) {
+                    case .openLV(let uri):
+                        Task { try? await openlvSession.start(uri: uri) }
+                    case .page(let browserURL):
+                        tabStore.openFromOutside(browserURL)
+                    case .payment(let url):
+                        // ContentView turns it into the Send form once it is up.
+                        tabStore.pendingEthereumURI = url
+                        tabStore.externalOpenToken += 1
+                    case .unsupported:
+                        break
+                    }
                 }
                 .modelContainer(modelContainer)
                 .task { await startNodeIfNeeded() }
