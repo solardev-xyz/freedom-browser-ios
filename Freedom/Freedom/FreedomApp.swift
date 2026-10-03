@@ -31,6 +31,7 @@ struct FreedomApp: App {
     @State private var autoApproveStore: AutoApproveStore
     @State private var openlvSession: OpenLVWalletSession
     @State private var beeIdentity: BeeIdentityCoordinator
+    @State private var radicleIdentity = RadicleIdentityCoordinator()
     @State private var beeReadiness: BeeReadiness
     @State private var stampService: StampService
     @State private var storageFunding: StorageFundingController
@@ -319,6 +320,7 @@ struct FreedomApp: App {
                 .environment(ensResolver)
                 .environment(vault)
                 .environment(userWallets)
+                .environment(radicleIdentity)
                 .environment(chainRegistry)
                 .environment(chainStore)
                 .environment(transactionService)
@@ -366,6 +368,7 @@ struct FreedomApp: App {
                 .task { await debugResolveIfRequested() }
                 .task { await debugAccountIfRequested() }
                 .task { await debugOpenURLIfRequested() }
+                .task { await debugVaultIfRequested() }
                 .task { await startRadicleIfNeeded() }
                 .task { beeReadiness.start() }
                 .task { stampService.start() }
@@ -481,6 +484,45 @@ struct FreedomApp: App {
     /// served/failed with the time taken — the Gnosis twin of the resolve
     /// hook, used to probe seed peers
     /// (`log stream --predicate 'category == "DebugAccount"'`).
+    /// Smoke-test hook (DEBUG, simulator only): `FREEDOM_DEBUG_VAULT=import:<phrase>`
+    /// creates the vault from a phrase at launch when none exists, then
+    /// reports for a minute whether the Radicle node's DID has moved to
+    /// the one that phrase derives (`log stream --predicate 'category == "DebugVault"'`).
+    /// `FREEDOM_DEBUG_VAULT=wipe` wipes an existing vault. Never on a device.
+    private func debugVaultIfRequested() async {
+        #if DEBUG && targetEnvironment(simulator)
+        guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_VAULT"], !raw.isEmpty else { return }
+        let log = Logger(subsystem: "com.browser.Freedom", category: "DebugVault")
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        if raw == "wipe" {
+            do { try await vault.wipe(); log.notice("[debug-vault] wiped") } catch { log.notice("[debug-vault] wipe failed: \(error.localizedDescription, privacy: .public)") }
+            return
+        }
+        guard raw.hasPrefix("import:") else { return }
+        let phrase = String(raw.dropFirst("import:".count))
+        guard vault.state == .empty else {
+            // An existing (locked) vault: report what the node booted as.
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            log.notice("[debug-vault] vault exists (\(String(describing: vault.state), privacy: .public)); radicle=\(String(describing: radicle.status), privacy: .public) did=\(radicle.identity?.did ?? "-", privacy: .public)")
+            return
+        }
+        do {
+            let mnemonic = try Mnemonic(phrase: phrase)
+            try await vault.create(mnemonic: mnemonic)
+            let expected = try RadicleIdentityKey.derive(fromSeed: mnemonic.seed()).did
+            log.notice("[debug-vault] imported; expecting radicle DID \(expected, privacy: .public)")
+            for tick in 1...30 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let did = radicle.identity?.did ?? "-"
+                log.notice("[debug-vault] t=\(tick * 2)s radicle=\(String(describing: radicle.status), privacy: .public) did=\(did, privacy: .public) match=\(did == expected, privacy: .public)")
+                if did == expected { break }
+            }
+        } catch {
+            log.notice("[debug-vault] import failed: \(error.localizedDescription, privacy: .public)")
+        }
+        #endif
+    }
+
     private func debugAccountIfRequested() async {
         #if DEBUG
         guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_ACCOUNT"],
@@ -576,7 +618,7 @@ struct FreedomApp: App {
         guard NSClassFromString("XCTestCase") == nil else { return }
         guard settings.radicleNodeEnabled else { return }
         guard radicle.status == .idle else { return }
-        await radicle.start(alias: "freedom-ios")
+        await RadicleRuntime.start(radicle)
         guard radicle.status == .running else { return }
         await radicle.connectSeeds()
     }

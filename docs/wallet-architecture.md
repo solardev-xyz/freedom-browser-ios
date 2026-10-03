@@ -131,7 +131,8 @@ Nothing here imports anything outside `Wallet/` except `EthereumRPCPool` (for `e
   |---|---|---|
   | Main user wallet | `m/44'/60'/0'/0/0` | **surfaced in UI** |
   | Bee wallet (node) | `m/44'/60'/0'/0/1` | **drives the embedded Bee node identity** (M6/WP1 — see [`swarm-publishing.md`](./swarm-publishing.md) §5) |
-  | Additional user wallets | `m/44'/60'/{i}'/0/0`, `i ≥ 1` | reserved for multi-account (§11) |
+  | Additional user wallets | `m/44'/60'/{i}'/0/0`, `i ≥ 1` | multiple wallets (§11) |
+  | Radicle node identity | `m/44'/73404'/0'/0'/0'` (SLIP-0010 Ed25519) | `RadicleIdentityKey`, desktop `PATHS.RADICLE` (2026-10-03) |
   | Per-origin Swarm publisher keys | `m/44'/73406'/{originIndex}'/0/0` | **drives per-origin feed signing** when the dapp picks `app-scoped` mode at the first feed grant (M6/WP6.2 — see [`swarm-publishing.md`](./swarm-publishing.md) §8.6). Factory shipped at M6/WP1; `originIndex` allocated by `SwarmFeedStore.nextPublisherKeyIndex()` at insert time |
 
   Keeping this layout identical to desktop means **the same mnemonic produces the same addresses on iOS and desktop** — the whole reason to align schemes. `HDKey.swift` exposes all four namespaces as named constants (`mainUser`, `beeWallet`, `userAccount(_:)`, `publisherKey(originIndex:)`) so nothing ever writes `m/44'/60'/0'/0/1` as a "user account 2" by accident.

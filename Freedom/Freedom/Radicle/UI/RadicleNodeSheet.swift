@@ -76,8 +76,7 @@ struct RadicleNodeHomeView: View {
                 settings.radicleNodeEnabled = enabled
                 Task {
                     if enabled {
-                        await radicle.start(alias: "freedom-ios")
-                        await radicle.connectSeeds()
+                        await RadicleRuntime.start(radicle)
                         await refresh()
                     } else {
                         await radicle.shutdown()

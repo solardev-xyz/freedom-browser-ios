@@ -17,6 +17,7 @@ struct ContentView: View {
     @Environment(BookmarkStore.self) private var bookmarkStore
     @Environment(Vault.self) private var vault
     @Environment(BeeIdentityCoordinator.self) private var beeIdentity
+    @Environment(RadicleIdentityCoordinator.self) private var radicleIdentity
     @Environment(SettingsStore.self) private var settings
     @Environment(OpenLVWalletSession.self) private var openlvSession
     @Environment(ChainStore.self) private var chainStore
@@ -421,9 +422,13 @@ struct ContentView: View {
         // sync, so it has no equivalent hook here.
         .onChange(of: vault.state) { _, _ in
             beeIdentity.checkAndHeal(vault: vault, swarm: swarm)
+            radicleIdentity.checkAndHeal(vault: vault, radicle: radicle)
         }
         .onChange(of: swarm.status) { _, _ in
             beeIdentity.checkAndHeal(vault: vault, swarm: swarm)
+        }
+        .onChange(of: radicle.status) { _, _ in
+            radicleIdentity.checkAndHeal(vault: vault, radicle: radicle)
         }
         .modifier(BeeIdentityAlert(beeIdentity: beeIdentity))
     }

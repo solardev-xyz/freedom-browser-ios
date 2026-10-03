@@ -107,6 +107,15 @@ not only at the desktop-equivalence layer.
 
 ## Reproduction
 
+## Radicle (`m/44'/73404'/0'/0'/0'`, `createRadicleIdentity`)
+
+| Mnemonic | Secret seed (hex) | Public key (hex) | DID |
+|---|---|---|---|
+| `test` ×11 `junk` | `af48066c1ee69bd6d95166f9298d585e85f981c140e76b716c10b72e4f54be69` | `8d8ac6623e5d13848a67428f1ab2c7fc4d121894efc161f64138eab494f1514d` | `did:key:z6MkoynGGksuz9zpQ9HkFZ3Ayj7FqexXDYbzasYNAGwXftBE` |
+| `abandon` ×11 `about` | `b262e62fc6a558fd045ca68dd7000e30a135f678bc0816935e13ebe6a97e14bd` | `1fbc19d1e386f9969c5e7925d71ce5b332b399ee632b17f4743a3248823e248b` | `did:key:z6Mkgb93MjdiDEUrHVCY2X4EfaSwzoFCorViqqPnjoQX8gAn` |
+
+Computed 2026-10-03 with desktop's `deriveEd25519Key(getSeed(m), PATHS.RADICLE)` + `createRadicleIdentity`; the secret seeds were cross-checked with an independent SLIP-0010 implementation. `RadicleIdentityKeyTests` holds them.
+
 To recompute these vectors at any time:
 
 ```bash

@@ -113,7 +113,12 @@ public final class RadicleNode {
 
     /// Boot the profile + node runtime. Idempotent per process: a second
     /// call while running reports the Rust layer's "already started".
-    public func start(home: String = RadicleNode.defaultHome(), alias: String) async {
+    /// `key`: the node's Ed25519 secret seed (32 bytes) supplied by the
+    /// host — the identity derived from the wallet's recovery phrase.
+    /// Handed to libradicle in memory (`start_with_key`); it never
+    /// becomes a key file. nil starts with the profile's own key, which
+    /// radicle generates on first run.
+    public func start(home: String = RadicleNode.defaultHome(), alias: String, key: Data? = nil) async {
         guard status == .idle || status == .stopped || status == .failed else { return }
         status = .starting
         lastError = nil
@@ -133,7 +138,9 @@ public final class RadicleNode {
             setenv("RAD_SOCKET", socketPath, 1)
         }
 
-        let result = await Self.blocking { RadicleKit.start(home: home, alias: alias) }
+        let result = await Self.blocking {
+            if let key { RadicleKit.startWithKey(home: home, alias: alias, secretKey: key) } else { RadicleKit.start(home: home, alias: alias) }
+        }
         let decoded = Self.decode(result)
         if let did = decoded["did"] as? String, !did.isEmpty {
             status = .running
