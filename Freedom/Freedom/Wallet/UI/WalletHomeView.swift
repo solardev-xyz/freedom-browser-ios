@@ -9,7 +9,6 @@ struct WalletHomeView: View {
     @Environment(ChainRegistry.self) private var chains
     @Environment(ChainStore.self) private var chainStore
     @Environment(PermissionStore.self) private var permissions
-    @Environment(ENSResolver.self) private var ensResolver
     @Environment(TabStore.self) private var tabStore
     @Environment(OpenLVWalletSession.self) private var openlvSession
     @Environment(WalletTransactionHistoryStore.self) private var txHistory
@@ -46,7 +45,6 @@ struct WalletHomeView: View {
 
     @Environment(UserWalletStore.self) private var wallets
     @State private var address: String?
-    @State private var primaryName: ENSReverseResolution = .none
     @State private var assetsState: AssetsState = .loading
     @State private var balanceRefreshGeneration: Int = 0
 
@@ -69,12 +67,6 @@ struct WalletHomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 walletRow
-                if let address {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ENSNameLabel(resolution: primaryName)
-                        AddressPill(address: address)
-                    }
-                }
                 chainPicker
                 assetsCard
                 sendReceiveButtons
@@ -92,14 +84,6 @@ struct WalletHomeView: View {
         // refresh task. Refresh is button-driven instead (see balanceCard).
         .task(id: "\(activeChainID)/\(wallets.activeIndex)") {
             await refreshAssets(force: false)
-        }
-        // Re-runs whenever the address changes (vault create / wipe / import) —
-        // can't dedup by `primaryName != .none` because that's stale across rotations.
-        .task(id: address) {
-            guard let address else { return }
-            primaryName = (try? await ensResolver.reverseResolve(
-                address: EthereumAddress(address)
-            )) ?? .none
         }
     }
 
