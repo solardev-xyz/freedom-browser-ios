@@ -16,6 +16,7 @@ struct BeeAPIClient {
         /// body text, or the status when the body is empty.
         case rejected(status: Int, message: String)
         case malformedResponse    // body wasn't JSON or missing fields
+        case timedOut             // no answer within the request timeout
 
         var errorDescription: String? {
             switch self {
@@ -24,6 +25,7 @@ struct BeeAPIClient {
             case .transient(let status): "The Swarm node is busy (HTTP \(status)). Try again shortly."
             case .rejected(_, let message): message
             case .malformedResponse: "The Swarm node returned an unexpected response."
+            case .timedOut: "The Swarm node didn't answer in time."
             }
         }
 
@@ -421,6 +423,8 @@ struct BeeAPIClient {
         } catch let error as URLError where error.code == .cannotConnectToHost
                                            || error.code == .networkConnectionLost {
             throw Error.notRunning
+        } catch let error as URLError where error.code == .timedOut {
+            throw Error.timedOut
         } catch {
             throw Error.malformedResponse
         }

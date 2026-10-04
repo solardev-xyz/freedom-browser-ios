@@ -4,6 +4,7 @@ import SwiftUI
 /// attribution. Edits live-refresh every open tab.
 struct AdblockSettingsView: View {
     @Environment(AdblockService.self) private var adblock
+    @Environment(AdblockUpdateService.self) private var updates
     @Environment(SettingsStore.self) private var settings
 
     @State private var isAddingSite = false
@@ -44,6 +45,7 @@ struct AdblockSettingsView: View {
                     if AdblockUpdateFeed.isTrustAnchorConfigured {
                         @Bindable var settings = settings
                         Toggle("Keep lists up to date", isOn: $settings.adblockAutoUpdateEnabled)
+                        updateCheckRow
                     }
                 } header: {
                     Text("About the lists")
@@ -88,6 +90,51 @@ struct AdblockSettingsView: View {
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
+        }
+    }
+
+    /// When the Swarm feed was last checked and how it went, plus a manual
+    /// check — the only place a broken feed shows up for the user.
+    private var updateCheckRow: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Last check")
+                if let result = updates.lastResult {
+                    Text("\(result.date.formatted(.relative(presentation: .named))) · \(Self.summary(result.outcome))")
+                        .font(.caption)
+                        .foregroundStyle(Self.isProblem(result.outcome) ? Color.orange : Color.secondary)
+                } else {
+                    Text("Not checked yet")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if updates.isChecking {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Check now") {
+                    Task { await updates.runOnce() }
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+    }
+
+    static func summary(_ outcome: AdblockUpdateService.Outcome) -> String {
+        switch outcome {
+        case .applied(let version): "Updated to version \(version)."
+        case .notNewer(let version): "Up to date (version \(version))."
+        case .disabled: "Updates are off."
+        case .feedUnavailable(let reason): "Couldn't reach the update feed. \(reason)"
+        case .failed(let reason): "Update failed. \(reason)"
+        }
+    }
+
+    static func isProblem(_ outcome: AdblockUpdateService.Outcome) -> Bool {
+        switch outcome {
+        case .feedUnavailable, .failed: true
+        case .applied, .notNewer, .disabled: false
         }
     }
 

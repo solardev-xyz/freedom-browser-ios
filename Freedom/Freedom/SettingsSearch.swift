@@ -84,6 +84,7 @@ enum SettingsSearchIndex {
         // Ad blocking
         e("adblock", "Ad Blocking", "Categories (ads, privacy, cookie notices, annoyances), per-site allowlist, list updates.", "Ad Blocking", [.adblock], ["ads", "tracker", "easylist", "easyprivacy", "cookie", "annoyance", "filter", "block"]),
         e("adblock.updates", "Keep lists up to date", "Filter lists refresh from a signed Swarm feed.", "Ad Blocking", [.adblock], ["update", "feed", "signed"]),
+        e("adblock.checkNow", "Check for list updates", "When the Swarm feed was last checked, how it went, and a manual check.", "Ad Blocking", [.adblock], ["check now", "last check", "version", "update", "feed"]),
         e("adblock.allowlist", "Allowlist", "Sites you add here have all adblock categories bypassed. Useful when blocking breaks a page you trust.", "Ad Blocking", [.adblock], ["allow", "bypass", "exception", "whitelist", "add site"]),
         // Search
         e("search", "Search", "Anything typed into the address bar that is not a URL, a hash or a name is searched with this engine.", "Search", [.search], ["engine", "duckduckgo", "google", "brave", "custom", "template", "searchTerms"]),

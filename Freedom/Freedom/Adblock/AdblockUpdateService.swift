@@ -19,6 +19,7 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "AdblockUpd
 ///   adblock/updated.next/   staging (transient)
 ///   adblock/updated.prev/   previous update (rollback reserve)
 @MainActor
+@Observable
 final class AdblockUpdateService {
     /// Feed + filesystem operations, injectable so the pipeline unit-tests
     /// without a node or WebKit. `.live` reads the embedded bee node.
@@ -63,7 +64,7 @@ final class AdblockUpdateService {
         }
     }
 
-    enum Outcome: Equatable {
+    enum Outcome: Equatable, Codable {
         case applied(version: Int)
         case notNewer(version: Int)
         case disabled          // trust anchor missing or auto-update off
@@ -71,16 +72,41 @@ final class AdblockUpdateService {
         case failed(String)
     }
 
-    private let io: IO
-    private let settings: SettingsStore
+    /// The last finished check, shown in Settings → Ad Blocking.
+    struct CheckResult: Equatable, Codable {
+        let date: Date
+        let outcome: Outcome
+    }
+
+    @ObservationIgnored private let io: IO
+    @ObservationIgnored private let settings: SettingsStore
+
+    /// Persisted across launches so Settings can say how the last check went.
+    private(set) var lastResult: CheckResult?
+    /// A check is in flight (automatic or "Check now").
+    private(set) var isChecking = false
+    /// The in-flight run: a second caller (launch task, foreground hook,
+    /// "Check now") joins it instead of staging into the same directory.
+    @ObservationIgnored private var running: Task<Outcome, Never>?
 
     /// Minimum spacing between automatic checks (manual `runOnce` ignores it).
     static let checkInterval: TimeInterval = 6 * 60 * 60
+    /// After a failed download the next automatic check comes this soon
+    /// instead of after the full interval: a freshly published list can
+    /// take minutes to spread through the network.
+    static let failureRetryDelay: TimeInterval = 30 * 60
+    /// Attempts per blob before the cycle gives up, and the pause between them.
+    static let downloadAttempts = 3
+    static var downloadRetryPause: Duration = .seconds(3)
     private static let lastCheckKey = "adblock.update.lastCheck"
+    private static let lastResultKey = "adblock.update.lastResult"
 
     init(settings: SettingsStore, io: IO) {
         self.settings = settings
         self.io = io
+        if let data = UserDefaults.standard.data(forKey: Self.lastResultKey) {
+            self.lastResult = try? JSONDecoder().decode(CheckResult.self, from: data)
+        }
     }
 
     // MARK: - Applied-state persistence
@@ -123,8 +149,31 @@ final class AdblockUpdateService {
     }
 
     /// One full update cycle. Safe to call repeatedly; failures leave the
-    /// active lists untouched.
+    /// active lists untouched. A call while a run is in flight waits for
+    /// that run's outcome rather than starting a second one.
+    @discardableResult
     func runOnce() async -> Outcome {
+        if let running { return await running.value }
+        let task = Task { await self.performRun() }
+        running = task
+        isChecking = true
+        let outcome = await task.value
+        running = nil
+        isChecking = false
+        if outcome != .disabled {
+            record(CheckResult(date: .now, outcome: outcome))
+        }
+        return outcome
+    }
+
+    private func record(_ result: CheckResult) {
+        lastResult = result
+        if let data = try? JSONEncoder().encode(result) {
+            UserDefaults.standard.set(data, forKey: Self.lastResultKey)
+        }
+    }
+
+    private func performRun() async -> Outcome {
         guard io.trustConfigured else { return .disabled }
 
         let payload: Data
@@ -135,7 +184,7 @@ final class AdblockUpdateService {
             // yet (common right after launch) shouldn't burn the 6h window —
             // the next foreground retries immediately.
             log.info("feed unavailable: \(String(describing: error), privacy: .public)")
-            return .feedUnavailable(String(describing: error))
+            return .feedUnavailable(error.localizedDescription)
         }
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastCheckKey)
 
@@ -149,7 +198,7 @@ final class AdblockUpdateService {
             return .notNewer(version: version)
         } catch {
             log.error("manifest rejected: \(String(describing: error), privacy: .public)")
-            return .failed("manifest rejected: \(error)")
+            return .failed(error.localizedDescription)
         }
 
         do {
@@ -157,7 +206,11 @@ final class AdblockUpdateService {
         } catch {
             log.error("update failed: \(String(describing: error), privacy: .public)")
             cleanupStaging()
-            return .failed(String(describing: error))
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970 - Self.checkInterval + Self.failureRetryDelay,
+                forKey: Self.lastCheckKey
+            )
+            return .failed(error.localizedDescription)
         }
 
         let dir = io.rootDir.appendingPathComponent("updated", isDirectory: true)
@@ -220,13 +273,31 @@ final class AdblockUpdateService {
         if let data = try? Data(contentsOf: existing), Self.sha256Hex(data) == shard.sha256 {
             return data
         }
-        let data = try await io.downloadBlob(shard.ref)
+        let data = try await download(ref: shard.ref, filename: shard.filename)
         guard Self.sha256Hex(data) == shard.sha256 else {
             throw AdblockManifestError.malformed(
                 "sha256 mismatch for \(shard.filename): expected \(shard.sha256)"
             )
         }
         return data
+    }
+
+    /// Swarm retrieval of a multi-MB blob fails now and then (a chunk not
+    /// yet spread, a dropped connection); retry before failing the cycle.
+    private func download(ref: String, filename: String) async throws -> Data {
+        var attempt = 1
+        while true {
+            do {
+                return try await io.downloadBlob(ref)
+            } catch {
+                guard attempt < Self.downloadAttempts else {
+                    throw AdblockUpdateError.download(filename: filename, underlying: error)
+                }
+                log.info("download of \(filename, privacy: .public) failed (attempt \(attempt)): \(String(describing: error), privacy: .public)")
+                attempt += 1
+                try? await Task.sleep(for: Self.downloadRetryPause)
+            }
+        }
     }
 
     private func cleanupStaging() {
@@ -268,5 +339,29 @@ final class AdblockUpdateService {
             libVersion: manifest.engines.map { "\($0.key)@\($0.value)" }.sorted().joined(separator: ", "),
             categories: categories
         )
+    }
+}
+
+enum AdblockUpdateError: LocalizedError {
+    case download(filename: String, underlying: Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .download(let filename, let underlying):
+            let reason: String
+            switch underlying {
+            case BeeAPIClient.Error.notRunning:
+                // The feed read just worked, so the node is up: a dropped
+                // connection mid-body is a retrieval that broke off.
+                reason = "the download broke off. New lists can take a few minutes to spread through the network."
+            case BeeAPIClient.Error.notFound:
+                reason = "it isn't available on Swarm."
+            case BeeAPIClient.Error.timedOut:
+                reason = "the Swarm node didn't deliver it in time."
+            default:
+                reason = underlying.localizedDescription
+            }
+            return "Couldn't download \(filename): \(reason)"
+        }
     }
 }
