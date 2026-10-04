@@ -80,6 +80,7 @@ enum SettingsSearchIndex {
         e("myotis.networks", "Ethereum and Gnosis switches", "Each network runs its own light client; switch one off to save data and battery.", "Light Client", [.myotis], ["mainnet", "xdai", "per chain", "network"]),
         // Chains
         e("chains", "Chains", "The chains Freedom resolves names and balances on; add a chain from Chainlist or by hand.", "Chains", [.rpc], ["rpc", "network", "add chain", "chainlist", "custom", "endpoint", "provider"]),
+        e("chains.gnosisIndexer", "Blockscout", "Checks the Swarm node's lookup of storage you already own against a second, independent source.", "Chains", [.rpc, .chainEditor(Chain.gnosisID)], ["blockscout", "gnosisscan", "indexer", "storage", "stamps", "chequebook", "gnosis", "verify"]),
         e("chains.add", "Add Chain", "Search Chainlist or enter a chain id, RPC URL and native symbol by hand.", "Chains", [.rpc, .chainlistSearch], ["chainlist", "custom", "network"]),
         // Ad blocking
         e("adblock", "Ad Blocking", "Categories (ads, privacy, cookie notices, annoyances), per-site allowlist, list updates.", "Ad Blocking", [.adblock], ["ads", "tracker", "easylist", "easyprivacy", "cookie", "annoyance", "filter", "block", "ublock", "scriptlet", "youtube"]),

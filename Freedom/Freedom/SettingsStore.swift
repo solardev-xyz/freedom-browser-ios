@@ -246,6 +246,12 @@ final class SettingsStore {
     var adblockScriptletsEnabled: Bool {
         didSet { defaults.set(adblockScriptletsEnabled, forKey: Keys.adblockScriptletsEnabled) }
     }
+    /// Blockscout (gnosisscan.io) as the second, independent source for
+    /// the Swarm node's wallet scan when no RPC quorum can serve it
+    /// (`BlockscoutTransferIndex`); desktop's removable `indexer` endpoint.
+    var gnosisTransferIndexEnabled: Bool {
+        didSet { defaults.set(gnosisTransferIndexEnabled, forKey: Keys.gnosisTransferIndexEnabled) }
+    }
     /// Per-site allowlist: top-level frame domains for which all adblock
     /// categories are bypassed (the page sees the unblocked web). Stored
     /// normalized — lowercase, leading `www.` stripped — so user toggles on
@@ -360,6 +366,7 @@ final class SettingsStore {
             Keys.adblockCookiesEnabled: false,
             Keys.adblockAnnoyancesEnabled: false,
             Keys.adblockScriptletsEnabled: true,
+            Keys.gnosisTransferIndexEnabled: true,
             Keys.adblockAllowlist: [String](),
             Keys.adblockAutoUpdateEnabled: true,
             Keys.swarmNodeEnabled: true,
@@ -398,6 +405,7 @@ final class SettingsStore {
         self.adblockCookiesEnabled = defaults.bool(forKey: Keys.adblockCookiesEnabled)
         self.adblockAnnoyancesEnabled = defaults.bool(forKey: Keys.adblockAnnoyancesEnabled)
         self.adblockScriptletsEnabled = defaults.bool(forKey: Keys.adblockScriptletsEnabled)
+        self.gnosisTransferIndexEnabled = defaults.bool(forKey: Keys.gnosisTransferIndexEnabled)
         self.adblockAllowlist = defaults.stringArray(forKey: Keys.adblockAllowlist) ?? []
         self.adblockAutoUpdateEnabled = defaults.bool(forKey: Keys.adblockAutoUpdateEnabled)
         self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
@@ -525,6 +533,7 @@ final class SettingsStore {
         static let adblockCookiesEnabled = "adblockCookiesEnabled"
         static let adblockAnnoyancesEnabled = "adblockAnnoyancesEnabled"
         static let adblockScriptletsEnabled = "adblockScriptletsEnabled"
+        static let gnosisTransferIndexEnabled = "gnosisTransferIndexEnabled"
         static let adblockAllowlist = "adblockAllowlist"
         static let adblockAutoUpdateEnabled = "adblockAutoUpdateEnabled"
         static let swarmNodeEnabled = "swarmNodeEnabled"

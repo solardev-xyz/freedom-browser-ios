@@ -42,6 +42,21 @@ enum RPCSession {
         return data
     }
 
+    /// Plain GET on the same session (an indexer's REST API); redirects
+    /// are followed.
+    static func getBytes(url: URL, timeout: TimeInterval) async throws -> Data {
+        var req = URLRequest(url: url)
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let request = req
+        let (data, response) = try await withTimeout(seconds: timeout) {
+            try await shared.data(for: request)
+        }
+        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            throw RPCError.httpStatus(http.statusCode)
+        }
+        return data
+    }
+
     /// JSON-RPC POST with task-group-based timeout. Caller interprets
     /// Response.error per its needs — revert-vs-error distinctions live
     /// at call sites, not here.

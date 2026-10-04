@@ -31,9 +31,11 @@ final class AntChainBridge {
     /// Desktop `MAX_RESPONSE`: a body ant would not accept anyway.
     static let maxResponseBytes = 16 * 1024 * 1024
     static let maxErrorMessage = 500
-    /// A wide log scan gets a longer per-URL budget on the direct path
-    /// than an interactive read (desktop `LOG_SCAN_DIRECT_TIMEOUT_MS`).
-    static let logScanDirectTimeout: TimeInterval = 60
+    /// A log scan gets a longer quorum budget than an interactive read:
+    /// a full-history answer can take seconds. It fits `requestTimeout`
+    /// with room for the router's own handling (desktop
+    /// `LOG_SCAN_QUORUM_TIMEOUT_MS`).
+    static let logScanQuorumTimeout: TimeInterval = 30
     /// Desktop `timeoutMs`: the whole routed request.
     static let requestTimeout: TimeInterval = 120
 
@@ -96,8 +98,7 @@ final class AntChainBridge {
                 // Ant's polling must not queue ahead of wallet/app reads.
                 options.background = true
                 if method == "eth_getLogs" {
-                    options.directTimeout = Self.logScanDirectTimeout
-                    options.rankError = { AntLogScanErrors.rank($0) }
+                    options = Self.logScanOptions
                 }
                 let answer = try await withTimeout(Self.requestTimeout) {
                     try await self.router.request(chainID: Self.chainID, method: method, params: params, context: .wallet, options: options)
@@ -119,6 +120,25 @@ final class AntChainBridge {
             log.warning("[Ant chain] \(method, privacy: .public) failed (\(reply.code))")
             return Self.encode(Self.errorBody(id: id, code: reply.code, message: reply.message, data: reply.data))
         }
+    }
+
+    /// Router options for ant's `eth_getLogs` (window-halving) scans.
+    /// Only the RPC quorum answers them: a log ant does not receive is
+    /// the one failure it cannot detect (it re-reads every batch and
+    /// chequebook it finds; a missing chequebook transfer would make it
+    /// deploy a second one), so a scan takes no single endpoint's word
+    /// for a range. Myotis serves no logs, and Colibri proves only the
+    /// logs it returns, not that none are missing. A span no quorum can
+    /// serve is checked against Blockscout (`BlockscoutTransferIndex`).
+    /// Desktop `LOG_SCAN_ROUTER_OPTIONS` (freedom-browser #493).
+    static var logScanOptions: ChainDataRouter.Options {
+        var options = ChainDataRouter.Options()
+        options.background = true
+        options.sources = [.quorum]
+        options.quorumTimeout = logScanQuorumTimeout
+        options.rankError = { AntLogScanErrors.rank($0) }
+        options.rangeCapOf = { AntLogScanErrors.rangeCap($0) }
+        return options
     }
 
     // MARK: - Error mapping (desktop `antErrorReply`)
@@ -256,6 +276,36 @@ enum AntLogScanErrors {
     static let requestLimitText = #"too many (?:results|logs|blocks)|response size|logs? matched|(?:returned )?more than [\d,]+ (?:results|logs|blocks)|(?:max(?:imum)?|too many) (?:number of )?(?:results|logs|blocks)|result(?:s| set)? (?:size |limit|too large|exceed)"#
     static let endpointLimitText = #"\brate\b|rate[\s-]?limit|too many requests|\b429\b|quota|credits?\b|daily request|capacity|requests? (?:per|limit)|throttl"#
     static let endpointStateText = #"beyond (?:the )?(?:current |latest )?(?:executed )?(?:head|latest|chain)|(?:still |is )syncing|not (?:yet )?synced|head block|latest executed block"#
+
+    /// The block-range cap an endpoint names when it refuses a log query,
+    /// or nil when its reply names none (or is a throttle or a lagging
+    /// endpoint, whose numbers say nothing about the range it serves). A
+    /// cap on the number of results is not a block range. Measured
+    /// wordings (desktop `BLOCK_RANGE_CAP_TEXT`, 2026-10-03): Nethermind
+    /// "exceeds the maximum of 10000 blocks", publicnode "exceed maximum
+    /// block range: 50000", dRPC "ranges over 10000 blocks are not
+    /// supported", Alchemy-style "up to a 2K block range".
+    static let blockRangeCapText = [
+        #"maximum of ([\d,]+)(k?) blocks?\b"#,
+        #"max(?:imum)? (?:allowed )?block range(?: is)?:? ?([\d,]+)(k?)\b"#,
+        #"(?:up to|limited to) an? ([\d,]+)(k?)[ -]?(?:blocks? )?range"#,
+        #"ranges? (?:over|above|greater than|larger than|wider than) ([\d,]+)(k?) blocks?\b"#,
+    ]
+
+    static func rangeCap(_ error: Swift.Error) -> Int? {
+        guard case .rpc(_, let message, _)? = error as? WalletRPC.Error,
+              !matches(endpointLimitText, message), !matches(endpointStateText, message) else { return nil }
+        for pattern in blockRangeCapText {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+                  let match = regex.firstMatch(in: message, range: NSRange(message.startIndex..., in: message)),
+                  let digits = Range(match.range(at: 1), in: message) else { continue }
+            let kilo = Range(match.range(at: 2), in: message).map { !message[$0].isEmpty } ?? false
+            guard let base = Int(message[digits].replacingOccurrences(of: ",", with: "")) else { return nil }
+            let (cap, overflow) = base.multipliedReportingOverflow(by: kilo ? 1_000 : 1)
+            return !overflow && cap > 0 ? cap : nil
+        }
+        return nil
+    }
 
     static func antShrinksOn(_ message: String) -> Bool {
         let lower = message.lowercased()
