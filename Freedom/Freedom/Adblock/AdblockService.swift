@@ -452,6 +452,25 @@ final class AdblockService {
         return true
     }
 
+    /// The allowlist entry that turns blocking off for `host`: the host
+    /// itself or a parent domain (`youtube.com` for `m.youtube.com`).
+    func allowlistEntry(covering host: String?) -> String? {
+        guard let normalized = normalizedHost(host) else { return nil }
+        return settings.adblockAllowlist.first { normalized == $0 || normalized.hasSuffix("." + $0) }
+    }
+
+    /// Turn blocking back on for `host`: drops every entry that covers it,
+    /// including a parent domain's (which also re-enables its siblings).
+    func removeAllowlist(covering host: String?) {
+        guard let normalized = normalizedHost(host) else { return }
+        removeNormalized(Set(settings.adblockAllowlist.filter { normalized == $0 || normalized.hasSuffix("." + $0) }))
+    }
+
+    /// False when every list switch is off — a per-site switch is moot then.
+    var isAnyCategoryEnabled: Bool {
+        Category.allCases.contains(where: isEnabled)
+    }
+
     private func addNormalized(_ normalized: String) {
         mutateAllowlist { current in
             guard !current.contains(normalized) else { return current }

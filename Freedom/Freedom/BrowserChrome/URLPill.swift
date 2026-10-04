@@ -12,15 +12,17 @@ struct URLPill: View {
     @FocusState.Binding var isFocused: Bool
     let trust: ENSTrust?
     var onchain: OnchainAppProvenance? = nil
-    /// The page's site permissions: an indicator where the shield sits
-    /// when the site has remembered or embargoed decisions, or a section
-    /// in the shield's sheet when there is a shield.
+    /// The page's site permissions: in the site-settings sheet on web
+    /// pages, a section in the shield's sheet when there is a shield, or an
+    /// indicator where the shield sits on other pages with decisions.
     var permissions: SitePermissionContext? = nil
     /// Private tab: a glyph where the shield sits, and a darker field.
     var isPrivate: Bool = false
     let isLoading: Bool
     let progress: Double
     let displayURL: URL?
+    /// Host the page actually loaded from: what ad blocking matches on.
+    var siteHost: String? = nil
     /// True while the chrome is in edit mode. Distinct from `isFocused`
     /// because scroll-dismissing the keyboard drops focus but keeps the
     /// edit-mode UI; alignment of the idle host label needs to follow
@@ -32,11 +34,22 @@ struct URLPill: View {
 
     static let placeholder = "Search or enter address"
 
+    /// http(s) pages get the site-settings icon.
+    private var webPage: Bool {
+        guard let scheme = displayURL?.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Group {
                 if let trust {
-                    TrustShield(trust: trust, onchain: onchain, permissions: permissions)
+                    TrustShield(
+                        trust: trust, onchain: onchain, permissions: permissions,
+                        adblockHost: siteHost, onReload: onReload
+                    )
+                } else if webPage, let host = siteHost ?? displayURL?.host {
+                    SiteSettingsButton(host: host, permissions: permissions, isPrivate: isPrivate, onReload: onReload)
                 } else if let permissions, !permissions.entries.isEmpty {
                     SitePermissionIndicator(context: permissions)
                 } else if isPrivate {

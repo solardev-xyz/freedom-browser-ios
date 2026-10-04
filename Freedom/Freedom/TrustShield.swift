@@ -8,6 +8,11 @@ struct TrustShield: View {
     /// The site's permissions, listed in the sheet (the shield occupies
     /// the slot the permission indicator would otherwise use).
     var permissions: SitePermissionContext? = nil
+    /// The host the page loaded from, for the sheet's ad-blocking switch
+    /// (an ENS page loads as `bzz://name.eth`, an onchain app as
+    /// `web3://<address>.eip155-<chain>`), and the reload after flipping it.
+    var adblockHost: String? = nil
+    var onReload: (() -> Void)? = nil
     @State private var showingDetails = false
 
     var body: some View {
@@ -18,8 +23,20 @@ struct TrustShield: View {
                 .frame(width: 28, height: 28)
         }
         .sheet(isPresented: $showingDetails) {
-            TrustDetailsSheet(trust: trust, onchain: onchain, permissions: permissions)
+            TrustDetailsSheet(
+                trust: trust, onchain: onchain, permissions: permissions,
+                adblockHost: adblockHost, onReload: onReload
+            )
         }
+        #if DEBUG
+        // FREEDOM_DEBUG_SHOW=site opens the sheet for screenshots.
+        .task {
+            if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "site" {
+                try? await Task.sleep(for: .seconds(2))
+                showingDetails = true
+            }
+        }
+        #endif
     }
 }
 
@@ -27,22 +44,14 @@ private struct TrustDetailsSheet: View {
     let trust: ENSTrust
     var onchain: OnchainAppProvenance? = nil
     var permissions: SitePermissionContext? = nil
+    var adblockHost: String? = nil
+    var onReload: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
                 Section { levelHeader }
-
-                if let permissions, !permissions.entries.isEmpty {
-                    Section {
-                        SitePermissionRows(origin: permissions.origin, store: permissions.store)
-                    } header: {
-                        Text("Permissions for this site")
-                    } footer: {
-                        Text("Swipe to remove; the site can then ask again.")
-                    }
-                }
 
                 if let onchain {
                     Section("Onchain app") {
@@ -123,6 +132,15 @@ private struct TrustDetailsSheet: View {
                             ForEach(silent, id: \.self) { hostRow($0) }
                         }
                     }
+                }
+
+                // After the whole verification story: the same per-site
+                // controls as the site-settings sheet on ordinary web pages.
+                if let adblockHost, let onReload {
+                    SiteAdblockSection(host: adblockHost, onReload: onReload)
+                }
+                if let permissions {
+                    SitePermissionsSection(permissions: permissions)
                 }
             }
             .navigationTitle("Trust")

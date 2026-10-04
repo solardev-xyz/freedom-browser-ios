@@ -511,6 +511,7 @@ struct ContentView: View {
                         isLoading: active?.isLoading == true,
                         progress: active?.progress ?? 0,
                         displayURL: active?.displayURL,
+                        siteHost: active?.url?.host,
                         isEditing: isEditing,
                         onSubmit: navigate,
                         onReload: { tabStore.activeTab?.reload() },
