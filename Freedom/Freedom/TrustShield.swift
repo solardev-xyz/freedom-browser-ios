@@ -53,15 +53,6 @@ private struct TrustDetailsSheet: View {
             List {
                 Section { levelHeader }
 
-                // The same per-site controls as the site-settings sheet
-                // on ordinary web pages.
-                if let adblockHost, let onReload {
-                    SiteAdblockSection(host: adblockHost, onReload: onReload)
-                }
-                if let permissions {
-                    SitePermissionsSection(permissions: permissions)
-                }
-
                 if let onchain {
                     Section("Onchain app") {
                         LabeledContent("Network", value: "\(onchain.networkName) (chain \(onchain.app.chainID))")
@@ -141,6 +132,15 @@ private struct TrustDetailsSheet: View {
                             ForEach(silent, id: \.self) { hostRow($0) }
                         }
                     }
+                }
+
+                // After the whole verification story: the same per-site
+                // controls as the site-settings sheet on ordinary web pages.
+                if let adblockHost, let onReload {
+                    SiteAdblockSection(host: adblockHost, onReload: onReload)
+                }
+                if let permissions {
+                    SitePermissionsSection(permissions: permissions)
                 }
             }
             .navigationTitle("Trust")
