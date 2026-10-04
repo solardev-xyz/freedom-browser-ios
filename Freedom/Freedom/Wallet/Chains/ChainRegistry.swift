@@ -114,12 +114,16 @@ final class ChainRegistry {
 
     /// Exposed for tests + the chain store seed. Single source of truth
     /// for which URLs ship with Gnosis. Refreshed 2026-09-18 against
-    /// live probes (Ankr now needs a key, Blast API shut down).
+    /// live probes (Ankr now needs a key, Blast API shut down). One
+    /// endpoint per backend: the quorum counts URLs, so two fronts of the
+    /// same backend would agree with themselves. `rpc.gnosis.gateway.fm`
+    /// was dropped on 2026-10-04 for that reason — it is the same Tenderly
+    /// account as `rpc.gnosischain.com` (same `x-tdly-*` rate-limit bucket);
+    /// desktop dropped it too (freedom-browser #491).
     static let gnosisURLs: [URL] = [
         URL(string: "https://rpc.gnosischain.com")!,
         URL(string: "https://gnosis-rpc.publicnode.com")!,
         URL(string: "https://gnosis.drpc.org")!,
-        URL(string: "https://rpc.gnosis.gateway.fm")!,
     ]
 
     /// Every Gnosis seed that ever shipped (see `legacyPublicRpcProviders`).
@@ -127,5 +131,8 @@ final class ChainRegistry {
         "https://rpc.gnosischain.com",
         "https://rpc.ankr.com/gnosis",
         "https://gnosis-mainnet.public.blastapi.io",
+        "https://gnosis-rpc.publicnode.com",
+        "https://gnosis.drpc.org",
+        "https://rpc.gnosis.gateway.fm",
     ]
 }
