@@ -20,6 +20,8 @@ final class AdblockUpdateServiceTests: XCTestCase {
 
     private var fixture: Fixture!
     private var root: URL!
+    /// Main-actor fixtures outlive the test body (see SitePermissionStoreTests).
+    private var keep: [AnyObject] = []
 
     override func setUpWithError() throws {
         let bundle = Bundle(for: Self.self)
@@ -30,11 +32,13 @@ final class AdblockUpdateServiceTests: XCTestCase {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("adblock-update-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        AdblockUpdateService.downloadRetryPause = .zero
     }
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: root)
         UserDefaults.standard.removeObject(forKey: "adblock.update.lastCheck")
+        UserDefaults.standard.removeObject(forKey: "adblock.update.lastResult")
     }
 
     /// Stubbed IO. Records precompile/activate calls and downloaded refs.
@@ -71,7 +75,11 @@ final class AdblockUpdateServiceTests: XCTestCase {
     }
 
     private func makeService(io: AdblockUpdateService.IO) -> AdblockUpdateService {
-        AdblockUpdateService(settings: SettingsStore(), io: io)
+        let settings = SettingsStore()
+        let service = AdblockUpdateService(settings: settings, io: io)
+        keep.append(settings)
+        keep.append(service)
+        return service
     }
 
     // MARK: - Happy path
@@ -179,7 +187,7 @@ final class AdblockUpdateServiceTests: XCTestCase {
         let outcome = await service.runOnce()
 
         guard case .failed(let reason) = outcome else { return XCTFail("expected .failed, got \(outcome)") }
-        XCTAssertTrue(reason.contains("signerMismatch"), reason)
+        XCTAssertEqual(reason, AdblockManifestError.signerMismatch(recovered: "", expected: "").localizedDescription)
         XCTAssertTrue(recorder.downloadedRefs.isEmpty, "nothing downloaded for a bad manifest")
     }
 
@@ -194,6 +202,68 @@ final class AdblockUpdateServiceTests: XCTestCase {
         guard case .feedUnavailable = outcome else { return XCTFail("expected .feedUnavailable, got \(outcome)") }
         XCTAssertEqual(UserDefaults.standard.double(forKey: "adblock.update.lastCheck"), 0,
                        "a node-not-up launch must not burn the 6h window")
+    }
+
+    func testConcurrentRunsShareOneCycle() async throws {
+        let recorder = Recorder()
+        let service = makeService(io: makeIO(recorder: recorder))
+
+        async let first = service.runOnce()
+        async let second = service.runOnce()
+        let outcomes = await [first, second]
+
+        XCTAssertEqual(outcomes, [.applied(version: 5), .applied(version: 5)])
+        XCTAssertEqual(recorder.activated.count, 1, "the second caller joins the first run")
+        XCTAssertFalse(service.isChecking)
+    }
+
+    func testFlakyDownloadIsRetried() async throws {
+        let recorder = Recorder()
+        var io = makeIO(recorder: recorder)
+        let real = io.downloadBlob
+        let failuresLeft = Recorder()
+        failuresLeft.downloadedRefs = ["fail", "fail"]
+        io.downloadBlob = { ref in
+            if !failuresLeft.downloadedRefs.isEmpty {
+                failuresLeft.downloadedRefs.removeLast()
+                throw BeeAPIClient.Error.notRunning
+            }
+            return try await real(ref)
+        }
+        let service = makeService(io: io)
+
+        let outcome = await service.runOnce()
+
+        XCTAssertEqual(outcome, .applied(version: 5), "two broken-off downloads are retried")
+    }
+
+    func testFailedDownloadRetriesSoonAndSaysWhy() async throws {
+        let recorder = Recorder()
+        var io = makeIO(recorder: recorder)
+        io.downloadBlob = { _ in throw BeeAPIClient.Error.notRunning }
+        let service = makeService(io: io)
+
+        let outcome = await service.runOnce()
+
+        guard case .failed(let reason) = outcome else { return XCTFail("expected .failed, got \(outcome)") }
+        XCTAssertTrue(reason.hasPrefix("Couldn't download easylist-1.json: the download broke off."), reason)
+        let lastCheck = UserDefaults.standard.double(forKey: "adblock.update.lastCheck")
+        let nextDue = lastCheck + AdblockUpdateService.checkInterval - Date().timeIntervalSince1970
+        XCTAssertEqual(nextDue, AdblockUpdateService.failureRetryDelay, accuracy: 5,
+                       "a failed download comes back in 30 minutes, not 6 hours")
+    }
+
+    func testLastResultIsRecordedAndPersisted() async throws {
+        let recorder = Recorder()
+        var io = makeIO(recorder: recorder)
+        io.readFeed = { throw BeeAPIClient.Error.timedOut }
+        let service = makeService(io: io)
+
+        _ = await service.runOnce()
+
+        let expected = AdblockUpdateService.Outcome.feedUnavailable(BeeAPIClient.Error.timedOut.localizedDescription)
+        XCTAssertEqual(service.lastResult?.outcome, expected)
+        XCTAssertEqual(makeService(io: io).lastResult?.outcome, expected, "a relaunch reads it back")
     }
 
     func testDisabledWithoutTrustAnchor() async throws {

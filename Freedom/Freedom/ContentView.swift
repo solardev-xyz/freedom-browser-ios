@@ -46,7 +46,7 @@ struct ContentView: View {
     let onShowTabs: () -> Void
     @State private var isShowingSettings = false
     /// DEBUG smoke hook: the settings page to open at launch
-    /// (`FREEDOM_DEBUG_SETTINGS=ens|chains|chain:<id>|about|licenses|license:<id>|find:<q>`), so a simulator
+    /// (`FREEDOM_DEBUG_SETTINGS=ens|chains|chain:<id>|about|licenses|license:<id>|find:<q>|adblock|…`), so a simulator
     /// run can screenshot a settings page without anyone tapping.
     @State private var debugSettingsPath: [SettingsPath] = []
     @State private var debugSettingsQuery = ""
@@ -153,6 +153,7 @@ struct ContentView: View {
         Logger(subsystem: "com.browser.Freedom", category: "DebugOpen").notice("[debug-settings] opening \(raw, privacy: .public)")
         // ens | ens:<method> | chains | chain:<id> | chain:<id>:<source>
         // | about | licenses | license:<inventory id> | find:<query>
+        // | wallet | swarm | ipfs | myotis | adblock | search | permissions
         let parts = raw.split(separator: ":").map(String.init)
         switch parts.first {
         case "find":
@@ -172,6 +173,13 @@ struct ContentView: View {
             }
         case "chains":
             debugSettingsPath = [.rpc]
+        case "wallet": debugSettingsPath = [.wallet]
+        case "swarm": debugSettingsPath = [.swarm]
+        case "ipfs": debugSettingsPath = [.ipfs]
+        case "myotis": debugSettingsPath = [.myotis]
+        case "adblock": debugSettingsPath = [.adblock]
+        case "search": debugSettingsPath = [.search]
+        case "permissions": debugSettingsPath = [.sitePermissions]
         case "chain":
             guard parts.count > 1, let id = Int(parts[1]) else { return }
             debugSettingsPath = [.rpc, .chainEditor(id)]

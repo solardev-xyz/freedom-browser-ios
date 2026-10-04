@@ -16,12 +16,22 @@ import web3
 ///  4. monotonic version — reject anything <= the already-applied version
 ///  5. EIP-191 signature over the canonical manifest bytes recovers to the
 ///     pinned signer address
-enum AdblockManifestError: Error, Equatable {
+enum AdblockManifestError: LocalizedError, Equatable {
     case malformed(String)
     case badSchema(Int)
     case notNewer(version: Int, applied: Int)
     case badSignature(String)
     case signerMismatch(recovered: String, expected: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .malformed(let detail): "The update is malformed (\(detail))."
+        case .badSchema(let schema): "The update uses an unsupported format (schema \(schema))."
+        case .notNewer(let version, _): "Already on version \(version)."
+        case .badSignature: "The update's signature is invalid."
+        case .signerMismatch: "The update isn't signed by the Freedom list publisher."
+        }
+    }
 }
 
 /// Typed view of the manifest (snake_case on the wire).

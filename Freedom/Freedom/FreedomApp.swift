@@ -339,6 +339,7 @@ struct FreedomApp: App {
                 .environment(swarmManifestStore)
                 .environment(swarmUserPublisher)
                 .environment(adblock)
+                .environment(adblockUpdate)
                 .environment(openlvSession)
                 // URLs from outside: the phone-signing pairing link
                 // (`freedom://…#openlv://…`; universal links on the bridge
