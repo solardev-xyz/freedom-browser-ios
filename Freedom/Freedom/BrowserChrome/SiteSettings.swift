@@ -45,44 +45,14 @@ struct SiteSettingsSheet: View {
     var permissions: SitePermissionContext? = nil
     let onReload: () -> Void
 
-    @Environment(AdblockService.self) private var adblock
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Toggle(isOn: blockingBinding) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Ad blocking")
-                            Text("Ads, trackers and scriptlets on this site")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .disabled(!adblock.isAnyCategoryEnabled)
-                } footer: {
-                    Text(blockingFooter)
-                }
-
+                SiteAdblockSection(host: host, onReload: onReload)
                 if let permissions {
-                    Section {
-                        if permissions.entries.isEmpty {
-                            Text("This site hasn't asked for anything yet.")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            SitePermissionRows(origin: permissions.origin, store: permissions.store)
-                            Button("Remove all for this site", role: .destructive) {
-                                permissions.store.revokeAll(origin: permissions.origin)
-                            }
-                        }
-                    } header: {
-                        Text("Permissions")
-                    } footer: {
-                        if !permissions.entries.isEmpty {
-                            Text("Removing a decision lets the site ask again.")
-                        }
-                    }
+                    SitePermissionsSection(permissions: permissions)
                 }
             }
             .navigationTitle(host)
@@ -94,6 +64,32 @@ struct SiteSettingsSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+/// "Ad blocking" on/off for one site: the allowlist, shared by the
+/// site-settings sheet and the ENS trust shield's sheet. `host` is the
+/// host the page loaded from (what the content rules match on).
+struct SiteAdblockSection: View {
+    let host: String
+    let onReload: () -> Void
+
+    @Environment(AdblockService.self) private var adblock
+
+    var body: some View {
+        Section {
+            Toggle(isOn: blockingBinding) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ad blocking")
+                    Text("Ads, trackers and scriptlets on this site")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!adblock.isAnyCategoryEnabled)
+        } footer: {
+            Text(footer)
+        }
     }
 
     /// On = the site isn't allowlisted. Either way the page reloads, so
@@ -112,7 +108,7 @@ struct SiteSettingsSheet: View {
         )
     }
 
-    private var blockingFooter: String {
+    private var footer: String {
         if !adblock.isAnyCategoryEnabled {
             return "Every filter list is off in Settings → Ad Blocking."
         }
@@ -120,5 +116,30 @@ struct SiteSettingsSheet: View {
             return "Off for all of \(entry). Turning it on here turns it back on there too."
         }
         return "Turning it off allows ads, trackers and scriptlets on \(adblock.normalizedHost(host) ?? host) and reloads the page. All exceptions are listed in Settings → Ad Blocking."
+    }
+}
+
+/// The permissions a site holds, with remove per row and for the site.
+struct SitePermissionsSection: View {
+    let permissions: SitePermissionContext
+
+    var body: some View {
+        Section {
+            if permissions.entries.isEmpty {
+                Text("This site hasn't asked for anything yet.")
+                    .foregroundStyle(.secondary)
+            } else {
+                SitePermissionRows(origin: permissions.origin, store: permissions.store)
+                Button("Remove all for this site", role: .destructive) {
+                    permissions.store.revokeAll(origin: permissions.origin)
+                }
+            }
+        } header: {
+            Text("Permissions")
+        } footer: {
+            if !permissions.entries.isEmpty {
+                Text("Removing a decision lets the site ask again.")
+            }
+        }
     }
 }

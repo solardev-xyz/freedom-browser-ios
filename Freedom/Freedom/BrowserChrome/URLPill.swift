@@ -21,6 +21,8 @@ struct URLPill: View {
     let isLoading: Bool
     let progress: Double
     let displayURL: URL?
+    /// Host the page actually loaded from: what ad blocking matches on.
+    var siteHost: String? = nil
     /// True while the chrome is in edit mode. Distinct from `isFocused`
     /// because scroll-dismissing the keyboard drops focus but keeps the
     /// edit-mode UI; alignment of the idle host label needs to follow
@@ -32,19 +34,21 @@ struct URLPill: View {
 
     static let placeholder = "Search or enter address"
 
-    /// The host of an http(s) page: those get the site-settings icon.
-    private var webHost: String? {
-        guard let url = displayURL, let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https", let host = url.host, !host.isEmpty else { return nil }
-        return host
+    /// http(s) pages get the site-settings icon.
+    private var webPage: Bool {
+        guard let scheme = displayURL?.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
     }
 
     var body: some View {
         HStack(spacing: 8) {
             Group {
                 if let trust {
-                    TrustShield(trust: trust, onchain: onchain, permissions: permissions)
-                } else if let host = webHost {
+                    TrustShield(
+                        trust: trust, onchain: onchain, permissions: permissions,
+                        adblockHost: siteHost, onReload: onReload
+                    )
+                } else if webPage, let host = siteHost ?? displayURL?.host {
                     SiteSettingsButton(host: host, permissions: permissions, isPrivate: isPrivate, onReload: onReload)
                 } else if let permissions, !permissions.entries.isEmpty {
                     SitePermissionIndicator(context: permissions)
