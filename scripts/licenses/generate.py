@@ -10,7 +10,8 @@ Sources, all read at generation time:
     filtered to the iOS target, normal dependencies only.
   - Native components (ant, freedom-ipfs, libradicle + Heartwood,
     Myotis): LICENSE/NOTICE files fetched from GitHub at the pinned tags.
-  - Filter lists: Resources/adblock/metadata.json.
+  - Filter lists, uBlock's scriptlets: Resources/adblock/metadata.json.
+  - Public Suffix List: the header of Resources/public_suffix_list.dat.
   - SPDX licence texts for every id a crate names, from the SPDX list.
 
 Run after a FreedomMobile pin bump or a Swift package change:
@@ -26,6 +27,8 @@ OUT = os.path.join(ROOT, "Freedom/Freedom/Resources/licenses.json")
 RESOLVED = os.path.join(ROOT, "Freedom/Freedom.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
 PACKAGE_SWIFT = os.path.join(ROOT, "Packages/SwarmKit/Package.swift")
 ADBLOCK = os.path.join(ROOT, "Freedom/Freedom/Resources/adblock/metadata.json")
+PSL = os.path.join(ROOT, "Freedom/Freedom/Resources/public_suffix_list.dat")
+UBLOCK_COPYRIGHT = "Copyright (c) Raymond Hill and the uBlock Origin contributors"
 
 COMPONENTS = [
     # name, cargo package (version source), repo, licence expression, copyright, files to fetch
@@ -152,12 +155,42 @@ def components(versions):
 def filter_lists():
     meta = json.load(open(ADBLOCK))
     out = []
+    gpl = None
     for c in meta["categories"]:
+        if c["id"] == "ublock":
+            # uBlock's own lists are GPL-3.0-only (no CC BY-SA option).
+            gpl = gpl or text_id(spdx_text("GPL-3.0-only"))
+            commit = c.get("source", {}).get("commit", "")
+            out.append({"id": "list:ublock", "name": c["list_title"], "version": commit[:12] or meta["version"],
+                        "url": c["list_homepage"], "sourceURL": c["source_url"], "license": "GPL-3.0-only",
+                        "copyright": UBLOCK_COPYRIGHT, "textIDs": [gpl],
+                        "note": f"uBlock filters and Quick fixes, uBlockOrigin/uAssets at {commit}. Bundled as data; "
+                                "compiled to WebKit content-blocker rules and a scriptlet index by freedom-adblock-service."})
+            continue
         out.append({"id": f"list:{c['id']}", "name": c["list_title"], "version": meta["version"],
                     "url": c["list_homepage"], "sourceURL": c["source_url"],
                     "license": "GPL-3.0-or-later OR CC-BY-SA-3.0 (redistributed under CC BY-SA)",
                     "copyright": "Copyright (c) The EasyList authors",
                     "note": "Bundled as data, compiled to WebKit content-blocker rules by adblock-rs at build time."})
+    res = meta.get("resources")
+    if res:
+        gpl = gpl or text_id(spdx_text("GPL-3.0-only"))
+        upstream = res.get("upstream", {}).get("ublockOrigin", {})
+        out.append({"id": "list:ublock-resources", "name": "uBlock Origin scriptlets",
+                    "version": f"{res['tag']} (uBlock Origin {upstream.get('tag', '?')})",
+                    "url": "https://github.com/gorhill/uBlock", "sourceURL": res["source_url"],
+                    "license": res.get("license", "GPL-3.0-only"), "copyright": UBLOCK_COPYRIGHT, "textIDs": [gpl],
+                    "note": f"Ghostery's build of uBlock Origin's scriptlets and redirect resources (resources.json, "
+                            f"sha256 {res['sha256']}), injected into web pages unmodified. Corresponding source: "
+                            f"{upstream.get('sourceUrl', 'https://github.com/gorhill/uBlock')}."})
+    header = open(PSL, encoding="utf-8").read().splitlines()[:4]
+    source = next(l.split("Source: ", 1)[1] for l in header if "Source: " in l)
+    commit = re.search(r"/blob/([0-9a-f]{40})/", source).group(1)
+    out.append({"id": "data:public-suffix-list", "name": "Public Suffix List", "version": commit[:12],
+                "url": "https://publicsuffix.org", "sourceURL": source, "license": "MPL-2.0",
+                "copyright": "Copyright (c) Mozilla Foundation and the Public Suffix List contributors",
+                "textIDs": [text_id(spdx_text("MPL-2.0"))],
+                "note": "ICANN section, IDN labels as punycode. Used to match ad-blocking scriptlet rules that name a site under any public suffix."})
     return out
 
 def main():

@@ -153,6 +153,9 @@ final class BrowserTab {
     @ObservationIgnored var onOpenInNewTab: ((URL, _ background: Bool) -> Void)?
     /// The page's current text selection (relayed by the touch script).
     @ObservationIgnored var lastSelection = ""
+    /// Host the installed scriptlet script was built for, so a server
+    /// redirect to another host can swap it before the document commits.
+    @ObservationIgnored private var scriptletHost: String?
     @ObservationIgnored private let selectionRelay = SelectionRelay()
     /// The system find navigator is showing: the bottom chrome steps
     /// aside so the navigator takes the address bar's place (Safari).
@@ -553,18 +556,44 @@ final class BrowserTab {
     /// `window.swarm` on every navigation, with the wallet bridge
     /// regenerating its EIP-6963 UUID along the way.
     fileprivate func reinstallPreloads() {
-        contentController.removeAllUserScripts()
-        walletBridge?.installUserScript()
-        swarmBridge?.installUserScript()
-        radicleBridge?.installUserScript()
-        installContextMenuScript()
+        installUserScripts()
         lastSelection = ""
-        installContextMenuScript()
         // SWIP messaging: subscriptions are session-scoped — the page
         // that opened them is going away (this runs from
         // didStartProvisionalNavigation), so tear them down like
         // desktop's `did-navigate` hook does.
         swarmBridge?.cancelSubscriptions()
+    }
+
+    /// Every document-start script for the page about to load. WebKit has
+    /// no per-script removal, so it's all or nothing.
+    private func installUserScripts() {
+        contentController.removeAllUserScripts()
+        walletBridge?.installUserScript()
+        swarmBridge?.installUserScript()
+        radicleBridge?.installUserScript()
+        installContextMenuScript()
+        installScriptlets()
+    }
+
+    /// uBlock-style scriptlets for the destination (top frame only; the
+    /// provisional URL is already the target here). They must run before
+    /// the page's own scripts, hence a document-start user script in the
+    /// page's world.
+    private func installScriptlets() {
+        let url = webView.url
+        scriptletHost = url?.host?.lowercased()
+        guard let source = adblock.scriptletSource(for: url) else { return }
+        contentController.addUserScript(WKUserScript(
+            source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true
+        ))
+    }
+
+    /// A server redirect moved the provisional load to another host: its
+    /// scriptlets, not the first host's.
+    fileprivate func refreshScriptletsAfterRedirect() {
+        guard webView.url?.host?.lowercased() != scriptletHost else { return }
+        installUserScripts()
     }
 
     private func installContextMenuScript() {
@@ -1816,6 +1845,12 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
             // ends its find session.
             owner?.cancelPermissionPrompts()
             owner?.endFind()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        MainActor.assumeIsolated {
+            owner?.refreshScriptletsAfterRedirect()
         }
     }
 

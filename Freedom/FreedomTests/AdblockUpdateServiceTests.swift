@@ -23,12 +23,15 @@ final class AdblockUpdateServiceTests: XCTestCase {
     /// Main-actor fixtures outlive the test body (see SitePermissionStoreTests).
     private var keep: [AnyObject] = []
 
-    override func setUpWithError() throws {
-        let bundle = Bundle(for: Self.self)
-        guard let url = bundle.url(forResource: "adblock-update-fixture", withExtension: "json") else {
-            throw XCTSkip("fixture not bundled")
+    private static func loadFixture(_ name: String) throws -> Fixture {
+        guard let url = Bundle(for: Self.self).url(forResource: name, withExtension: "json") else {
+            throw XCTSkip("fixture \(name) not bundled")
         }
-        fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
+        return try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
+    }
+
+    override func setUpWithError() throws {
+        fixture = try Self.loadFixture("adblock-update-fixture")
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("adblock-update-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -251,6 +254,45 @@ final class AdblockUpdateServiceTests: XCTestCase {
         let nextDue = lastCheck + AdblockUpdateService.checkInterval - Date().timeIntervalSince1970
         XCTAssertEqual(nextDue, AdblockUpdateService.failureRetryDelay, accuracy: 5,
                        "a failed download comes back in 30 minutes, not 6 hours")
+    }
+
+    /// A v6 manifest signed by the publisher's own code that also carries
+    /// `scriptlets` + `resources` (self-written stand-ins).
+    func testScriptletBlobsTravelWithTheLists() async throws {
+        fixture = try Self.loadFixture("adblock-update-fixture-scriptlets")
+        let recorder = Recorder()
+        let service = makeService(io: makeIO(recorder: recorder))
+
+        let outcome = await service.runOnce()
+
+        XCTAssertEqual(outcome, .applied(version: 6))
+        XCTAssertEqual(recorder.downloadedRefs.count, 5, "three shards plus scriptlets and resources")
+        let updated = root.appendingPathComponent("updated")
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let metadata = try decoder.decode(
+            BundledAdblockManifest.self, from: Data(contentsOf: updated.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.scriptlets?.filename, "scriptlets.json")
+        XCTAssertEqual(metadata.scriptlets?.ruleCount, 1)
+        XCTAssertEqual(metadata.resources?.filename, "resources.json")
+        let files = try XCTUnwrap(AdblockService.scriptletFiles(manifest: metadata, dir: updated))
+        let engine = try ScriptletEngine.load(
+            scriptlets: files.scriptlets, resources: files.resources, suffixes: PublicSuffixList(text: "com")
+        )
+        XCTAssertEqual(engine.injections(forHost: "example.com", enabledLists: ["easylist"]).map(\.scriptlet), ["mark"])
+    }
+
+    func testManifestsWithoutScriptletsLeaveThemOut() async throws {
+        let service = makeService(io: makeIO(recorder: Recorder()))
+        _ = await service.runOnce()
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let metadata = try decoder.decode(
+            BundledAdblockManifest.self,
+            from: Data(contentsOf: root.appendingPathComponent("updated/metadata.json"))
+        )
+        XCTAssertNil(metadata.scriptlets, "the bundled scriptlets stay in use")
     }
 
     func testLastResultIsRecordedAndPersisted() async throws {

@@ -235,8 +235,17 @@ final class AdblockUpdateService {
         // file when its bytes still hash to the manifest's sha256.
         for list in manifest.platforms.ios.lists {
             for shard in list.shards {
-                let data = try await shardData(shard: shard, activeDir: active)
+                let data = try await blobData(filename: shard.filename, ref: shard.ref, sha256: shard.sha256, activeDir: active)
                 try data.write(to: staging.appendingPathComponent(shard.filename))
+            }
+        }
+        // Scriptlets travel with the lists when the manifest carries them in
+        // a format this build reads; otherwise the bundled ones stay in use.
+        if let (scriptlets, resources) = Self.scriptletBlobs(manifest) {
+            for blob in [(scriptlets.filename, scriptlets.ref, scriptlets.sha256),
+                         (resources.filename, resources.ref, resources.sha256)] {
+                let data = try await blobData(filename: blob.0, ref: blob.1, sha256: blob.2, activeDir: active)
+                try data.write(to: staging.appendingPathComponent(blob.0))
             }
         }
 
@@ -268,18 +277,27 @@ final class AdblockUpdateService {
         }
     }
 
-    private func shardData(shard: AdblockFeedManifest.IosShard, activeDir: URL) async throws -> Data {
-        let existing = activeDir.appendingPathComponent(shard.filename)
-        if let data = try? Data(contentsOf: existing), Self.sha256Hex(data) == shard.sha256 {
+    private func blobData(filename: String, ref: String, sha256: String, activeDir: URL) async throws -> Data {
+        let existing = activeDir.appendingPathComponent(filename)
+        if let data = try? Data(contentsOf: existing), Self.sha256Hex(data) == sha256 {
             return data
         }
-        let data = try await download(ref: shard.ref, filename: shard.filename)
-        guard Self.sha256Hex(data) == shard.sha256 else {
+        let data = try await download(ref: ref, filename: filename)
+        guard Self.sha256Hex(data) == sha256 else {
             throw AdblockManifestError.malformed(
-                "sha256 mismatch for \(shard.filename): expected \(shard.sha256)"
+                "sha256 mismatch for \(filename): expected \(sha256)"
             )
         }
         return data
+    }
+
+    static func scriptletBlobs(
+        _ manifest: AdblockFeedManifest
+    ) -> (AdblockFeedManifest.IosScriptlets, AdblockFeedManifest.IosResources)? {
+        guard let scriptlets = manifest.platforms.ios.scriptlets,
+              let resources = manifest.platforms.ios.resources,
+              scriptlets.format == ScriptletRuleSet.supportedFormat else { return nil }
+        return (scriptlets, resources)
     }
 
     /// Swarm retrieval of a multi-MB blob fails now and then (a chunk not
@@ -333,11 +351,14 @@ final class AdblockUpdateService {
                 }
             )
         }
+        let blobs = scriptletBlobs(manifest)
         return BundledAdblockManifest(
             version: String(manifest.generatedAt.prefix(10)),
             generatedAt: manifest.generatedAt,
             libVersion: manifest.engines.map { "\($0.key)@\($0.value)" }.sorted().joined(separator: ", "),
-            categories: categories
+            categories: categories,
+            scriptlets: blobs.map { .init(filename: $0.0.filename, format: $0.0.format, ruleCount: $0.0.ruleCount) },
+            resources: blobs.map { .init(filename: $0.1.filename, sha256: $0.1.sha256, tag: $0.1.tag, license: $0.1.license) }
         )
     }
 }

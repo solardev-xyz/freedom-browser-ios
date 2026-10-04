@@ -66,6 +66,29 @@ struct AdblockFeedManifest: Codable, Equatable {
 
     struct IosSection: Codable, Equatable {
         let lists: [IosList]
+        /// uBlock-style scriptlet rules and the code they call; absent from
+        /// manifests before version 145.
+        let scriptlets: IosScriptlets?
+        let resources: IosResources?
+    }
+
+    struct IosScriptlets: Codable, Equatable {
+        let filename: String
+        let ref: String
+        let sha256: String
+        let bytes: Int
+        let ruleCount: Int
+        let format: Int
+    }
+
+    struct IosResources: Codable, Equatable {
+        let filename: String
+        let ref: String
+        let sha256: String
+        let bytes: Int
+        let sourceUrl: String?
+        let tag: String?
+        let license: String?
     }
 
     struct IosList: Codable, Equatable {
@@ -172,6 +195,14 @@ enum AdblockUpdateManifest {
                 guard shard.bytes > 0 else {
                     throw AdblockManifestError.malformed("empty shard \(shard.filename)")
                 }
+            }
+        }
+        let ios = manifest.platforms.ios
+        let blobs = [ios.scriptlets.map { ($0.filename, $0.ref, $0.sha256, $0.bytes) },
+                     ios.resources.map { ($0.filename, $0.ref, $0.sha256, $0.bytes) }]
+        for case let (filename, ref, sha256, bytes)? in blobs {
+            guard SwarmRef.isHex(ref, length: 64), SwarmRef.isHex(sha256, length: 64), bytes > 0 else {
+                throw AdblockManifestError.malformed("bad blob entry \(filename)")
             }
         }
     }

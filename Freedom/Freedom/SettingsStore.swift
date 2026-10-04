@@ -240,6 +240,12 @@ final class SettingsStore {
     var adblockAnnoyancesEnabled: Bool {
         didSet { defaults.set(adblockAnnoyancesEnabled, forKey: Keys.adblockAnnoyancesEnabled) }
     }
+
+    /// uBlock-style scriptlets, on their own switch: the lists' network and
+    /// hiding rules keep working when a site's scriptlets misbehave.
+    var adblockScriptletsEnabled: Bool {
+        didSet { defaults.set(adblockScriptletsEnabled, forKey: Keys.adblockScriptletsEnabled) }
+    }
     /// Per-site allowlist: top-level frame domains for which all adblock
     /// categories are bypassed (the page sees the unblocked web). Stored
     /// normalized — lowercase, leading `www.` stripped — so user toggles on
@@ -353,6 +359,7 @@ final class SettingsStore {
             Keys.adblockPrivacyEnabled: true,
             Keys.adblockCookiesEnabled: false,
             Keys.adblockAnnoyancesEnabled: false,
+            Keys.adblockScriptletsEnabled: true,
             Keys.adblockAllowlist: [String](),
             Keys.adblockAutoUpdateEnabled: true,
             Keys.swarmNodeEnabled: true,
@@ -390,6 +397,7 @@ final class SettingsStore {
         self.adblockPrivacyEnabled = defaults.bool(forKey: Keys.adblockPrivacyEnabled)
         self.adblockCookiesEnabled = defaults.bool(forKey: Keys.adblockCookiesEnabled)
         self.adblockAnnoyancesEnabled = defaults.bool(forKey: Keys.adblockAnnoyancesEnabled)
+        self.adblockScriptletsEnabled = defaults.bool(forKey: Keys.adblockScriptletsEnabled)
         self.adblockAllowlist = defaults.stringArray(forKey: Keys.adblockAllowlist) ?? []
         self.adblockAutoUpdateEnabled = defaults.bool(forKey: Keys.adblockAutoUpdateEnabled)
         self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
@@ -516,6 +524,7 @@ final class SettingsStore {
         static let adblockPrivacyEnabled = "adblockPrivacyEnabled"
         static let adblockCookiesEnabled = "adblockCookiesEnabled"
         static let adblockAnnoyancesEnabled = "adblockAnnoyancesEnabled"
+        static let adblockScriptletsEnabled = "adblockScriptletsEnabled"
         static let adblockAllowlist = "adblockAllowlist"
         static let adblockAutoUpdateEnabled = "adblockAutoUpdateEnabled"
         static let swarmNodeEnabled = "swarmNodeEnabled"
