@@ -131,7 +131,7 @@ final class AdblockService {
 
         for category in Category.allCases {
             var compiled: [WKContentRuleList] = []
-            for listID in category.listIDs {
+            for listID in category.listIDs where Self.debugListAllowed(listID) {
                 guard let entry = manifest.entry(id: listID) else {
                     // Lists from before uBlock's filters were added lack `ublock`.
                     log.warning("manifest missing \(listID, privacy: .public)")
@@ -286,20 +286,61 @@ final class AdblockService {
     /// matches, or the scriptlets aren't loaded yet. Runs on every
     /// navigation, so it only does dictionary lookups and string assembly.
     func scriptletSource(for url: URL?) -> String? {
-        guard let scriptlets, let url, let scheme = url.scheme?.lowercased(),
+        guard settings.adblockScriptletsEnabled, let scriptlets, let url, let scheme = url.scheme?.lowercased(),
               scheme == "https" || scheme == "http",
               let host = url.host?.lowercased(), !host.isEmpty else { return nil }
         if let normalized = normalizedHost(host), isCovered(host: normalized) { return nil }
         let enabled = Set(Category.allCases.filter(isEnabled).flatMap(\.listIDs))
         guard !enabled.isEmpty else { return nil }
         let start = ContinuousClock.now
-        let result = scriptlets.script(forHost: host, enabledLists: enabled)
+        let result = scriptlets.script(forHost: host, enabledLists: enabled, including: Self.debugScriptletFilter)
         let elapsed = ContinuousClock.now - start
         if let result {
             log.debug("scriptlets for \(host, privacy: .public): \(result.count) in \(result.source.utf8.count / 1024) KB, \(elapsed.formatted(.units(allowed: [.microseconds, .milliseconds])), privacy: .public)")
         }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SCRIPTLETS"] != nil {
+            for rule in scriptlets.injections(forHost: host, enabledLists: enabled).filter(Self.debugScriptletFilter) {
+                log.notice("[debug-scriptlets] \(host, privacy: .public) \(([rule.scriptlet] + rule.args).joined(separator: "|").prefix(160), privacy: .public)")
+            }
+        }
+        #endif
         return result?.source
     }
+
+    /// `FREEDOM_DEBUG_ADBLOCK_LISTS=<id>,<id>` (DEBUG): compile only these
+    /// lists, to find the one breaking a page.
+    private static func debugListAllowed(_ listID: String) -> Bool {
+        #if DEBUG
+        guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_ADBLOCK_LISTS"] else { return true }
+        return raw.split(separator: ",").contains { $0 == listID }
+        #else
+        return true
+        #endif
+    }
+
+    /// `FREEDOM_DEBUG_SCRIPTLETS` (DEBUG): bisect a page a scriptlet breaks.
+    /// `off`, `only:<a>,<b>` or `skip:<a>,<b>`, each a scriptlet name or a
+    /// `name|arg…` prefix as the `[debug-scriptlets]` log lines print them.
+    private static let debugScriptletFilter: (ScriptletRuleSet.Rule) -> Bool = {
+        #if DEBUG
+        guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SCRIPTLETS"], !raw.isEmpty else {
+            return { _ in true }
+        }
+        if raw == "off" { return { _ in false } }
+        let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return { _ in true } }
+        let names = Set(parts[1].split(separator: ",").map(String.init))
+        let keep = parts[0] == "only"
+        return { rule in
+            let key = ([rule.scriptlet] + rule.args).joined(separator: "|")
+            let hit = names.contains(rule.scriptlet) || names.contains { key.hasPrefix($0) }
+            return keep ? hit : !hit
+        }
+        #else
+        return { _ in true }
+        #endif
+    }()
 
     /// Scriptlets from the active update when it carries them, else from the
     /// bundle. Parsed and indexed off the main thread.

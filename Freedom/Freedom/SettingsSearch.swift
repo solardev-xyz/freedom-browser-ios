@@ -84,6 +84,7 @@ enum SettingsSearchIndex {
         // Ad blocking
         e("adblock", "Ad Blocking", "Categories (ads, privacy, cookie notices, annoyances), per-site allowlist, list updates.", "Ad Blocking", [.adblock], ["ads", "tracker", "easylist", "easyprivacy", "cookie", "annoyance", "filter", "block", "ublock", "scriptlet", "youtube"]),
         e("adblock.updates", "Keep lists up to date", "Filter lists refresh from a signed Swarm feed.", "Ad Blocking", [.adblock], ["update", "feed", "signed"]),
+        e("adblock.scriptlets", "Run scriptlets", "uBlock Origin scriptlets that remove in-page ads and anti-adblock walls before a page's own code runs.", "Ad Blocking", [.adblock], ["scriptlet", "ublock", "youtube", "anti-adblock", "javascript"]),
         e("adblock.checkNow", "Check for list updates", "When the Swarm feed was last checked, how it went, and a manual check.", "Ad Blocking", [.adblock], ["check now", "last check", "version", "update", "feed"]),
         e("adblock.allowlist", "Allowlist", "Sites you add here have all adblock categories bypassed. Useful when blocking breaks a page you trust.", "Ad Blocking", [.adblock], ["allow", "bypass", "exception", "whitelist", "add site"]),
         // Search

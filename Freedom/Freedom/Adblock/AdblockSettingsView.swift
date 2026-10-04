@@ -10,6 +10,11 @@ struct AdblockSettingsView: View {
     @State private var isAddingSite = false
     @State private var newSiteText = ""
 
+    private var scriptletSubtitle: String {
+        guard let scriptlets = adblock.scriptlets else { return "uBlock Origin scriptlets" }
+        return "uBlock Origin scriptlets · \(scriptlets.ruleCount.formatted()) rules"
+    }
+
     private var versionLabel: String {
         if case .updated(let feedVersion, _) = adblock.listSource {
             return "List version (update \(feedVersion))"
@@ -36,15 +41,26 @@ struct AdblockSettingsView: View {
                 Text("Toggles apply live to all open tabs. Already-rendered content keeps its current state until you reload the page.")
             }
 
+            Section {
+                @Bindable var settings = settings
+                Toggle(isOn: $settings.adblockScriptletsEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Run scriptlets")
+                        Text(scriptletSubtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } footer: {
+                Text("Small scripts from uBlock Origin that run before a page's own code to remove in-page ads and anti-adblock walls, for example on YouTube. They follow the list switches above. Takes effect on the next page load.")
+            }
+
             allowlistSection
 
             if let manifest = adblock.manifest {
                 Section {
                     LabeledContent(versionLabel, value: manifest.version)
                     LabeledContent("Converter", value: manifest.libVersion)
-                    if let scriptlets = adblock.scriptlets {
-                        LabeledContent("Scriptlet rules", value: scriptlets.ruleCount.formatted())
-                    }
                     if AdblockUpdateFeed.isTrustAnchorConfigured {
                         @Bindable var settings = settings
                         Toggle("Keep lists up to date", isOn: $settings.adblockAutoUpdateEnabled)

@@ -48,8 +48,12 @@ nonisolated final class ScriptletEngine: Sendable {
     /// One script for the page, or nil when nothing applies. Each injection
     /// is wrapped in its own try/catch like desktop (`getScriptlets`), and the
     /// whole thing in a function so `scriptletGlobals` stays off `window`.
-    func script(forHost host: String, enabledLists: Set<String>) -> (source: String, count: Int)? {
+    func script(
+        forHost host: String, enabledLists: Set<String>,
+        including include: (ScriptletRuleSet.Rule) -> Bool = { _ in true }
+    ) -> (source: String, count: Int)? {
         let codes = injections(forHost: host, enabledLists: enabledLists)
+            .filter(include)
             .compactMap { resources.script(name: $0.scriptlet, args: $0.args) }
         guard !codes.isEmpty else { return nil }
         let body = codes.map { "try {\n\($0)\n} catch (e) {}" }.joined(separator: "\n")
