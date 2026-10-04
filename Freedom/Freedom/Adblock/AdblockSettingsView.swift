@@ -200,7 +200,7 @@ struct AdblockSettingsView: View {
             Text("Allowlisted sites")
         } footer: {
             if adblock.allowlistDomains.isEmpty {
-                Text("Sites you add here have all adblock categories bypassed. Useful when blocking breaks a page you trust.")
+                Text("Sites you add here have all adblock categories bypassed. Useful when blocking breaks a page you trust. You can also turn it off from the site icon in the address bar.")
             } else {
                 Text("Adblock is bypassed on \(adblock.allowlistDomains.count) site\(adblock.allowlistDomains.count == 1 ? "" : "s") and their subdomains. Swipe to remove.")
             }
