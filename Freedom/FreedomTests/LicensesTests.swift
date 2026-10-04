@@ -51,7 +51,18 @@ final class LicensesTests: XCTestCase {
         }
         let myotis = try XCTUnwrap(inventory.components.first { $0.id.contains("myotis") })
         XCTAssertTrue(myotis.notice?.contains("Dirk Jäckel") == true, "Apache-2.0 §4(d): Myotis NOTICE must ship")
-        XCTAssertEqual(inventory.filterLists.map(\.id).sorted(), ["list:easylist", "list:easylist-annoyances", "list:easylist-cookies", "list:easyprivacy"])
+        XCTAssertEqual(inventory.filterLists.map(\.id).sorted(), [
+            "data:public-suffix-list", "list:easylist", "list:easylist-annoyances", "list:easylist-cookies",
+            "list:easyprivacy", "list:ublock", "list:ublock-resources",
+        ])
+        for id in ["list:ublock", "list:ublock-resources"] {
+            let entry = try XCTUnwrap(inventory.entry(id: id))
+            XCTAssertEqual(entry.license, "GPL-3.0-only", id)
+            XCTAssertTrue(inventory.texts(for: entry).first?.text.contains("GNU GENERAL PUBLIC LICENSE") == true,
+                          "GPL-3.0 §4: the licence text travels with \(id)")
+        }
+        let suffixes = try XCTUnwrap(inventory.entry(id: "data:public-suffix-list"))
+        XCTAssertTrue(inventory.texts(for: suffixes).first?.text.contains("Mozilla Public License") == true)
     }
 
     func testSPDXExpressionParsing() {

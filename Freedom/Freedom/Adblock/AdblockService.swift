@@ -31,6 +31,15 @@ final class AdblockService {
 
         var id: String { rawValue }
 
+        /// The filter lists (manifest `id`s) this switch covers. uBlock's own
+        /// filters ride on "Block ads", as on desktop.
+        var listIDs: [String] {
+            switch self {
+            case .ads: return [rawValue, "ublock"]
+            case .privacy, .cookies, .annoyances: return [rawValue]
+            }
+        }
+
         var displayName: String {
             switch self {
             case .ads:        return "Block ads"
@@ -42,7 +51,7 @@ final class AdblockService {
 
         var subtitle: String {
             switch self {
-            case .ads:        return "EasyList"
+            case .ads:        return "EasyList, uBlock filters"
             case .privacy:    return "EasyPrivacy"
             case .cookies:    return "Fanboy's Cookiemonster"
             case .annoyances: return "Fanboy's Annoyances"
@@ -69,6 +78,10 @@ final class AdblockService {
     /// Where the active lists come from: the bundled resources (floor) or a
     /// Swarm-delivered update on disk (see `AdblockUpdateService`).
     @ObservationIgnored private(set) var listSource: AdblockListSource
+    /// uBlock-style scriptlets for top-level pages; nil until loaded (or when
+    /// neither the bundle nor the active update carries them).
+    private(set) var scriptlets: ScriptletEngine?
+    @ObservationIgnored private var suffixes: PublicSuffixList?
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -117,14 +130,16 @@ final class AdblockService {
         self.manifest = manifest
 
         for category in Category.allCases {
-            guard let entry = manifest.category(category) else {
-                log.warning("manifest missing \(category.rawValue, privacy: .public)")
-                continue
-            }
             var compiled: [WKContentRuleList] = []
-            for shard in entry.shards {
-                let list = try await compile(shard: shard, source: source)
-                compiled.append(list)
+            for listID in category.listIDs {
+                guard let entry = manifest.entry(id: listID) else {
+                    // Lists from before uBlock's filters were added lack `ublock`.
+                    log.warning("manifest missing \(listID, privacy: .public)")
+                    continue
+                }
+                for shard in entry.shards {
+                    compiled.append(try await compile(shard: shard, source: source))
+                }
             }
             compiledByCategory[category] = compiled
             log.info("compiled \(compiled.count) shard(s) for \(category.rawValue, privacy: .public) [\(source.debugLabel, privacy: .public)]")
@@ -142,6 +157,8 @@ final class AdblockService {
 
         status = .ready
         refreshAllAttachments()
+        let source = listSource
+        Task { await loadScriptlets(source: source) }
     }
 
     // MARK: - Swarm updates (AdblockUpdateService hooks)
@@ -156,6 +173,13 @@ final class AdblockService {
             for shard in entry.shards {
                 _ = try await compile(shard: shard, source: source)
             }
+        }
+        // A scriptlet file that doesn't load aborts the update the same way.
+        if let files = Self.scriptletFiles(manifest: manifest, dir: dir) {
+            let suffixes = try loadSuffixes()
+            try await Task.detached(priority: .utility) {
+                _ = try ScriptletEngine.load(scriptlets: files.scriptlets, resources: files.resources, suffixes: suffixes)
+            }.value
         }
     }
 
@@ -246,11 +270,95 @@ final class AdblockService {
     }
 
     func ruleCount(for category: Category) -> Int? {
-        manifest?.category(category)?.outputRuleCount
+        let entries = category.listIDs.compactMap { manifest?.entry(id: $0) }
+        return entries.isEmpty ? nil : entries.reduce(0) { $0 + $1.outputRuleCount }
     }
 
     func shardCount(for category: Category) -> Int? {
-        manifest?.category(category)?.shards.count
+        let entries = category.listIDs.compactMap { manifest?.entry(id: $0) }
+        return entries.isEmpty ? nil : entries.reduce(0) { $0 + $1.shards.count }
+    }
+
+    // MARK: - Scriptlets
+
+    /// The scriptlet code for a top-level navigation to `url`, or nil: not a
+    /// web page, ad blocking allowlisted for the site, nothing enabled
+    /// matches, or the scriptlets aren't loaded yet. Runs on every
+    /// navigation, so it only does dictionary lookups and string assembly.
+    func scriptletSource(for url: URL?) -> String? {
+        guard let scriptlets, let url, let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              let host = url.host?.lowercased(), !host.isEmpty else { return nil }
+        if let normalized = normalizedHost(host), isCovered(host: normalized) { return nil }
+        let enabled = Set(Category.allCases.filter(isEnabled).flatMap(\.listIDs))
+        guard !enabled.isEmpty else { return nil }
+        let start = ContinuousClock.now
+        let result = scriptlets.script(forHost: host, enabledLists: enabled)
+        let elapsed = ContinuousClock.now - start
+        if let result {
+            log.debug("scriptlets for \(host, privacy: .public): \(result.count) in \(result.source.utf8.count / 1024) KB, \(elapsed.formatted(.units(allowed: [.microseconds, .milliseconds])), privacy: .public)")
+        }
+        return result?.source
+    }
+
+    /// Scriptlets from the active update when it carries them, else from the
+    /// bundle. Parsed and indexed off the main thread.
+    private func loadScriptlets(source: AdblockListSource) async {
+        let files: (scriptlets: URL, resources: URL)?
+        let origin: String
+        if case .updated(let version, let dir) = source, let manifest,
+           let updated = Self.scriptletFiles(manifest: manifest, dir: dir) {
+            files = updated
+            origin = "update v\(version)"
+        } else {
+            // An update from before the feed carried scriptlets: the bundled ones.
+            files = Self.bundledScriptletFiles()
+            origin = "bundled"
+        }
+        guard let files else {
+            log.warning("no scriptlet files [\(source.debugLabel, privacy: .public)]")
+            return
+        }
+        do {
+            let suffixes = try loadSuffixes()
+            let start = ContinuousClock.now
+            let engine = try await Task.detached(priority: .utility) {
+                try ScriptletEngine.load(scriptlets: files.scriptlets, resources: files.resources, suffixes: suffixes)
+            }.value
+            let elapsed = ContinuousClock.now - start
+            // A newer load (update activated meanwhile) wins.
+            guard source == listSource else { return }
+            scriptlets = engine
+            log.info("scriptlets: \(engine.ruleCount) rules, \(engine.resources.scriptletCount) scriptlets loaded in \(elapsed.formatted(.units(allowed: [.milliseconds])), privacy: .public) [\(origin, privacy: .public)]")
+        } catch {
+            log.error("scriptlets failed to load: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func loadSuffixes() throws -> PublicSuffixList {
+        if let suffixes { return suffixes }
+        let loaded = try PublicSuffixList.bundled()
+        suffixes = loaded
+        return loaded
+    }
+
+    /// The scriptlet files an update directory carries, when its metadata
+    /// lists them and both are on disk.
+    static func scriptletFiles(manifest: BundledAdblockManifest, dir: URL) -> (scriptlets: URL, resources: URL)? {
+        guard let scriptlets = manifest.scriptlets, let resources = manifest.resources else { return nil }
+        let pair = (dir.appendingPathComponent(scriptlets.filename), dir.appendingPathComponent(resources.filename))
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: pair.0.path), fm.fileExists(atPath: pair.1.path) else { return nil }
+        return pair
+    }
+
+    private static func bundledScriptletFiles() -> (scriptlets: URL, resources: URL)? {
+        func find(_ name: String) -> URL? {
+            Bundle.main.url(forResource: name, withExtension: "json", subdirectory: "adblock")
+                ?? Bundle.main.url(forResource: name, withExtension: "json")
+        }
+        guard let scriptlets = find("scriptlets"), let resources = find("resources") else { return nil }
+        return (scriptlets, resources)
     }
 
     // MARK: - Per-site allowlist
@@ -538,12 +646,14 @@ enum AdblockError: LocalizedError {
     case resourceMissing(String)
     case compileFailed(String)
     case storeUnavailable
+    case unsupportedFormat(String)
 
     var errorDescription: String? {
         switch self {
         case .resourceMissing(let name): return "Bundled adblock resource not found: \(name)"
         case .compileFailed(let id):     return "Failed to compile content rule list: \(id)"
         case .storeUnavailable:          return "WKContentRuleListStore unavailable"
+        case .unsupportedFormat(let what): return "Unsupported adblock data: \(what)"
         }
     }
 }
@@ -579,7 +689,24 @@ struct BundledAdblockManifest: Codable {
         }
     }
 
-    func category(_ category: AdblockService.Category) -> Entry? {
-        categories.first { $0.id == category.rawValue }
+    /// Present when the lists ship uBlock-style scriptlets.
+    let scriptlets: ScriptletsEntry?
+    let resources: ResourcesEntry?
+
+    struct ScriptletsEntry: Codable {
+        let filename: String
+        let format: Int
+        let ruleCount: Int
+    }
+
+    struct ResourcesEntry: Codable {
+        let filename: String
+        let sha256: String?
+        let tag: String?
+        let license: String?
+    }
+
+    func entry(id: String) -> Entry? {
+        categories.first { $0.id == id }
     }
 }

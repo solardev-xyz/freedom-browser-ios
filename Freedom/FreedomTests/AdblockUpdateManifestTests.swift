@@ -142,6 +142,24 @@ final class AdblockUpdateManifestTests: XCTestCase {
         XCTAssertFalse(manifest.platforms.ios.lists.flatMap(\.shards).isEmpty)
     }
 
+    /// Version 145 is the first to carry the iOS scriptlet fields; the
+    /// signature still has to verify over them (they're inside the signed
+    /// canonical bytes) against the production signer.
+    func testLiveManifestWithScriptletsVerifies() throws {
+        let payload = try fixtureData("adblock-live-manifest-v145")
+        let manifest = try AdblockUpdateManifest.verify(
+            payload: payload,
+            sigAddress: "0xb818FF019BC15BC3DfbdaD4CE0ab66A6f74e8f1E",
+            appliedVersion: 144
+        )
+        XCTAssertEqual(manifest.version, 145)
+        XCTAssertTrue(manifest.platforms.ios.lists.contains { $0.listId == "ublock" })
+        XCTAssertEqual(manifest.platforms.ios.scriptlets?.format, 1)
+        XCTAssertEqual(manifest.platforms.ios.resources?.sha256,
+                       "e14b498f693c4166d27971f7fdfe49b167c139a8e659cc59bedc9ab29a2348f5")
+        XCTAssertNotNil(AdblockUpdateService.scriptletBlobs(manifest))
+    }
+
     // MARK: - Feed topic contract
 
     func testFeedTopicHexMatchesBeeJs() {

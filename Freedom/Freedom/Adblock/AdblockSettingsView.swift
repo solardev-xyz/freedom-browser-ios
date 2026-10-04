@@ -42,6 +42,9 @@ struct AdblockSettingsView: View {
                 Section {
                     LabeledContent(versionLabel, value: manifest.version)
                     LabeledContent("Converter", value: manifest.libVersion)
+                    if let scriptlets = adblock.scriptlets {
+                        LabeledContent("Scriptlet rules", value: scriptlets.ruleCount.formatted())
+                    }
                     if AdblockUpdateFeed.isTrustAnchorConfigured {
                         @Bindable var settings = settings
                         Toggle("Keep lists up to date", isOn: $settings.adblockAutoUpdateEnabled)
@@ -50,7 +53,7 @@ struct AdblockSettingsView: View {
                 } header: {
                     Text("About the lists")
                 } footer: {
-                    Text("Filter data is © the respective list authors and dual-licensed GPLv3+ / CC BY-SA 3.0+. EasyList family — see easylist.to.")
+                    Text("Filter data is © the respective list authors. EasyList family: dual-licensed GPLv3+ / CC BY-SA 3.0+, see easylist.to. uBlock filters and scriptlets: © Raymond Hill and contributors, GPLv3. Scriptlets run in the page before its own scripts to defuse in-page ads and anti-adblock walls.")
                 }
             }
         }
