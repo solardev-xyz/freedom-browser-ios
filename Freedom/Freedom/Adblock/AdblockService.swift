@@ -628,6 +628,24 @@ final class AdblockService {
 
     // MARK: - List I/O (bundle or applied-update dir)
 
+    /// Every list file the app ships with (shards, scriptlets, resources),
+    /// for the updater to reuse instead of downloading identical bytes.
+    nonisolated static func bundledListFiles() -> [URL] {
+        func url(_ filename: String) -> URL? {
+            let stem = (filename as NSString).deletingPathExtension
+            let ext = (filename as NSString).pathExtension
+            return Bundle.main.url(forResource: stem, withExtension: ext, subdirectory: "adblock")
+                ?? Bundle.main.url(forResource: stem, withExtension: ext)
+        }
+        guard let metadata = url("metadata.json"), let data = try? Data(contentsOf: metadata) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let manifest = try? decoder.decode(BundledAdblockManifest.self, from: data) else { return [] }
+        let names = manifest.categories.flatMap { $0.shards.map(\.filename) }
+            + [manifest.scriptlets?.filename, manifest.resources?.filename].compactMap { $0 }
+        return names.compactMap(url)
+    }
+
     private func loadManifest(source: AdblockListSource) throws -> BundledAdblockManifest {
         let data: Data
         switch source {

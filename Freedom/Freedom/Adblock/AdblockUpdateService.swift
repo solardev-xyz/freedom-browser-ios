@@ -35,6 +35,9 @@ final class AdblockUpdateService {
         /// Swap the active list source after promote. Must not throw — by
         /// promote time everything is verified and compiled.
         var activate: (_ feedVersion: Int, _ dir: URL) async -> Void
+        /// List files the app ships with: a blob whose bytes one of them
+        /// already holds is copied instead of downloaded.
+        var bundledBlobFiles: @Sendable () -> [URL] = { [] }
 
         static func live(adblock: AdblockService, bee: BeeAPIClient = BeeAPIClient()) -> IO {
             IO(
@@ -54,7 +57,8 @@ final class AdblockUpdateService {
                 },
                 activate: { [weak adblock] feedVersion, dir in
                     await adblock?.activateUpdate(feedVersion: feedVersion, dir: dir)
-                }
+                },
+                bundledBlobFiles: { AdblockService.bundledListFiles() }
             )
         }
 
@@ -231,23 +235,36 @@ final class AdblockUpdateService {
         try? fm.removeItem(at: staging)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
 
-        // Download every shard the manifest lists; reuse the already-applied
-        // file when its bytes still hash to the manifest's sha256.
-        for list in manifest.platforms.ios.lists {
-            for shard in list.shards {
-                let data = try await blobData(filename: shard.filename, ref: shard.ref, sha256: shard.sha256, activeDir: active)
-                try data.write(to: staging.appendingPathComponent(shard.filename))
-            }
+        // Fetch every blob the manifest lists. One whose bytes are already
+        // on the device — in the applied update or the bundled lists, under
+        // any filename — is copied instead: the publisher's shards are
+        // deterministic, so an unchanged list keeps its sha256 (desktop
+        // `update-manager.js` downloads only shards whose hash changed).
+        var blobs = manifest.platforms.ios.lists.flatMap { list in
+            list.shards.map { (filename: $0.filename, ref: $0.ref, sha256: $0.sha256) }
         }
         // Scriptlets travel with the lists when the manifest carries them in
         // a format this build reads; otherwise the bundled ones stay in use.
         if let (scriptlets, resources) = Self.scriptletBlobs(manifest) {
-            for blob in [(scriptlets.filename, scriptlets.ref, scriptlets.sha256),
-                         (resources.filename, resources.ref, resources.sha256)] {
-                let data = try await blobData(filename: blob.0, ref: blob.1, sha256: blob.2, activeDir: active)
-                try data.write(to: staging.appendingPathComponent(blob.0))
-            }
+            blobs.append((scriptlets.filename, scriptlets.ref, scriptlets.sha256))
+            blobs.append((resources.filename, resources.ref, resources.sha256))
         }
+        let local = await Self.indexLocalBlobs(Self.localCandidates(activeDir: active) + io.bundledBlobFiles())
+        var reused = 0
+        for blob in blobs {
+            let data: Data
+            if let url = local[blob.sha256], let copy = try? Data(contentsOf: url), Self.sha256Hex(copy) == blob.sha256 {
+                data = copy
+                reused += 1
+            } else {
+                data = try await download(ref: blob.ref, filename: blob.filename)
+                guard Self.sha256Hex(data) == blob.sha256 else {
+                    throw AdblockManifestError.malformed("sha256 mismatch for \(blob.filename): expected \(blob.sha256)")
+                }
+            }
+            try data.write(to: staging.appendingPathComponent(blob.filename))
+        }
+        log.info("v\(manifest.version): \(reused) of \(blobs.count) files already on the device, \(blobs.count - reused) downloaded")
 
         let updatedManifest = Self.updatedMetadata(from: manifest)
         let encoder = JSONEncoder()
@@ -277,18 +294,24 @@ final class AdblockUpdateService {
         }
     }
 
-    private func blobData(filename: String, ref: String, sha256: String, activeDir: URL) async throws -> Data {
-        let existing = activeDir.appendingPathComponent(filename)
-        if let data = try? Data(contentsOf: existing), Self.sha256Hex(data) == sha256 {
-            return data
-        }
-        let data = try await download(ref: ref, filename: filename)
-        guard Self.sha256Hex(data) == sha256 else {
-            throw AdblockManifestError.malformed(
-                "sha256 mismatch for \(filename): expected \(sha256)"
-            )
-        }
-        return data
+    /// The applied update's list files (not its own bookkeeping).
+    static func localCandidates(activeDir: URL) -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: activeDir, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension == "json" && !["metadata.json", "state.json"].contains($0.lastPathComponent) }
+    }
+
+    /// sha256 → file, hashed off the main actor (tens of MB in all). A
+    /// hit is re-read and re-verified before use.
+    static func indexLocalBlobs(_ files: [URL]) async -> [String: URL] {
+        await Task.detached(priority: .utility) {
+            var index: [String: URL] = [:]
+            for url in files {
+                guard let data = try? Data(contentsOf: url) else { continue }
+                let hash = sha256Hex(data)
+                if index[hash] == nil { index[hash] = url }
+            }
+            return index
+        }.value
     }
 
     static func scriptletBlobs(
@@ -324,7 +347,7 @@ final class AdblockUpdateService {
         )
     }
 
-    static func sha256Hex(_ data: Data) -> String {
+    nonisolated static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 

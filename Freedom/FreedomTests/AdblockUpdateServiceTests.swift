@@ -115,6 +115,45 @@ final class AdblockUpdateServiceTests: XCTestCase {
         }
     }
 
+    // MARK: - Reuse
+
+    /// A blob whose bytes are already on the device — a bundled list file
+    /// or a file of the applied update, under any name — is copied, not
+    /// downloaded.
+    func testFilesAlreadyOnTheDeviceAreNotDownloaded() async throws {
+        let refs = fixture.blobs.keys.sorted()
+        XCTAssertGreaterThanOrEqual(refs.count, 2)
+        let bundled = root.appendingPathComponent("bundle", isDirectory: true)
+        let active = root.appendingPathComponent("updated", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundled, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: active, withIntermediateDirectories: true)
+        let bundledFile = bundled.appendingPathComponent("shipped-under-another-name.json")
+        try Data(fixture.blobs[refs[0]]!.utf8).write(to: bundledFile)
+        try Data(fixture.blobs[refs[1]]!.utf8).write(to: active.appendingPathComponent("renamed.json"))
+
+        let recorder = Recorder()
+        var io = makeIO(recorder: recorder)
+        io.bundledBlobFiles = { [bundledFile] }
+        let outcome = await makeService(io: io).runOnce()
+
+        guard case .applied = outcome else { return XCTFail("expected applied, got \(outcome)") }
+        XCTAssertFalse(recorder.downloadedRefs.contains(refs[0]), "bundled bytes are reused")
+        XCTAssertFalse(recorder.downloadedRefs.contains(refs[1]), "the applied update's bytes are reused")
+        XCTAssertEqual(Set(recorder.downloadedRefs), Set(refs.dropFirst(2)))
+    }
+
+    func testLocalFileWithOtherBytesIsNotReused() async throws {
+        let refs = fixture.blobs.keys.sorted()
+        let bundledFile = root.appendingPathComponent("stale.json")
+        try Data((fixture.blobs[refs[0]]! + " ").utf8).write(to: bundledFile)
+        let recorder = Recorder()
+        var io = makeIO(recorder: recorder)
+        io.bundledBlobFiles = { [bundledFile] }
+        let outcome = await makeService(io: io).runOnce()
+        guard case .applied = outcome else { return XCTFail("expected applied, got \(outcome)") }
+        XCTAssertEqual(Set(recorder.downloadedRefs), Set(refs))
+    }
+
     func testSecondRunIsNotNewer() async throws {
         let recorder = Recorder()
         let service = makeService(io: makeIO(recorder: recorder))
