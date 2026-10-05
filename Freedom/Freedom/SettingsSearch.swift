@@ -72,6 +72,7 @@ enum SettingsSearchIndex {
         e("ens.universalResolver", "Universal Resolver", "The ENS Universal Resolver contract used for lookups.", "Name Resolution", [.ens, .ensMethod(.quorum)], ["contract", "address"]),
         // Nodes
         e("swarm", "Swarm", "Run the embedded Swarm node on app launch and right now. bzz:// page loads need it.", "Swarm", [.swarm], ["bee", "ant", "node", "bzz", "peers", "enable"]),
+        e("swarm.swap", "Pay peers for faster Swarm", "Pay other nodes small amounts of xBZZ from the chequebook for uploads and faster downloads.", "Swarm", [.swarm], ["swap", "cheques", "chequebook", "bandwidth", "browsing credit", "speed", "xbzz"]),
         e("swarm.manifests", "App permissions", "Swarm apps that declare their permissions up front, and whether you let the declaration apply or kept asking each time.", "Swarm", [.swarm], ["manifest", "declare", "disconnect"]),
         e("ipfs", "IPFS", "Run the embedded IPFS reader on app launch and right now. ipfs:// page loads need it.", "IPFS", [.ipfs], ["node", "reader", "gateway", "enable", "peers"]),
         e("ipfs.routing", "Routing", "How content is found: DHT, delegated routing, providers. Applies on the next gateway restart.", "IPFS", [.ipfs], ["dht", "delegated", "providers", "transport"]),

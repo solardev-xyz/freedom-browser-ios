@@ -76,6 +76,12 @@ final class AntChainBridge {
             return Self.encode(Self.errorBody(id: NSNull(), code: -32600, message: "Single JSON-RPC request with id and params required"))
         }
         let method = request["method"] as? String ?? ""
+        // The bridge serves one chain, so it answers the chain id itself.
+        // ant v0.5.58+ keys its saved wallet scan by it and asks first; a
+        // refusal fails the scan before any log is read (desktop #508).
+        if method == "eth_chainId" {
+            return Self.encode(["jsonrpc": "2.0", "id": id, "result": "0x" + String(Self.chainID, radix: 16)])
+        }
         guard Self.readMethods.contains(method) || method == Self.broadcastMethod else {
             return Self.encode(Self.errorBody(id: id, code: -32601, message: "Method not available to Ant"))
         }

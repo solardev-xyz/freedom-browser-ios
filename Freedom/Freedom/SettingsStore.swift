@@ -272,6 +272,12 @@ final class SettingsStore {
     var swarmNodeEnabled: Bool {
         didSet { defaults.set(swarmNodeEnabled, forKey: Keys.swarmNodeEnabled) }
     }
+    /// Bee's swap-enable for the embedded node: pay peers from the
+    /// chequebook for bandwidth past the free tier (ant v0.5.57; desktop
+    /// `antSwapEnable`, default on).
+    var swarmSwapEnabled: Bool {
+        didSet { defaults.set(swarmSwapEnabled, forKey: Keys.swarmSwapEnabled) }
+    }
     /// Whether the embedded IPFS reader should be running. User-
     /// togglable from the IPFS node sheet. Default **true** — the
     /// Rust reader is lightweight enough to run alongside Bee on
@@ -370,6 +376,7 @@ final class SettingsStore {
             Keys.adblockAllowlist: [String](),
             Keys.adblockAutoUpdateEnabled: true,
             Keys.swarmNodeEnabled: true,
+            Keys.swarmSwapEnabled: true,
             Keys.ipfsNodeEnabled: true,
             Keys.myotisNodeEnabled: true,
             Keys.myotisMainnetEnabled: true,
@@ -409,6 +416,7 @@ final class SettingsStore {
         self.adblockAllowlist = defaults.stringArray(forKey: Keys.adblockAllowlist) ?? []
         self.adblockAutoUpdateEnabled = defaults.bool(forKey: Keys.adblockAutoUpdateEnabled)
         self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
+        self.swarmSwapEnabled = defaults.bool(forKey: Keys.swarmSwapEnabled)
         self.ipfsNodeEnabled = defaults.bool(forKey: Keys.ipfsNodeEnabled)
         self.myotisNodeEnabled = defaults.bool(forKey: Keys.myotisNodeEnabled)
         self.myotisMainnetEnabled = defaults.bool(forKey: Keys.myotisMainnetEnabled)
@@ -537,6 +545,7 @@ final class SettingsStore {
         static let adblockAllowlist = "adblockAllowlist"
         static let adblockAutoUpdateEnabled = "adblockAutoUpdateEnabled"
         static let swarmNodeEnabled = "swarmNodeEnabled"
+        static let swarmSwapEnabled = "swarmSwapEnabled"
         static let ipfsNodeEnabled = "ipfsNodeEnabled"
         static let myotisNodeEnabled = "myotisNodeEnabled"
         static let myotisMainnetEnabled = "myotisMainnetEnabled"
