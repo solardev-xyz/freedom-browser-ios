@@ -30,6 +30,22 @@ final class StampServiceParseTests: XCTestCase {
         XCTAssertFalse(usable.propagating)
     }
 
+    /// A batch the chain says doesn't exist (a phantom whose files the
+    /// node reloads at start) is not listed at all.
+    func testBatchNotOnChainIsDropped() {
+        var phantom = row(usable: false, propagating: false)
+        phantom["exists"] = false
+        phantom["batchTTL"] = -1
+        XCTAssertNil(StampService.parseBatch(phantom))
+        var ttlOnly = row(usable: false, propagating: nil)
+        ttlOnly["batchTTL"] = -1
+        XCTAssertNil(StampService.parseBatch(ttlOnly), "bee's -1 alone means not found")
+        var expired = row(usable: false, propagating: false)
+        expired["exists"] = true
+        expired["batchTTL"] = 0
+        XCTAssertNotNil(StampService.parseBatch(expired), "an expired batch still exists and stays listed")
+    }
+
     func testMissingRequiredFieldDropsTheRow() {
         var raw = row(usable: true, propagating: nil)
         raw.removeValue(forKey: "usable")
