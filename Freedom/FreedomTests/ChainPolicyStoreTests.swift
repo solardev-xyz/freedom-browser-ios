@@ -149,6 +149,28 @@ final class ChainPolicyStoreTests: XCTestCase {
         XCTAssertEqual(refreshed.userAddedRPCURLs(forChainID: 1), ["https://my.node"])
     }
 
+    /// gateway.fm fronts the same Tenderly account as gnosischain, so it
+    /// was retired: installs seeded with it — with or without a snapshot
+    /// of that seed — lose it and keep their own endpoints.
+    func testGnosisRecordDropsRetiredGatewayFm() async throws {
+        let previousSeed = [
+            "https://rpc.gnosischain.com", "https://gnosis-rpc.publicnode.com",
+            "https://gnosis.drpc.org", "https://rpc.gnosis.gateway.fm",
+        ]
+        for snapshot in [previousSeed, []] {
+            let record = try XCTUnwrap(container.mainContext.fetchRecord(id: 100))
+            record.rpcURLs = ["https://my.gnosis.node"] + previousSeed
+            record.defaultRPCURLs = snapshot
+            try container.mainContext.save()
+
+            let refreshed = ChainStore(context: container.mainContext, settings: settings)
+            let seed = ChainRegistry.gnosisURLs.map(\.absoluteString)
+            XCTAssertFalse(seed.contains("https://rpc.gnosis.gateway.fm"))
+            XCTAssertEqual(refreshed.rpcURLs(forChainID: 100), ["https://my.gnosis.node"] + seed, "snapshot: \(snapshot.count)")
+            XCTAssertEqual(refreshed.defaultRPCURLs(forChainID: 100), seed)
+        }
+    }
+
     func testPrivateOnlyRecordIsLeftAlone() async throws {
         let record = try XCTUnwrap(container.mainContext.fetchRecord(id: 1))
         record.rpcURLs = ["https://my.node"]
