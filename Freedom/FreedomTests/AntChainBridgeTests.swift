@@ -143,27 +143,36 @@ final class AntChainBridgeTests: XCTestCase {
 
     // MARK: - eth_getLogs ranking (desktop's one rule)
 
-    func testRangeLimitEndsTheWalkAndReachesAntVerbatim() async throws {
+    /// Log scans go to the RPC quorum only, so these tests give Gnosis
+    /// its default policy (the bundle pins a quorum-free ladder).
+    private func useQuorumPolicy() {
+        bundle.registry.policyOverrides[gnosis] = ChainAccessPolicy.default(forChainID: gnosis)
+    }
+
+    func testRangeLimitReachesAntVerbatim() async throws {
+        useQuorumPolicy()
         transport.answers["g1.example"] = .success(rpcError(-32005, "query exceeds max block range 50000"))
         transport.answers["g2.example"] = .success(result([]))
-        let replyResponse = try await serve(request("eth_getLogs", [["fromBlock": "0x1", "toBlock": "0xffff"]]))
+        let replyResponse = try await serve(request("eth_getLogs", [["fromBlock": "0x1", "toBlock": "latest"]]))
         let reply = try XCTUnwrap(error(of: replyResponse))
         XCTAssertEqual(reply.code, -32005)
         XCTAssertTrue(reply.message.contains("query exceeds max block range 50000"), reply.message)
-        XCTAssertEqual(transport.hits, ["g1.example"], "a request-level failure never asks the next endpoint")
+        XCTAssertEqual(Set(transport.hits), ["g1.example", "g2.example"], "one endpoint's answer never settles a range")
     }
 
     func testThrottleIsStrippedOfAntsNeedles() async throws {
+        useQuorumPolicy()
         transport.answers["g1.example"] = .success(rpcError(-32005, "rate limit exceeded"))
         transport.answers["g2.example"] = .success(rpcError(-32005, "rate limit exceeded"))
         let replyResponse = try await serve(request("eth_getLogs", [["fromBlock": "0x1"]]))
         let reply = try XCTUnwrap(error(of: replyResponse))
         XCTAssertEqual(reply.code, -32005)
         XCTAssertEqual(reply.message, "Chain request failed: endpoint unavailable")
-        XCTAssertEqual(transport.hits.count, 2, "a throttle falls through to the next endpoint")
+        XCTAssertEqual(transport.hits.count, 2)
     }
 
     func testTimeoutIsWordedSoAntHalvesItsWindow() async throws {
+        useQuorumPolicy()
         transport.answers["g1.example"] = .failure(URLError(.timedOut))
         transport.answers["g2.example"] = .failure(URLError(.timedOut))
         let replyResponse = try await serve(request("eth_getLogs", [["fromBlock": "0x1"]]))
@@ -171,7 +180,8 @@ final class AntChainBridgeTests: XCTestCase {
         XCTAssertTrue(reply.message.contains("query timeout"), reply.message)
     }
 
-    func testHintIsKeptOverEndpointFailuresButKeepsWalking() async throws {
+    func testHintIsKeptOverEndpointFailures() async throws {
+        useQuorumPolicy()
         transport.answers["g1.example"] = .success(rpcError(-32005, "limit exceeded"))
         transport.answers["g2.example"] = .success(rpcError(-32603, "internal error"))
         let replyResponse = try await serve(request("eth_getLogs", [["fromBlock": "0x1"]]))
@@ -181,12 +191,42 @@ final class AntChainBridgeTests: XCTestCase {
         XCTAssertEqual(transport.hits.count, 2)
     }
 
-    func testLogScanUsesTheWideDirectBudget() async throws {
+    /// No single endpoint's answer settles a range: one answering member
+    /// out of two is no answer, and there is no direct fallback.
+    func testLogScanNeverFallsBackToOneEndpoint() async throws {
+        useQuorumPolicy()
         transport.answers["g1.example"] = .success(result([]))
-        _ = try await serve(request("eth_getLogs", [["fromBlock": "0x1"]]))
-        XCTAssertEqual(transport.timeouts.last, AntChainBridge.logScanDirectTimeout)
+        transport.answers["g2.example"] = .success(rpcError(-32603, "internal error"))
+        let response = try await serve(request("eth_getLogs", [["fromBlock": "0x1"]]))
+        XCTAssertNil(response["result"])
+        XCTAssertEqual(transport.hits.count, 2)
+    }
+
+    func testLogScanUsesTheQuorumWithTheWideBudget() async throws {
+        useQuorumPolicy()
+        transport.answers["g1.example"] = .success(result([]))
+        transport.answers["g2.example"] = .success(result([]))
+        let response = try await serve(request("eth_getLogs", [["fromBlock": "0x1"]]))
+        XCTAssertEqual((response["result"] as? [Any])?.count, 0)
+        XCTAssertEqual(transport.timeouts, [AntChainBridge.logScanQuorumTimeout, AntChainBridge.logScanQuorumTimeout])
         _ = try await serve(request("eth_blockNumber"))
-        XCTAssertNotEqual(transport.timeouts.last, AntChainBridge.logScanDirectTimeout)
+        XCTAssertNotEqual(transport.timeouts.last, AntChainBridge.logScanQuorumTimeout)
+    }
+
+    func testRangeCapIsReadFromTheRefusal() {
+        func cap(_ code: Int?, _ message: String) -> Int? {
+            let error: Swift.Error = code.map { WalletRPC.Error.rpc(code: $0, message: message) } ?? URLError(.cannotConnectToHost)
+            return AntLogScanErrors.rangeCap(error)
+        }
+        XCTAssertEqual(cap(-32701, "exceed maximum block range: 50000"), 50_000)
+        XCTAssertEqual(cap(35, "ranges over 10000 blocks are not supported on free plan"), 10_000)
+        XCTAssertEqual(cap(-32602, "Block range 50000 exceeds the maximum of 10000 blocks per logs request"), 10_000)
+        XCTAssertEqual(cap(-32600, "You can make eth_getLogs requests with up to a 2K block range"), 2_000)
+        XCTAssertEqual(cap(-32005, "max block range is 1,000"), 1_000)
+        XCTAssertNil(cap(-32005, "query returned more than 10000 results"), "a result-count cap is not a block range")
+        XCTAssertNil(cap(-32005, "rate limit exceeded: maximum of 100 blocks per second"), "a throttle names no range")
+        XCTAssertNil(cap(-32000, "block range extends beyond current head block"))
+        XCTAssertNil(cap(nil, "maximum of 10000 blocks"), "only a coded reply names a cap")
     }
 
     func testRanking() {

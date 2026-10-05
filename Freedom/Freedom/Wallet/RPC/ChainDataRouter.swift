@@ -42,6 +42,18 @@ final class ChainDataRouter {
         /// (desktop `rankError`). With one set, the walk keeps the most
         /// useful failure across tiers and ends early on `.request`.
         var rankError: (@Sendable (Swift.Error) -> ErrorRank)? = nil
+        /// Restricts the policy's read order to these tiers, in the
+        /// policy's sequence (Ant's log scans: the RPC quorum only).
+        var sources: Set<ChainSource>? = nil
+        /// Widens the quorum tier's budget for background work; never
+        /// narrows it below the policy's timeout (desktop `quorumTimeoutMs`).
+        var quorumTimeout: TimeInterval? = nil
+        /// The block-range cap an endpoint names when it refuses a log
+        /// query. With `rankError`, it makes an `eth_getLogs` over a
+        /// numeric block range a range-capped scan: the quorum learns each
+        /// endpoint's cap and asks only endpoints that can serve the span
+        /// (see `LogRangeMemory`).
+        var rangeCapOf: (@Sendable (Swift.Error) -> Int?)? = nil
 
         static let standard = Options()
     }
@@ -116,6 +128,10 @@ final class ChainDataRouter {
     let transport: Transport
     let adaptive: AdaptiveRouting
     let admission: SourceAdmission
+    let logRanges: LogRangeMemory
+    /// The indexer that verifies a wallet scan no RPC quorum can serve;
+    /// nil when the user removed it.
+    var transferIndex: BlockscoutTransferIndex?
 
     init(
         registry: ChainRegistry,
@@ -126,6 +142,7 @@ final class ChainDataRouter {
         self.transport = transport
         self.adaptive = AdaptiveRouting(clock: clock)
         self.admission = SourceAdmission()
+        self.logRanges = LogRangeMemory(clock: clock)
     }
 
     /// The two-second budget is a *fall-through* allowance, not a global
@@ -183,8 +200,12 @@ final class ChainDataRouter {
         var directFallback: DirectFallback?
         var directAttempted: [URL] = []
         var keeper = ErrorKeeper(rank: options.rankError)
+        let logRange: LogScanRange? = {
+            guard let capOf = options.rangeCapOf, let rank = options.rankError else { return nil }
+            return LogScanRange(method: method, params: params, capOf: capOf, rank: rank)
+        }()
 
-        let order = policy.readOrder
+        let order = options.sources.map { sources in policy.readOrder.filter(sources.contains) } ?? policy.readOrder
         for (index, source) in order.enumerated() {
             if (directOnly || options.directOnly) && source != .direct { continue }
             try Task.checkCancellation()
@@ -209,21 +230,33 @@ final class ChainDataRouter {
                     )
                 case .quorum:
                     let next = index + 1 < order.count ? order[index + 1] : nil
-                    let outcome = await requestQuorum(
-                        chainID: chainID, method: method, params: params, policy: policy, options: options,
-                        wait: wait, allowDirectFallback: next == .direct
-                    )
+                    let outcome: QuorumOutcome
+                    if let logRange {
+                        outcome = await requestLogScanQuorum(
+                            chainID: chainID, method: method, params: params, policy: policy, options: options,
+                            wait: wait, range: logRange, verifyWithIndex: true
+                        )
+                    } else {
+                        outcome = await requestQuorum(
+                            chainID: chainID, method: method, params: params, policy: policy, options: options,
+                            wait: wait, allowDirectFallback: next == .direct
+                        )
+                    }
                     switch outcome {
                     case .agreed(.value(let value), let trust):
                         answer = ChainDataResult(result: value, trust: trust, source: .quorum)
-                    case .agreed(.deterministic(let error), _):
+                    case .agreed(.deterministic(let error), _), .refused(let error):
                         // M members agree on the revert: a verified
-                        // deterministic answer, which ends the walk.
+                        // deterministic answer, which ends the walk. A
+                        // range-capped scan's refusal ends it the same way.
                         throw error
                     case .failed(let reason, let kind, let fallback, let attempted, let errors):
                         directFallback = fallback
                         directAttempted = attempted
                         directErrors = errors
+                        // A member's range limit is the caller's answer
+                        // when no later tier can hide it (desktop keeper).
+                        if let final = keeper.offer(errors) { throw WalletRPC.Error.allProvidersFailed([final]) }
                         throw ChainSourceUnavailable(reason: reason, kind: kind)
                     }
                 case .direct:
@@ -738,14 +771,16 @@ final class ChainDataRouter {
         policy: ChainAccessPolicy,
         options: Options,
         wait: TimeInterval,
-        allowDirectFallback: Bool
+        allowDirectFallback: Bool,
+        urls chosen: [URL]? = nil,
+        logRange: LogScanRange? = nil
     ) async -> QuorumOutcome {
         let k = policy.effectiveQuorumK
         let m = policy.effectiveQuorumM
         let perEndpoint = options.directTimeout ?? policy.sourceTimeout
-        let timeout = min(perEndpoint, wait)
+        let timeout = quorumBudget(policy: policy, options: options, wait: wait) ?? min(perEndpoint, wait)
         let endpointTimeout = allowDirectFallback ? perEndpoint : timeout
-        let urls = Array(registry.rpcURLs(forChainID: chainID).prefix(k))
+        let urls = chosen ?? Array(registry.rpcURLs(forChainID: chainID).prefix(k))
         guard urls.count >= m else {
             return .failed(reason: "RPC quorum needs \(m) endpoints, \(urls.count) available", kind: nil, fallback: nil, attempted: [], errors: [])
         }
@@ -757,9 +792,221 @@ final class ChainDataRouter {
         }
         let run = QuorumRun(urls: urls, m: m, allowDirectFallback: allowDirectFallback)
         let rejectNull = options.rejectNull
-        return await run.run(timeout: timeout) { [self] url in
-            await self.callEndpoint(url, body: body, timeout: endpointTimeout, chainID: chainID, rejectNull: rejectNull)
+        let memory = logRanges
+        var cut: Swift.Error?
+        let outcome = await run.run(timeout: timeout, leg: { [self] url in
+            let result = await self.callEndpoint(url, body: body, timeout: endpointTimeout, chainID: chainID, rejectNull: rejectNull)
+            if let logRange {
+                switch result {
+                case .answer(.value):
+                    memory.noteAnswer(chainID: chainID, url: url, span: logRange.span)
+                case .error(let error, _) where !(error is CancellationError):
+                    memory.noteFailure(chainID: chainID, url: url, range: logRange, error: error)
+                default:
+                    break
+                }
+            }
+            return result
+        }, onCut: { unanswered in
+            guard let logRange, !unanswered.isEmpty else { return }
+            let deadline = ChainSourceDeadline(source: .quorum, seconds: timeout)
+            cut = deadline
+            for url in unanswered {
+                memory.noteFailure(chainID: chainID, url: url, range: logRange, error: deadline)
+            }
+        })
+        // A scan's members cut by the budget are a timeout the caller can
+        // act on (Ant halves its window on it).
+        if let cut, case .failed(let reason, let kind, let fallback, let attempted, let errors) = outcome {
+            return .failed(reason: reason, kind: kind, fallback: fallback, attempted: attempted, errors: errors + [cut])
         }
+        return outcome
+    }
+
+    /// A background caller may widen the quorum's budget; it is never
+    /// narrowed below the configured timeout, and an interactive
+    /// deadline below that still applies. Nil when nothing widens it.
+    private func quorumBudget(policy: ChainAccessPolicy, options: Options, wait: TimeInterval) -> TimeInterval? {
+        guard let widened = options.quorumTimeout else { return nil }
+        return wait < policy.sourceTimeout ? wait : max(policy.sourceTimeout, widened)
+    }
+
+    // MARK: - Range-capped log scans
+
+    /// A range-capped log scan asks the first k endpoints able to serve
+    /// its span. A round whose members failed has just taken them out
+    /// (capped or cooling); if another quorum can serve the same span, it
+    /// is asked straight away. A span no quorum can serve is verified
+    /// against the transfer index when the request is the node's wallet
+    /// scan; otherwise, or when that check fails, the caller is told the
+    /// widest span a quorum can still verify, so it narrows to it. Only
+    /// when no quorum can serve any span does it get no quorum.
+    /// Desktop `requestQuorum` with `logRange` (freedom-browser #493).
+    private func requestLogScanQuorum(
+        chainID: Int,
+        method: String,
+        params: [Any],
+        policy: ChainAccessPolicy,
+        options: Options,
+        wait: TimeInterval,
+        range: LogScanRange,
+        verifyWithIndex: Bool
+    ) async -> QuorumOutcome {
+        let k = policy.effectiveQuorumK
+        let m = policy.effectiveQuorumM
+        let endpoints = registry.rpcURLs(forChainID: chainID)
+        var asked: Set<URL>?
+        var last: QuorumOutcome?
+        for _ in 0..<LogRangeMemory.quorumRounds {
+            let urls = Array(endpoints.filter { logRanges.servableSpan(chainID: chainID, url: $0) >= range.span }.prefix(k))
+            if urls.count < m { break }
+            if let asked, urls.allSatisfy(asked.contains) { break }
+            let outcome = await requestQuorum(
+                chainID: chainID, method: method, params: params, policy: policy, options: options,
+                wait: wait, allowDirectFallback: false, urls: urls, logRange: range
+            )
+            if case .agreed = outcome { return outcome }
+            asked = Set(urls)
+            last = outcome
+        }
+        let noQuorum = last ?? .failed(
+            reason: "No RPC quorum available for \(method)", kind: nil, fallback: nil, attempted: [], errors: []
+        )
+        let servable = logRanges.quorumSpan(chainID: chainID, urls: registry.rpcURLs(forChainID: chainID), m: m)
+        // Spans a quorum can serve never reach the index.
+        guard servable < range.span else { return noQuorum }
+        if verifyWithIndex, let index = transferIndex, index.isEnabled(),
+           let sender = BlockscoutTransferIndex.eligibleSender(chainID: chainID, params: params),
+           let verified = await verifyWithTransferIndex(
+               index, sender: sender, chainID: chainID, method: method, params: params, policy: policy,
+               options: options, wait: wait, range: range
+           ) {
+            return verified
+        }
+        return servable > 0 ? .refused(LogRangeRefusal.error(span: servable)) : noQuorum
+    }
+
+    /// One capable endpoint's logs for `[from, H]` must match the
+    /// index's transfers exactly (H: the index's height less a reorg
+    /// margin); the tail above H goes through the quorum. Ant gets the
+    /// endpoint's own log objects, never ones built from the index. Nil
+    /// when anything is missing or disagrees.
+    private func verifyWithTransferIndex(
+        _ index: BlockscoutTransferIndex,
+        sender: String,
+        chainID: Int,
+        method: String,
+        params: [Any],
+        policy: ChainAccessPolicy,
+        options: Options,
+        wait: TimeInterval,
+        range: LogScanRange
+    ) async -> QuorumOutcome? {
+        let started = ContinuousClock.now
+        let height: Int
+        do {
+            height = try await index.indexedHeight()
+        } catch {
+            log.warning("[chain-data] \(method, privacy: .public) chain=\(chainID) Blockscout unavailable: \(Self.safeErrorMessage(error), privacy: .public)")
+            return nil
+        }
+        let indexedTo = min(range.toBlock, height - BlockscoutTransferIndex.reorgMargin)
+        guard indexedTo >= range.fromBlock else {
+            log.warning("[chain-data] \(method, privacy: .public) chain=\(chainID) Blockscout is indexed only to \(height)")
+            return nil
+        }
+        let headSpan = indexedTo - range.fromBlock + 1
+        let indexRead = Task { @MainActor in
+            try await index.transfers(from: sender, fromBlock: range.fromBlock, toBlock: indexedTo)
+        }
+        defer { indexRead.cancel() }
+
+        guard let (rpcHost, rpcLogs) = await capableLogs(
+            chainID: chainID, params: params, policy: policy, options: options, wait: wait,
+            range: range, upTo: indexedTo, span: headSpan
+        ) else {
+            log.warning("[chain-data] \(method, privacy: .public) chain=\(chainID) no endpoint served \(headSpan) blocks to check against Blockscout")
+            return nil
+        }
+        let indexed: [BlockscoutTransferIndex.TransferKey]
+        do {
+            indexed = try await indexRead.value
+        } catch {
+            log.warning("[chain-data] \(method, privacy: .public) chain=\(chainID) Blockscout unavailable: \(Self.safeErrorMessage(error), privacy: .public)")
+            return nil
+        }
+        let keys = rpcLogs.map { BlockscoutTransferIndex.key(rpcLog: $0, sender: sender) }
+        let rpcKeys = keys.compactMap { $0 }
+        guard rpcKeys.count == keys.count,
+              rpcKeys.allSatisfy({ $0.block >= range.fromBlock && $0.block <= indexedTo }),
+              rpcKeys.map(\.description).sorted() == indexed.map(\.description).sorted() else {
+            log.warning(
+                "[chain-data] \(method, privacy: .public) chain=\(chainID) \(rpcHost, privacy: .public) and Blockscout disagree: \(rpcLogs.count) logs vs \(indexed.count) transfers"
+            )
+            return nil
+        }
+
+        var logs = rpcLogs
+        let verifiedCount = rpcLogs.count
+        if indexedTo < range.toBlock {
+            var filter = (params.first as? [String: Any]) ?? [:]
+            filter["fromBlock"] = LogScanRange.hex(indexedTo + 1)
+            let tailParams: [Any] = [filter]
+            guard let tailRange = LogScanRange(method: method, params: tailParams, capOf: range.capOf, rank: range.rank) else { return nil }
+            let tail = await requestLogScanQuorum(
+                chainID: chainID, method: method, params: tailParams, policy: policy, options: options,
+                wait: wait, range: tailRange, verifyWithIndex: false
+            )
+            guard case .agreed(.value(let value), _) = tail, let tailLogs = value as? [Any] else {
+                log.warning("[chain-data] \(method, privacy: .public) chain=\(chainID) no quorum for the \(tailRange.span) blocks above Blockscout's index")
+                return nil
+            }
+            logs += tailLogs
+        }
+        log.info(
+            "[chain-data] \(method, privacy: .public) chain=\(chainID) \(range.span) blocks verified by \(rpcHost, privacy: .public) + Blockscout (\(verifiedCount) logs, indexed to \(indexedTo)) \(Self.millis(started.duration(to: .now)))ms"
+        )
+        let trust = ENSTrust(
+            level: .verified,
+            method: .quorum,
+            block: ENSBlock(number: 0, hash: ""),
+            agreed: [rpcHost, BlockscoutTransferIndex.label], dissented: [],
+            queried: [rpcHost, BlockscoutTransferIndex.label],
+            k: 2, m: 2
+        )
+        return .agreed(.value(logs), trust: trust)
+    }
+
+    /// The logs for `[from, upTo]` from the first endpoint whose cap
+    /// covers it. A quorum round's lone full answer is not reused: the
+    /// capped members refuse first and end the round before it arrives.
+    private func capableLogs(
+        chainID: Int,
+        params: [Any],
+        policy: ChainAccessPolicy,
+        options: Options,
+        wait: TimeInterval,
+        range: LogScanRange,
+        upTo: Int,
+        span: Int
+    ) async -> (host: String, logs: [Any])? {
+        var filter = (params.first as? [String: Any]) ?? [:]
+        filter["toBlock"] = LogScanRange.hex(upTo)
+        guard let body = try? Self.encodeRequest(method: "eth_getLogs", params: [filter]) else { return nil }
+        let timeout = quorumBudget(policy: policy, options: options, wait: wait) ?? policy.sourceTimeout
+        for url in registry.rpcURLs(forChainID: chainID) where logRanges.servableSpan(chainID: chainID, url: url) >= span {
+            switch await callEndpoint(url, body: body, timeout: timeout, chainID: chainID, rejectNull: true) {
+            case .answer(.value(let value)):
+                logRanges.noteAnswer(chainID: chainID, url: url, span: span)
+                if let logs = value as? [Any] { return (url.hostOrAbsolute, logs) }
+            case .error(let error, _):
+                if error is CancellationError { return nil }
+                logRanges.noteFailure(chainID: chainID, url: url, range: range, error: error)
+            case .answer(.deterministic):
+                continue
+            }
+        }
+        return nil
     }
 
     static func directTrust(endpoint: URL, userConfigured: Bool) -> ENSTrust {

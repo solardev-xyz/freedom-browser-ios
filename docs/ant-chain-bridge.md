@@ -6,7 +6,26 @@ Port of desktop's `docs/ant-chain-bridge.md` / `ant-chain-bridge.js` (PR #419). 
 
 `AntChainBridge` (`Swarm/Node/AntChainBridge.swift`) receives a complete JSON-RPC request body from ant and returns a response body. Chain is fixed to Gnosis (100). The eight methods ant's chain module issues are allowed: the seven reads follow Gnosis's configured read policy (default Myotis → Colibri → RPC quorum → direct), `eth_sendRawTransaction` follows the broadcast policy and is accepted only for a transaction that is signed and carries chain id 100 (`SignedTransactionInspector`, legacy EIP-155 and typed 0x01–0x03). Anything else is answered with `-32601` / `-32600` / `-32602`.
 
-Ant's reads are background work: `ChainDataRouter.Options.background` uses Myotis only when its single in-flight slot is idle and never queues for it, so the node's polling cannot push an interactive wallet or app read into queue-full fallback. `eth_getLogs` scans get a 60 s per-endpoint budget on the direct tier and the quorum legs (`Options.directTimeout`).
+Ant's reads are background work: `ChainDataRouter.Options.background` uses Myotis only when its single in-flight slot is idle and never queues for it, so the node's polling cannot push an interactive wallet or app read into queue-full fallback. Its log scans are routed differently (below).
+
+## Log scans: the RPC quorum only, within each endpoint's range cap
+
+Desktop freedom-browser #493 / #509, for #484. Ant finds its batches and chequebook by scanning the node wallet's xBZZ `Transfer(from)` logs and re-reads everything it finds with verified reads. A log it never receives is the one failure it cannot detect: a missing chequebook transfer would make it deploy a second chequebook. So `AntChainBridge.logScanOptions` sends `eth_getLogs` to the RPC quorum only (`Options.sources`), with a 30 s budget (`Options.quorumTimeout`); there is no direct fallback. Myotis serves no logs, and Colibri proves the logs it returns, not that none are missing.
+
+Public Gnosis RPCs cap the span of one `eth_getLogs` differently (measured 2026-10-04: `rpc.gnosischain.com` serves the whole history, `gnosis-rpc.publicnode.com` 50,000 blocks, `gnosis.drpc.org` 10,000). `LogRangeMemory` learns each endpoint's cap from the number its refusal names (`AntLogScanErrors.rangeCap`; a range refusal without a number bounds the span asked), in memory, for 30 minutes. An endpoint that hung, refused the connection or throttled sits out for 30 s. A scan asks the first k endpoints whose cap covers its span; after a failed round, another quorum that can serve the same span is asked straight away.
+
+When no quorum can serve the span, the wallet scan's shape (xBZZ, `topics` exactly `[Transfer, from]`, numeric ends) is checked against Blockscout (`BlockscoutTransferIndex`, `https://gnosisscan.io/api/v2`, redirects followed):
+
+- Blockscout is used only while `/main-page/indexing-status` reports `finished_indexing_blocks: true`. During a back-fill its newest block is current, but old transfers can be missing.
+- H = min(`toBlock`, Blockscout's newest block − 64).
+- The first endpoint whose cap covers `[fromBlock, H]` is asked for that span, and Blockscout's `token-transfers?filter=from&token=xBZZ` list is read alongside it: at most 100 pages, 15 s per page, 60 s in total.
+- Both sides must list the same transfers: block, transaction, log index, recipient and amount, with duplicates counted. Every RPC log must be an xBZZ `Transfer` from the wallet, and every Blockscout item a transfer from the wallet.
+- The tail `(H, toBlock]` goes through the quorum.
+- Ant gets the RPC's own log objects. The log line is `… blocks verified by <rpc host> + Blockscout (<n> logs, indexed to <H>)`.
+
+If they disagree, or Blockscout is down, slow or switched off (Settings → Chains → Gnosis → Indexer), Ant gets `-32005 query exceeds max block range N` at once, without any endpoint being asked. N is the widest span a quorum can still verify, and Ant halves its window towards it. Only when no quorum can serve any span does Ant get an error it does not halve on. Blockscout sees the node wallet's address together with the device's IP.
+
+`rpc.gnosis.gateway.fm` is not in the Gnosis seed. It is the same Tenderly account as `rpc.gnosischain.com`, so a quorum of the two would be one backend agreeing with itself.
 
 Exhausted sources come back as a JSON-RPC error, never as a fabricated empty result and never as `-32000`: on the FFI transport that code means "coverage gap, replay against the pinned URL", which for a broadcast would be a second send. A genuine `-32000` from an endpoint (`nonce too low`, `already known`, …) is re-coded to `-32002` with its wording kept. Reverts keep code 3 and their `data`; insufficient funds is `-32003`; an uncertain Myotis broadcast is reported as such and never re-broadcast.
 
@@ -35,6 +54,8 @@ Errors forwarded to ant are sanitized (URLs replaced by `[url]`, control charact
 
 ## Validation
 
-`AntChainBridgeTests`: routed read with id echo, allowlist and envelope validation, signed-Gnosis-only broadcast (typed and legacy), `-32000` re-coding, revert data pass-through, transport failure as error, the four ranks with the wording rules, the wide log-scan budget, background admission never queueing behind Myotis, and the RLP inspector.
+`AntChainBridgeTests`: routed read with id echo, allowlist and envelope validation, signed-Gnosis-only broadcast (typed and legacy), `-32000` re-coding, revert data pass-through, transport failure as error, the four ranks with the wording rules, quorum-only log scans with the wide budget, range-cap parsing, background admission never queueing behind Myotis, and the RLP inspector.
+
+`LogScanRoutingTests`: learned caps and the refusal Ant narrows to, no request once caps are known, cap expiry and cooldown, and the Blockscout check. It covers a match in one request, paging, disagreement on count, amount or sender, Blockscout down or switched off, the tail above its height going through the quorum, and eligibility.
 
 Live check on the simulator: `log stream --predicate 'category == "AntChain" OR category == "ChainData"'` while the node starts — `eth_getLogs` / `eth_blockNumber` lines show `via myotis` / `colibri` / `quorum` / `direct`, and the node log shows "chain transport: routed through the app's chain-data router" followed by the batch discovery line.

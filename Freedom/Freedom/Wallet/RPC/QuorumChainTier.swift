@@ -37,6 +37,9 @@ struct DirectFallback {
 enum QuorumOutcome {
     case agreed(QuorumLegAnswer, trust: ENSTrust)
     case failed(reason: String, kind: ChainSourceFailureKind?, fallback: DirectFallback?, attempted: [URL], errors: [Error])
+    /// A range-capped log scan no quorum can serve: the range limit the
+    /// caller narrows to, which ends the walk.
+    case refused(WalletRPC.Error)
 }
 
 /// One leg's result as the router's transport reports it.
@@ -67,6 +70,9 @@ final class QuorumRun {
     private var errors: [Error] = []
     private var errorKinds: [ChainSourceFailureKind] = []
     private var pending: Int
+    /// Members that answered or failed, for `onCut`.
+    private var settled: Set<URL> = []
+    private var onCut: (([URL]) -> Void)?
     private var finished = false
     private var verificationImpossible = false
     private let first = FirstSettled<QuorumOutcome>()
@@ -81,11 +87,14 @@ final class QuorumRun {
     }
 
     /// `timeout` bounds verification; `leg` runs one member and must
-    /// bound itself with the endpoint timeout.
+    /// bound itself with the endpoint timeout. `onCut` hears which
+    /// members had not settled when the timeout fired.
     func run(
         timeout: TimeInterval,
-        leg: @escaping @MainActor (URL) async -> QuorumLegResult
+        leg: @escaping @MainActor (URL) async -> QuorumLegResult,
+        onCut: (([URL]) -> Void)? = nil
     ) async -> QuorumOutcome {
+        self.onCut = onCut
         for (index, url) in urls.enumerated() {
             legs.append(Task { @MainActor [weak self] in
                 let result = await leg(url)
@@ -109,6 +118,7 @@ final class QuorumRun {
     private func legFinished(index: Int, url: URL, result: QuorumLegResult) {
         guard !finished else { return }
         pending -= 1
+        settled.insert(url)
         switch result {
         case .answer(let answer):
             fulfilled.append(url)
@@ -133,6 +143,7 @@ final class QuorumRun {
 
     private func timerFired() {
         guard !finished else { return }
+        onCut?(urls.filter { !settled.contains($0) })
         verificationImpossible = true
         if !allowDirectFallback || !candidates.isEmpty || pending == 0 { fail() }
     }

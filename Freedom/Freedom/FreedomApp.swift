@@ -161,6 +161,11 @@ struct FreedomApp: App {
             // chain-data router as the wallet (desktop PR #419 parity)
             // instead of the pinned RPC in `BeeBootConfig`.
             swarmInstance.chainTransport = AntChainBridge(router: registry.walletRPC.router).transport
+            // A wallet scan no RPC quorum can serve is verified against
+            // Blockscout's transfer index (desktop #484).
+            let transferIndex = BlockscoutTransferIndex()
+            transferIndex.isEnabled = { settings.gnosisTransferIndexEnabled }
+            registry.walletRPC.router.transferIndex = transferIndex
             self._swarm = State(wrappedValue: swarmInstance)
             let ipfsInstance = IPFSNode()
             self._ipfs = State(wrappedValue: ipfsInstance)

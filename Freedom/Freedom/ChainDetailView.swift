@@ -140,6 +140,24 @@ struct ChainDetailView: View {
                 Text("Free public endpoints — the always-on fallback. Distinct URLs don't guarantee distinct operators; several may proxy the same backend.")
             }
 
+            if chain.id == Chain.gnosisID {
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { settings.gnosisTransferIndexEnabled },
+                        set: { settings.gnosisTransferIndexEnabled = $0 }
+                    )) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Blockscout")
+                            Text(BlockscoutTransferIndex.label).font(.caption).monospaced().foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("Indexer")
+                } footer: {
+                    Text("When the Swarm node looks for storage you already own, only one public RPC backend can answer for the whole history at once. Blockscout's transfer list is the second, independent source that checks that answer. Blockscout sees the node wallet's address. Without it, the first lookup is split into thousands of small requests and takes much longer.")
+                }
+            }
+
             if !chain.isBuiltIn {
                 Section {
                     Button("Remove this chain", role: .destructive) { confirmRemove = true }
