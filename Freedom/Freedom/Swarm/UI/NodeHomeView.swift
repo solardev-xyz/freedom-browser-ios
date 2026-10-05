@@ -27,7 +27,11 @@ struct NodeHomeView: View {
                     // light+ready+no-stamps gap. The setup is only "done"
                     // once the user has a usable stamp (step 4 of the
                     // checklist).
-                    if !stampService.hasUsableStamps {
+                    if nodeUp, !stampService.hasLoaded {
+                        // Not loaded yet is not "no storage": never offer
+                        // to buy what the wallet may already own.
+                        loadingStorageRow
+                    } else if !stampService.hasUsableStamps {
                         publishSetupCTA
                     }
                     statusCard
@@ -135,11 +139,35 @@ struct NodeHomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
+    /// The node is starting or running: data that isn't there yet is
+    /// loading, not missing.
+    private var nodeUp: Bool {
+        swarm.status == .starting || swarm.status == .running
+    }
+
+    private var balancesLoading: Bool { nodeUp && !beeWallet.hasLoaded }
+
+    /// Stamps, balances and the wallet scan aren't all in yet.
+    private var accountLoading: Bool {
+        nodeUp && (!stampService.hasLoaded || !beeWallet.hasLoaded || swarm.walletScan?.isLooking == true)
+    }
+
+    private var loadingStorageRow: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+            Text("Loading your storage…").font(.callout)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
     private var nodeWalletCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Node wallet").font(.caption).foregroundStyle(.secondary)
-            balanceRow(label: "xDAI", value: beeWallet.nodeXdai, decimals: 18)
-            balanceRow(label: "xBZZ", value: beeWallet.nodeXbzz, decimals: 16)
+            balanceRow(label: "xDAI", value: beeWallet.nodeXdai, decimals: 18, loading: balancesLoading)
+            balanceRow(label: "xBZZ", value: beeWallet.nodeXbzz, decimals: 16, loading: balancesLoading)
             if !displayAddress.isEmpty {
                 CopyableAddressRow(address: displayAddress)
             }
@@ -153,7 +181,7 @@ struct NodeHomeView: View {
     private var chequebookCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Chequebook").font(.caption).foregroundStyle(.secondary)
-            balanceRow(label: "xBZZ", value: beeWallet.chequebookXbzz, decimals: 16)
+            balanceRow(label: "xBZZ", value: beeWallet.chequebookXbzz, decimals: 16, loading: balancesLoading)
             if let addr = beeReadiness.chequebookAddress {
                 CopyableAddressRow(address: addr)
             }
@@ -302,7 +330,7 @@ struct NodeHomeView: View {
 
     private var nodeStateValue: String {
         switch beeReadiness.state {
-        case .ready: return "ready"
+        case .ready: return accountLoading ? "Loading your account…" : "ready"
         case .startingUp: return "starting up"
         case .syncingPostage(let percent, _, _): return "syncing \(percent)%"
         case .initializing: return "starting"
@@ -318,9 +346,9 @@ struct NodeHomeView: View {
     }
 
     /// "Token name → numeric value" row used by both wallet + chequebook
-    /// cards. Renders a placeholder while bee hasn't reported a value
-    /// yet so the row's vertical rhythm doesn't jump on first poll.
-    private func balanceRow(label: String, value: BigUInt?, decimals: Int) -> some View {
+    /// cards. A spinner while the node hasn't reported a value yet, "—"
+    /// when it has and there is none.
+    private func balanceRow(label: String, value: BigUInt?, decimals: Int, loading: Bool) -> some View {
         HStack {
             Text(label).font(.callout).foregroundStyle(.secondary)
             Spacer()
@@ -330,6 +358,8 @@ struct NodeHomeView: View {
                 ))
                 .font(.callout)
                 .monospacedDigit()
+            } else if loading {
+                ProgressView().controlSize(.small)
             } else {
                 Text("—").font(.callout).foregroundStyle(.tertiary)
             }
