@@ -24,6 +24,20 @@ struct SwarmSettingsView: View {
             }
 
             Section {
+                Toggle("Pay peers for faster Swarm", isOn: Binding(
+                    get: { settings.swarmSwapEnabled },
+                    set: { newValue in
+                        settings.swarmSwapEnabled = newValue
+                        swarm.setSwapEnabled(newValue)
+                    }
+                ))
+            } header: {
+                Text("Bandwidth")
+            } footer: {
+                Text("Your node pays other nodes small amounts of xBZZ from its chequebook for uploads and for downloads faster than the free tier — up to about 0.75 xBZZ per GB. Off keeps browsing on the free tier (around 5–6 Mbit/s), and large uploads can stall.")
+            }
+
+            Section {
                 NavigationLink("App permissions") { SwarmManifestSettingsView() }
             } header: {
                 Text("Apps")

@@ -161,6 +161,12 @@ struct FreedomApp: App {
             // chain-data router as the wallet (desktop PR #419 parity)
             // instead of the pinned RPC in `BeeBootConfig`.
             swarmInstance.chainTransport = AntChainBridge(router: registry.walletRPC.router).transport
+            // A first wallet scan the transport can't serve in a few windows
+            // is read once from this explicitly unverified source and
+            // re-confirmed in the background (ant #143); that one request
+            // bypasses the router.
+            swarmInstance.unverifiedLogsRPC = SwarmDefaults.pinnedGnosisRPC
+            swarmInstance.setSwapEnabled(settings.swarmSwapEnabled)
             // A wallet scan no RPC quorum can serve is verified against
             // Blockscout's transfer index (desktop #484).
             let transferIndex = BlockscoutTransferIndex()
@@ -219,6 +225,10 @@ struct FreedomApp: App {
                     return SwarmRouter.ErrorPayload.Reason.nodeStopped
                 }
                 if readiness.state != .ready {
+                    return SwarmRouter.ErrorPayload.Reason.nodeNotReady
+                }
+                // Still looking for storage the wallet owns (desktop #534).
+                if WalletScanCopy.looking(swarmInstance.walletScan, hasUsableStorage: stamps.hasUsableStamps) != nil {
                     return SwarmRouter.ErrorPayload.Reason.nodeNotReady
                 }
                 if !stamps.hasUsableStamps {

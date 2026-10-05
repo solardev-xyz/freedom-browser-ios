@@ -1,4 +1,5 @@
 import BigInt
+import SwarmKit
 import SwiftUI
 
 /// Stamps list — the entry point from the node sheet for users who've
@@ -8,14 +9,29 @@ import SwiftUI
 @MainActor
 struct StampsView: View {
     @Environment(StampService.self) private var stampService
+    @Environment(SwarmNode.self) private var swarm
+
+    /// The node is still looking for batches it already owns, and none is
+    /// usable yet.
+    private var lookingScan: WalletScan? {
+        WalletScanCopy.looking(swarm.walletScan, hasUsableStorage: stampService.hasUsableStamps)
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                if stampService.stamps.isEmpty {
-                    emptyState
-                } else {
+                if let scan = lookingScan {
+                    // Replaces "No stamps yet"; batches found so far still list.
+                    WalletScanNotice(scan: scan)
+                } else if swarm.walletScan?.state == "confirming", !stampService.stamps.isEmpty {
+                    Text(WalletScanCopy.confirming)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if !stampService.stamps.isEmpty {
                     list
+                } else if lookingScan == nil {
+                    emptyState
                 }
             }
             .padding(20)

@@ -94,7 +94,10 @@ struct NodeHomeView: View {
     private var publishSetupCTA: some View {
         NavRowCard(
             icon: "sparkles", title: "Setup Swarm publishing",
-            subtitle: "Buy storage to start publishing",
+            // While the node still looks for storage the wallet owns,
+            // setup shows that instead of plans (desktop #534).
+            subtitle: WalletScanCopy.looking(swarm.walletScan, hasUsableStorage: stampService.hasUsableStamps)
+                .map(WalletScanCopy.hint) ?? "Buy storage to start publishing",
             background: Color.accentColor.opacity(0.12)
         ) {
             PublishSetupView()

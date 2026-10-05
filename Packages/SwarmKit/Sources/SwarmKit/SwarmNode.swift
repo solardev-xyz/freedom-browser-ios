@@ -79,6 +79,41 @@ public struct SwarmConfig: Sendable {
     }
 }
 
+/// The node's rediscovery of the wallet's postage batches and chequebook
+/// (`/health.walletScan`, ant v0.5.59 #142). Absent while no background
+/// rediscovery runs.
+public struct WalletScan: Equatable, Sendable, Decodable {
+    /// `pending`, `scanning`, `retrying`, `confirming` or `done`; an
+    /// unknown state counts as finished.
+    public let state: String
+    public let from: Int?
+    public let scannedThrough: Int?
+    public let head: Int?
+    /// Why the last attempt failed (URLs replaced by `<url>`). For the
+    /// log, not for display.
+    public let error: String?
+
+    public init(state: String, from: Int? = nil, scannedThrough: Int? = nil, head: Int? = nil, error: String? = nil) {
+        self.state = state
+        self.from = from
+        self.scannedThrough = scannedThrough
+        self.head = head
+        self.error = error
+    }
+
+    /// Still looking: the batches it will find are not registered yet, so
+    /// the app must not offer to buy storage. `confirming` is not looking
+    /// — its batches are registered, only completeness is being confirmed.
+    public var isLooking: Bool { ["pending", "scanning", "retrying"].contains(state) }
+    public var isRetrying: Bool { state == "retrying" }
+
+    /// 0…1 while scanning with known bounds.
+    public var progress: Double? {
+        guard let from, let head, let scannedThrough, head > from else { return nil }
+        return min(1, max(0, Double(scannedThrough - from) / Double(head - from)))
+    }
+}
+
 @MainActor
 @Observable
 public final class SwarmNode {
@@ -86,6 +121,9 @@ public final class SwarmNode {
     public private(set) var peerCount: Int = 0
     public private(set) var walletAddress: String = ""
     public private(set) var log: [String] = []
+    /// From `/health`, refreshed with the peer count; nil when no
+    /// rediscovery runs.
+    public private(set) var walletScan: WalletScan?
 
     /// Loopback authority the in-process bee gateway binds. Fixed to
     /// bee's default port so the app's `BeeAPIClient` / `BzzSchemeHandler`
@@ -122,6 +160,20 @@ public final class SwarmNode {
     /// in every mode: storage can be bought while the node still browses
     /// ultra-light.
     public var storageRPC: String = "https://rpc.gnosischain.com"
+    /// Explicitly unverified source for a wallet scan span the chain
+    /// transport can't serve in a few windows (a first scan, a long time
+    /// offline): ant reads it once from here, reports
+    /// `walletScan.state = confirming` and re-confirms it in the
+    /// background through the transport (`ant_set_unverified_logs_rpc`,
+    /// ant v0.5.59 #143). That one `eth_getLogs` goes to this URL
+    /// directly, not through the transport. Set before `start(_:)`; nil
+    /// leaves it unset.
+    public var unverifiedLogsRPC: String?
+    /// Bee's swap-enable: pay peers with SWAP cheques from the chequebook
+    /// for downloads and uploads past the free tier (ant v0.5.57). ant
+    /// defaults it on and does not persist it, so it is applied after
+    /// every `ant_init`; `setSwapEnabled` changes it on a running node.
+    public private(set) var swapEnabled: Bool = true
 
     public enum StorageError: Swift.Error, LocalizedError {
         case notRunning
@@ -221,6 +273,8 @@ public final class SwarmNode {
         // endpoints stay bee zero-stubs (ultra-light browsing).
         let gnosisRpc = config.rpcEndpoint
         let transport = chainTransport
+        let unverifiedLogs = unverifiedLogsRPC
+        let swap = swapEnabled
 
         Task.detached(priority: .userInitiated) { [weak self] in
             // Boot the node.
@@ -247,6 +301,19 @@ public final class SwarmNode {
                     box.release()
                     await MainActor.run { self?.append("chain transport not installed (rc=\(rc)); using the pinned RPC") }
                 }
+            }
+
+            // Per-init switches ant does not persist.
+            let swapRC = ant_set_swap_enabled(handle, swap, nil)
+            var logsLine: String?
+            if let unverifiedLogs {
+                var logsErr: UnsafeMutablePointer<CChar>?
+                let rc = unverifiedLogs.withCString { ant_set_unverified_logs_rpc(handle, $0, &logsErr) }
+                logsLine = rc == 0 ? "unverified wallet-scan source: \(unverifiedLogs)" : "unverified wallet-scan source not set (rc=\(rc), \(Self.takeError(logsErr)))"
+            }
+            await MainActor.run {
+                self?.append("swap: \(swap ? "on" : "off")\(swapRC == 0 ? "" : " (not applied, rc=\(swapRC))")")
+                if let logsLine { self?.append(logsLine) }
             }
 
             // Serve the bee-compatible HTTP gateway in-process. Pass the
@@ -339,6 +406,7 @@ public final class SwarmNode {
                 guard let self else { return }
                 self.status = .stopped
                 self.peerCount = 0
+                self.walletScan = nil
                 self.append("stopped")
             }
         }
@@ -487,9 +555,39 @@ public final class SwarmNode {
                 guard let self, let handle = self.node else { break }
                 let count = ant_peer_count(handle)
                 self.peerCount = count < 0 ? 0 : Int(count)
+                // Outer nil: /health unreadable, keep the last value.
+                if let scan = await Self.readWalletScan(), scan != self.walletScan {
+                    self.walletScan = scan
+                }
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
         }
+    }
+
+    /// Switch SWAP payments on the running node, and for every later start.
+    public func setSwapEnabled(_ enabled: Bool) {
+        swapEnabled = enabled
+        guard let handle = node else { return }
+        Task.detached { [weak self] in
+            var err: UnsafeMutablePointer<CChar>?
+            let rc = ant_set_swap_enabled(handle, enabled, &err)
+            let line = rc == 0 ? "swap: \(enabled ? "on" : "off")" : "swap switch failed (rc=\(rc), \(Self.takeError(err)))"
+            await MainActor.run { self?.append(line) }
+        }
+    }
+
+    /// `/health.walletScan`: `.some(nil)` when the field is absent, nil
+    /// when `/health` could not be read (keep the last value).
+    private nonisolated static func readWalletScan() async -> WalletScan?? {
+        guard let url = URL(string: "http://\(gatewayAuthority)/health") else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        struct Health: Decodable { let walletScan: WalletScan? }
+        guard let health = try? JSONDecoder().decode(Health.self, from: data) else { return nil }
+        return .some(health.walletScan)
     }
 
     /// Read the node's Ethereum address from `ant_account_info`'s JSON

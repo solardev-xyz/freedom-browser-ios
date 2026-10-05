@@ -91,6 +91,16 @@ final class AntChainBridgeTests: XCTestCase {
         try await assertCode(request("eth_blockNumber", id: 1.5), -32600)
     }
 
+    /// ant v0.5.58+ asks for the chain id before every wallet scan; a
+    /// refusal would fail the scan, so the bridge answers it without
+    /// routing anything.
+    func testAnswersTheChainIDItself() async throws {
+        let response = try await serve(request("eth_chainId", [], id: 3))
+        XCTAssertEqual(response["result"] as? String, "0x64")
+        XCTAssertEqual(response["id"] as? Int, 3)
+        XCTAssertTrue(transport.hits.isEmpty)
+    }
+
     func testRejectsWhatAntNeverSends() async throws {
         try await assertCode(request("eth_getBlockByNumber", ["latest", false]), -32601)
         try await assertCode(request("web3_clientVersion"), -32601)

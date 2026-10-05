@@ -1,4 +1,5 @@
 import CoreImage.CIFilterBuiltins
+import SwarmKit
 import SwiftUI
 import UIKit
 
@@ -11,6 +12,8 @@ import UIKit
 struct StorageFundingView: View {
     @Environment(StorageFundingController.self) private var funding
     @Environment(Vault.self) private var vault
+    @Environment(SwarmNode.self) private var swarm
+    @Environment(StampService.self) private var stampService
     @Environment(\.dismiss) private var dismiss
 
     /// Start straight in this purchase instead of the plan picker
@@ -52,7 +55,17 @@ struct StorageFundingView: View {
     @ViewBuilder private var content: some View {
         switch funding.step {
         case .plan:
-            if initialPurchase == nil { planPicker } else { startingCard }
+            if initialPurchase == nil {
+                // No plans while the node may still find storage the
+                // wallet already owns (desktop #534).
+                if let scan = WalletScanCopy.looking(swarm.walletScan, hasUsableStorage: stampService.hasUsableStamps) {
+                    WalletScanNotice(scan: scan)
+                } else {
+                    planPicker
+                }
+            } else {
+                startingCard
+            }
         case .payment:
             paymentCard
         case .activating:
