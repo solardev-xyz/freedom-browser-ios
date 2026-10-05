@@ -76,6 +76,11 @@ final class StampService {
     /// True iff at least one of the current batches reports `usable`.
     /// Drives the publish-setup banner gate and step-4 status.
     private(set) var hasUsableStamps: Bool = false
+    /// The running node's `/stamps` was read at least once. Until then an
+    /// empty list means "not loaded yet", not "no storage" — the UI says
+    /// it is loading instead of offering to buy storage. Reset whenever
+    /// the node is not running.
+    private(set) var hasLoaded = false
     private(set) var extendState: ExtendState = .idle
     /// Set after a node-side plan purchase: poll fast until the gateway
     /// lists a usable stamp (or the window passes).
@@ -112,17 +117,21 @@ final class StampService {
     /// Idempotent — re-entry cancels the prior task. `activeInterval` is
     /// used while a fresh plan is expected (waiting for the batch to
     /// show up `usable`); `idleInterval` otherwise. Matches desktop's
-    /// `USABLE_POLL_MS = 5000`.
+    /// `USABLE_POLL_MS = 5000`. Until the first read succeeds the poll
+    /// retries every `loadingInterval`, so the list appears as soon as
+    /// the node answers rather than on the next idle tick.
     func start(
         activeIntervalSeconds: TimeInterval = 5,
-        idleIntervalSeconds: TimeInterval = 30
+        idleIntervalSeconds: TimeInterval = 30,
+        loadingIntervalSeconds: TimeInterval = 2
     ) {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshStamps()
+                let loading = await !(self?.hasLoaded ?? true)
                 let active = await self?.shouldPollFast() ?? false
-                let interval = active ? activeIntervalSeconds : idleIntervalSeconds
+                let interval = loading ? loadingIntervalSeconds : (active ? activeIntervalSeconds : idleIntervalSeconds)
                 try? await Task.sleep(nanoseconds: UInt64(max(1, interval) * 1_000_000_000))
             }
         }
@@ -145,7 +154,9 @@ final class StampService {
     /// during that window we leave `stamps` empty and try again next
     /// tick.
     func refreshStamps() async {
+        if swarm.status != .running, hasLoaded { hasLoaded = false }
         guard let batches = try? await fetchStamps() else { return }
+        if !hasLoaded { hasLoaded = true }
         if batches != stamps { stamps = batches }
         let usable = batches.contains(where: { $0.usable })
         if usable != hasUsableStamps { hasUsableStamps = usable }

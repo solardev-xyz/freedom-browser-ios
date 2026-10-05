@@ -30,7 +30,11 @@ struct StampsView: View {
                 }
                 if !stampService.stamps.isEmpty {
                     list
-                } else if lookingScan == nil {
+                } else if lookingScan != nil {
+                    // The notice above already says what's happening.
+                } else if !stampService.hasLoaded {
+                    loadingState
+                } else {
                     emptyState
                 }
             }
@@ -50,6 +54,17 @@ struct StampsView: View {
             }
         }
         .task { await stampService.refreshStamps() }
+    }
+
+    private var loadingState: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+            Text("Loading your storage…").font(.callout)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private var emptyState: some View {

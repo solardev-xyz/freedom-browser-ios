@@ -227,6 +227,10 @@ struct FreedomApp: App {
                 if readiness.state != .ready {
                     return SwarmRouter.ErrorPayload.Reason.nodeNotReady
                 }
+                // Storage not read yet: not "no stamps".
+                if !stamps.hasLoaded {
+                    return SwarmRouter.ErrorPayload.Reason.nodeNotReady
+                }
                 // Still looking for storage the wallet owns (desktop #534).
                 if WalletScanCopy.looking(swarmInstance.walletScan, hasUsableStorage: stamps.hasUsableStamps) != nil {
                     return SwarmRouter.ErrorPayload.Reason.nodeNotReady
