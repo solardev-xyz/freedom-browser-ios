@@ -279,8 +279,14 @@ final class StampService {
     }
 
     /// Map a `/stamps` array entry to our model. Returns nil if any
-    /// required field is missing — caller drops malformed rows.
+    /// required field is missing — caller drops malformed rows — and for
+    /// a batch the chain says does not exist (`exists: false` /
+    /// `batchTTL: -1`, bee's batchstore-miss shape): a never-created or
+    /// evicted batch whose files the node still reloads at start until
+    /// its own check unregisters it. It is not the user's storage.
     static func parseBatch(_ raw: [String: Any]) -> PostageBatch? {
+        if raw["exists"] as? Bool == false { return nil }
+        if let ttl = BeeAPIClient.intFromAnyJSON(raw["batchTTL"]), ttl < 0 { return nil }
         guard let id = raw["batchID"] as? String,
               let depth = BeeAPIClient.intFromAnyJSON(raw["depth"]),
               let bucketDepth = BeeAPIClient.intFromAnyJSON(raw["bucketDepth"]),
