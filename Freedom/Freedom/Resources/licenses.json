@@ -17,7 +17,7 @@
     "cfc7749b96f63bd3"
    ],
    "url": "https://github.com/freedom-hq/ant",
-   "version": "0.5.59"
+   "version": "0.5.60"
   },
   {
    "copyright": "Copyright (c) 2026 Freedom IPFS contributors",
@@ -61,7 +61,7 @@
    "version": "0.1.12"
   }
  ],
- "ffiTag": "v0.12.13",
+ "ffiTag": "v0.12.14",
  "filterLists": [
   {
    "copyright": "Copyright (c) The EasyList authors",
@@ -143,7 +143,7 @@
    "version": "6cd82aff889e"
   }
  ],
- "generated": "2026-10-05",
+ "generated": "2026-10-07",
  "rustCrates": [
   {
    "id": "rust:addr2line@0.25.1",
@@ -328,67 +328,67 @@
    "version": "1.1.5"
   },
   {
-   "id": "rust:ant-chain@0.5.59",
+   "id": "rust:ant-chain@0.5.60",
    "license": "MIT OR Apache-2.0",
    "name": "ant-chain",
    "url": null,
-   "version": "0.5.59"
+   "version": "0.5.60"
   },
   {
-   "id": "rust:ant-control@0.5.59",
+   "id": "rust:ant-control@0.5.60",
    "license": "MIT OR Apache-2.0",
    "name": "ant-control",
    "url": null,
-   "version": "0.5.59"
+   "version": "0.5.60"
   },
   {
-   "id": "rust:ant-crypto@0.5.59",
+   "id": "rust:ant-crypto@0.5.60",
    "license": "MIT OR Apache-2.0",
    "name": "ant-crypto",
    "url": null,
-   "version": "0.5.59"
+   "version": "0.5.60"
   },
   {
-   "id": "rust:ant-ffi@0.5.59",
+   "id": "rust:ant-ffi@0.5.60",
    "license": "MIT OR Apache-2.0",
    "name": "ant-ffi",
    "url": null,
-   "version": "0.5.59"
+   "version": "0.5.60"
   },
   {
-   "id": "rust:ant-gateway@0.5.59",
+   "id": "rust:ant-gateway@0.5.60",
    "license": "MIT OR Apache-2.0",
    "name": "ant-gateway",
    "url": null,
-   "version": "0.5.59"
+   "version": "0.5.60"
   },
   {
-   "id": "rust:ant-node@0.5.59",
+   "id": "rust:ant-node@0.5.60",
    "license": "MIT OR Apache-2.0",
    "name": "ant-node",
    "url": null,
-   "version": "0.5.59"
+   "version": "0.5.60"
   },
   {
-   "id": "rust:ant-p2p@0.5.59",
+   "id": "rust:ant-p2p@0.5.60",
    "license": "MIT OR Apache-2.0",
    "name": "ant-p2p",
    "url": null,
-   "version": "0.5.59"
+   "version": "0.5.60"
   },
   {
-   "id": "rust:ant-postage@0.5.59",
+   "id": "rust:ant-postage@0.5.60",
    "license": "MIT OR Apache-2.0",
    "name": "ant-postage",
    "url": null,
-   "version": "0.5.59"
+   "version": "0.5.60"
   },
   {
-   "id": "rust:ant-retrieval@0.5.59",
+   "id": "rust:ant-retrieval@0.5.60",
    "license": "MIT OR Apache-2.0",
    "name": "ant-retrieval",
    "url": null,
-   "version": "0.5.59"
+   "version": "0.5.60"
   },
   {
    "id": "rust:anyhow@1.0.104",
