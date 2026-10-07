@@ -275,6 +275,14 @@ final class FirstSettled<T> {
 
     init() {}
 
+    /// Explicit and unoptimized only to dodge a Swift 6.2.4 optimizer
+    /// crash: in a Release build the EarlyPerfInliner segfaults
+    /// (`isCallerAndCalleeLayoutConstraintsCompatible`) while inlining
+    /// into this class's synthesized deinit (`FirstSettled<QuorumOutcome>`).
+    /// Debug builds skip that pass. Nothing here to optimize anyway.
+    @_optimize(none)
+    deinit {}
+
     func settle(_ result: Result<T, Error>) {
         guard !done else { return }
         done = true
