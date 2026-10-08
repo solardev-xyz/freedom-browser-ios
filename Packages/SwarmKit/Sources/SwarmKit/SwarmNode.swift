@@ -79,6 +79,50 @@ public struct SwarmConfig: Sendable {
     }
 }
 
+/// The disk chunk cache's figures (`ant_cache_status`, ant v0.5.60).
+/// Pinned chunks sit outside the cap and are never evicted or cleared.
+public struct SwarmCacheStatus: Equatable, Sendable, Decodable {
+    /// False when `chunks.sqlite` couldn't be opened (every figure is 0).
+    public let diskEnabled: Bool
+    /// Unpinned cached chunks, counted against `capacityBytes`.
+    public let usedBytes: UInt64
+    public let capacityBytes: UInt64
+    public let pinnedBytes: UInt64
+    /// `chunks.sqlite` plus its `-wal` / `-shm` on disk.
+    public let fileBytes: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case diskEnabled = "disk_enabled"
+        case usedBytes = "used_bytes"
+        case capacityBytes = "capacity_bytes"
+        case pinnedBytes = "pinned_bytes"
+        case fileBytes = "file_bytes"
+    }
+
+    public init(diskEnabled: Bool, usedBytes: UInt64, capacityBytes: UInt64, pinnedBytes: UInt64, fileBytes: UInt64) {
+        self.diskEnabled = diskEnabled
+        self.usedBytes = usedBytes
+        self.capacityBytes = capacityBytes
+        self.pinnedBytes = pinnedBytes
+        self.fileBytes = fileBytes
+    }
+}
+
+/// What `ant_cache_clear` removed.
+public struct SwarmCacheClearResult: Equatable, Sendable, Decodable {
+    public let freedBytes: UInt64
+    public let fileBytesBefore: UInt64
+    public let fileBytesAfter: UInt64
+    public let status: SwarmCacheStatus
+
+    enum CodingKeys: String, CodingKey {
+        case freedBytes = "freed_bytes"
+        case fileBytesBefore = "file_bytes_before"
+        case fileBytesAfter = "file_bytes_after"
+        case status
+    }
+}
+
 /// The node's rediscovery of the wallet's postage batches and chequebook
 /// (`/health.walletScan`, ant v0.5.59 #142). Absent while no background
 /// rediscovery runs.
@@ -174,6 +218,10 @@ public final class SwarmNode {
     /// defaults it on and does not persist it, so it is applied after
     /// every `ant_init`; `setSwapEnabled` changes it on a running node.
     public private(set) var swapEnabled: Bool = true
+    /// The disk chunk cache's cap, handed to `ant_init_with_config` at
+    /// every start (ant doesn't persist it). Nil leaves ant's default.
+    /// `setCacheCapacity` changes it on a running node too.
+    public var cacheCapacityBytes: UInt64?
 
     public enum StorageError: Swift.Error, LocalizedError {
         case notRunning
@@ -275,11 +323,14 @@ public final class SwarmNode {
         let transport = chainTransport
         let unverifiedLogs = unverifiedLogsRPC
         let swap = swapEnabled
+        let initConfig = Self.initConfigJSON(cacheCapacityBytes: cacheCapacityBytes)
 
         Task.detached(priority: .userInitiated) { [weak self] in
             // Boot the node.
             var initErr: UnsafeMutablePointer<CChar>?
-            let handle = dataDirPath.withCString { ant_init($0, &initErr) }
+            let handle = dataDirPath.withCString { dir in
+                initConfig.withCString { ant_init_with_config(dir, $0, &initErr) }
+            }
             guard let handle else {
                 let message = Self.takeError(initErr)
                 await MainActor.run { self?.failStart(message, generation: myGeneration) }
@@ -562,6 +613,78 @@ public final class SwarmNode {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
         }
+    }
+
+    /// `ant_init_with_config`'s JSON: "" means every default (exactly
+    /// `ant_init`). Unknown keys are an error in ant, so only set ones.
+    public nonisolated static func initConfigJSON(cacheCapacityBytes: UInt64?) -> String {
+        guard let cacheCapacityBytes else { return "" }
+        return "{\"cache_capacity_bytes\":\(cacheCapacityBytes)}"
+    }
+
+    // MARK: - Chunk cache (ant v0.5.60)
+
+    /// The cache's figures; nil while the node isn't running.
+    public func cacheStatus() async -> SwarmCacheStatus? {
+        guard let handle = node else { return nil }
+        return await Task.detached { () -> SwarmCacheStatus? in
+            var err: UnsafeMutablePointer<CChar>?
+            guard let ptr = ant_cache_status(handle, &err) else {
+                _ = Self.takeError(err)
+                return nil
+            }
+            defer { ant_free_string(ptr) }
+            return try? JSONDecoder().decode(SwarmCacheStatus.self, from: Data(String(cString: ptr).utf8))
+        }.value
+    }
+
+    /// Set the cap now (evicting the oldest unpinned chunks down to it)
+    /// and for every later start. Off the main thread: ant blocks until
+    /// the eviction is done. Returns ant's error, if any; the new cap is
+    /// applied even then (ant's contract), so keep the saved setting.
+    @discardableResult
+    public func setCacheCapacity(_ bytes: UInt64) async -> String? {
+        cacheCapacityBytes = bytes
+        guard let handle = node else { return nil }
+        let line = await Task.detached { () -> String? in
+            var err: UnsafeMutablePointer<CChar>?
+            let rc = ant_cache_set_capacity(handle, bytes, &err)
+            return rc == 0 ? nil : "rc=\(rc): \(Self.takeError(err))"
+        }.value
+        append(line.map { "cache cap not fully applied (\($0))" } ?? "cache cap: \(bytes) bytes")
+        return line
+    }
+
+    public enum CacheError: Swift.Error, LocalizedError {
+        case notRunning
+        case failed(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .notRunning: "The Swarm node isn't running."
+            case .failed(let message): message
+            }
+        }
+    }
+
+    /// Remove every unpinned chunk and give the space back to the OS
+    /// where ant can. Pinned and published content stays.
+    public func clearCache() async throws -> SwarmCacheClearResult {
+        guard let handle = node else { throw CacheError.notRunning }
+        let outcome = await Task.detached { () -> Result<SwarmCacheClearResult, CacheError> in
+            var err: UnsafeMutablePointer<CChar>?
+            guard let ptr = ant_cache_clear(handle, &err) else {
+                return .failure(.failed(Self.takeError(err)))
+            }
+            defer { ant_free_string(ptr) }
+            guard let result = try? JSONDecoder().decode(SwarmCacheClearResult.self, from: Data(String(cString: ptr).utf8)) else {
+                return .failure(.failed("Unexpected answer from the Swarm node"))
+            }
+            return .success(result)
+        }.value
+        let result = try outcome.get()
+        append("cache cleared: \(result.freedBytes) bytes freed, file \(result.fileBytesBefore) → \(result.fileBytesAfter) bytes")
+        return result
     }
 
     /// Switch SWAP payments on the running node, and for every later start.
