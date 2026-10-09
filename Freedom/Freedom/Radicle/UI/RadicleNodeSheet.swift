@@ -280,6 +280,10 @@ struct RadicleNodeHomeView: View {
         let tracker = seedTracker
         seedFeedback = "Fetching…"
         Task {
+            if let refusal = await RadicleStorage.refusalToSeed(rid: rid) {
+                seedFeedback = refusal
+                return
+            }
             _ = await tracker.startFetch(rid: rid)
             // Poll the snapshot until the fetch settles — the sheet has
             // no event relay of its own and this is a diagnostics
