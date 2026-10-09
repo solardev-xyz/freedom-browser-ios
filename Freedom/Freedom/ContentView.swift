@@ -149,8 +149,9 @@ struct ContentView: View {
 
     private func openDebugSettingsIfRequested() {
         #if DEBUG
-        // FREEDOM_DEBUG_SHOW=swarm opens the Swarm node sheet (screenshots).
+        // FREEDOM_DEBUG_SHOW=swarm|radicle opens that node's sheet (screenshots).
         if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "swarm" { isShowingNode = true }
+        if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "radicle" { isShowingRadicleNode = true }
         guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SETTINGS"], !raw.isEmpty else { return }
         Logger(subsystem: "com.browser.Freedom", category: "DebugOpen").notice("[debug-settings] opening \(raw, privacy: .public)")
         // ens | ens:<method> | chains | chain:<id> | chain:<id>:<source>
