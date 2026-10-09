@@ -34,6 +34,13 @@ struct RadicleNodeHomeView: View {
     @State private var seededRepos: [(rid: String, name: String?)] = []
     @State private var seedInput: String = ""
     @State private var seedFeedback: String?
+    /// Bytes on disk per repository, seeded or left over.
+    @State private var repoSizes: [String: UInt64] = [:]
+    /// Copies in storage that are no longer seeded.
+    @State private var leftoverRepos: [String] = []
+    @State private var repoToRemove: (rid: String, name: String?)?
+    @State private var confirmLeftovers = false
+    @State private var removing: Set<String> = []
 
     var body: some View {
         ScrollView {
@@ -47,7 +54,9 @@ struct RadicleNodeHomeView: View {
             }
             .padding(20)
         }
-        .task { await refresh() }
+        // Again once the node is up: opened during start-up, the seeded
+        // list isn't readable yet.
+        .task(id: radicle.status) { await refresh() }
     }
 
     private var enableCard: some View {
@@ -156,25 +165,52 @@ struct RadicleNodeHomeView: View {
 
     private var seedCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Seeded repositories")
-                .font(.headline)
+            HStack {
+                Text("Seeded repositories")
+                    .font(.headline)
+                Spacer()
+                if !repoSizes.isEmpty {
+                    Text("\(RadicleStorage.format(repoSizes.values.reduce(0, +))) on this device")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             if seededRepos.isEmpty {
                 Text("Nothing seeded yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(seededRepos, id: \.rid) { repo in
-                    VStack(alignment: .leading, spacing: 2) {
-                        if let name = repo.name, !name.isEmpty {
-                            Text(name).font(.subheadline)
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            if let name = repo.name, !name.isEmpty {
+                                Text(name).font(.subheadline)
+                            }
+                            Text(repo.rid)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                            if let size = repoSizes[repo.rid] {
+                                Text(RadicleStorage.format(size)).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
-                        Text(repo.rid)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .textSelection(.enabled)
+                        Spacer()
+                        Button(removing.contains(repo.rid) ? "Removing…" : "Remove", role: .destructive) { repoToRemove = repo }
+                            .font(.caption)
+                            .disabled(removing.contains(repo.rid))
                     }
+                }
+            }
+            if !leftoverRepos.isEmpty {
+                HStack {
+                    Text("\(leftoverRepos.count) repositor\(leftoverRepos.count == 1 ? "y" : "ies") no longer seeded · \(RadicleStorage.format(leftoverRepos.compactMap { repoSizes[$0] }.reduce(0, +)))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Remove", role: .destructive) { confirmLeftovers = true }
+                        .font(.caption)
                 }
             }
             HStack(spacing: 8) {
@@ -197,6 +233,43 @@ struct RadicleNodeHomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        .confirmationDialog(
+            "Remove \(repoToRemove?.name.flatMap { $0.isEmpty ? nil : $0 } ?? "this repository") from this device?",
+            isPresented: Binding(get: { repoToRemove != nil }, set: { if !$0 { repoToRemove = nil } }),
+            titleVisibility: .visible,
+            presenting: repoToRemove
+        ) { repo in
+            Button("Remove", role: .destructive) { remove(repo.rid) }
+        } message: { repo in
+            Text("This device stops seeding it and deletes its copy here\(repoSizes[repo.rid].map { " (\(RadicleStorage.format($0)))" } ?? ""). Other seeds keep theirs, and you can seed it again later.")
+        }
+        .confirmationDialog("Delete copies that are no longer seeded?", isPresented: $confirmLeftovers, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { removeLeftovers() }
+        } message: {
+            Text("They stay on other seeds.")
+        }
+    }
+
+    /// Stop seeding, stop a fetch in progress, then delete the local copy.
+    private func remove(_ rid: String) {
+        removing.insert(rid)
+        Task {
+            if (await seedTracker.status(rid: rid))["state"] as? String == "fetching" {
+                await seedTracker.cancelFetch(rid: rid)
+            }
+            _ = await radicle.unseedRepoJSON(rid: rid)
+            _ = await RadicleStorage.removeCopy(rid: rid)
+            removing.remove(rid)
+            await refresh()
+        }
+    }
+
+    private func removeLeftovers() {
+        let rids = leftoverRepos
+        Task {
+            for rid in rids { _ = await RadicleStorage.removeCopy(rid: rid) }
+            await refresh()
+        }
     }
 
     private func seedTyped() {
@@ -226,7 +299,12 @@ struct RadicleNodeHomeView: View {
     }
 
     private func refresh() async {
-        guard radicle.status == .running else { return }
+        guard radicle.status == .running else {
+            // Storage is on disk either way.
+            leftoverRepos = RadicleStorage.storedRepos()
+            repoSizes = await RadicleStorage.sizes(of: leftoverRepos)
+            return
+        }
         await radicle.refreshStatus()
         await radicle.refreshIdentity()
         let json = await radicle.listSeededReposJSON()
@@ -236,5 +314,9 @@ struct RadicleNodeHomeView: View {
                 (rid: $0["rid"] as? String ?? "", name: $0["name"] as? String)
             }
         }
+        let seeded = Set(seededRepos.map(\.rid))
+        let stored = RadicleStorage.storedRepos()
+        leftoverRepos = stored.filter { !seeded.contains($0) }
+        repoSizes = await RadicleStorage.sizes(of: Array(Set(stored).union(seeded)))
     }
 }
