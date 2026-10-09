@@ -38,6 +38,9 @@ final class RadicleBridge: NSObject, WKScriptMessageHandler {
             static let notConnected = "not-connected"
             static let nodeStopped = "node-stopped"
             static let nodeNotReady = "node-not-ready"
+            /// Seeding a new repository would take Radicle past its
+            /// storage cap on this device (`RadicleStorage.capBytes`).
+            static let storageFull = "storage-full"
             static let invalidRid = "invalid_rid"
             static let invalidId = "invalid_id"
             static let invalidTitle = "invalid_title"
@@ -394,6 +397,11 @@ final class RadicleBridge: NSObject, WKScriptMessageHandler {
     // MARK: - Node-tier handlers
 
     private func handleSeed(id: Int, origin: OriginIdentity, rid: String) async {
+        // Before any approval prompt: don't ask for something that can't happen.
+        if let refusal = await RadicleStorage.refusalToSeed(rid: rid) {
+            return replyError(id: id, code: ErrorPayload.Code.unavailable, message: refusal,
+                              reason: ErrorPayload.Reason.storageFull)
+        }
         if !services.permissionStore.isAutoApproveSeed(origin: origin.key) {
             guard host?.pendingRadicleApproval == nil else {
                 return replyError(id: id, code: ErrorPayload.Code.unavailable,

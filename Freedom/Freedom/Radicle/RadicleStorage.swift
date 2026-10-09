@@ -64,6 +64,25 @@ enum RadicleStorage {
         }.value
     }
 
+    // MARK: - Cap
+
+    /// How much Radicle may keep on a phone before new repositories are
+    /// refused. Repositories already seeded keep syncing (and so can grow
+    /// past it); the user frees space with Remove in the Radicle sheet.
+    static let capBytes: UInt64 = 500_000_000
+
+    /// Nil when `rid` may be seeded; otherwise the message to show. A
+    /// repository already in storage is never refused (a re-seed, a sync).
+    static func refusalToSeed(rid: String, home: String = RadicleNode.defaultHome(), cap: UInt64 = capBytes) async -> String? {
+        let existing = directory(rid: rid, home: home)
+        let storage = URL(fileURLWithPath: home, isDirectory: true).appendingPathComponent("storage", isDirectory: true)
+        let used: UInt64? = await Task.detached(priority: .utility) {
+            FileManager.default.fileExists(atPath: existing.path) ? nil : size(of: storage)
+        }.value
+        guard let used, used >= cap else { return nil }
+        return "Radicle storage on this device is full (\(format(used)) of \(format(cap))). Remove a repository under Nodes → Radicle first."
+    }
+
     static func format(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
     }

@@ -30,6 +30,21 @@ final class RadicleStorageTests: XCTestCase {
         XCTAssertEqual(RadicleStorage.storedRepos(home: home.path), ["rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5", "rad:z4V1sjrXqjvFdnCUbxPFqd5p4DtH5"], "invalid names are never listed")
     }
 
+    // MARK: - Cap
+
+    func testANewRepositoryIsRefusedWhenStorageIsFull() async {
+        let refusal = await RadicleStorage.refusalToSeed(rid: "rad:z9newRepoAAAAAAAAAAAAAAAAAAAA", home: home.path, cap: 200_000)
+        XCTAssertNotNil(refusal)
+        XCTAssertTrue(refusal?.contains("Nodes → Radicle") == true, refusal ?? "")
+        let roomy = await RadicleStorage.refusalToSeed(rid: "rad:z9newRepoAAAAAAAAAAAAAAAAAAAA", home: home.path, cap: 50_000_000)
+        XCTAssertNil(roomy)
+    }
+
+    func testARepositoryAlreadyStoredIsNeverRefused() async {
+        let refusal = await RadicleStorage.refusalToSeed(rid: "rad:z4V1sjrXqjvFdnCUbxPFqd5p4DtH5", home: home.path, cap: 1)
+        XCTAssertNil(refusal, "a re-seed or sync of a stored repository keeps working")
+    }
+
     func testSizeAndRemoval() async {
         let rid = "rad:z4V1sjrXqjvFdnCUbxPFqd5p4DtH5"
         let sizes = await RadicleStorage.sizes(of: [rid, "rad:zmissing"], home: home.path)
