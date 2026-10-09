@@ -129,14 +129,40 @@ final class AdblockUpdateService {
     }
 
     /// The list source `AdblockService` should boot from: a previously
-    /// applied update if one is on disk, else the bundled lists.
-    static func currentSource(rootDir: URL = IO.defaultRootDir) -> AdblockListSource {
+    /// applied update if one is on disk, unless the app ships newer lists
+    /// than it (an app update after a long time without a feed update —
+    /// the bundled lists would otherwise never take effect). The applied
+    /// state stays, so the next check still fetches the current feed
+    /// version, cheaply: its files are the bundled ones.
+    static func currentSource(
+        rootDir: URL = IO.defaultRootDir,
+        bundledGeneratedAt: String? = AdblockService.bundledGeneratedAt()
+    ) -> AdblockListSource {
         guard let state = appliedState(rootDir: rootDir) else { return .bundled }
         let dir = rootDir.appendingPathComponent("updated", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: dir.appendingPathComponent("metadata.json").path) else {
+        let metadata = dir.appendingPathComponent("metadata.json")
+        guard FileManager.default.fileExists(atPath: metadata.path) else { return .bundled }
+        if let bundled = bundledGeneratedAt.flatMap(parseTimestamp),
+           let updated = generatedAt(metadata: metadata).flatMap(parseTimestamp),
+           bundled > updated {
             return .bundled
         }
         return .updated(feedVersion: state.feedVersion, dir: dir)
+    }
+
+    /// A list set's `generated_at` (ISO 8601, fractional seconds).
+    nonisolated static func generatedAt(metadata url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object["generated_at"] as? String
+    }
+
+    nonisolated static func parseTimestamp(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
     }
 
     // MARK: - Scheduling

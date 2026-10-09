@@ -159,6 +159,7 @@ final class AdblockService {
         refreshAllAttachments()
         let source = listSource
         Task { await loadScriptlets(source: source) }
+        Task { await removeStaleCompiles() }
     }
 
     // MARK: - Swarm updates (AdblockUpdateService hooks)
@@ -194,7 +195,6 @@ final class AdblockService {
             listSource = source
             finishCompile()
             log.info("activated filter-list update v\(feedVersion)")
-            await removeStaleCompiles()
         } catch {
             log.error("update activation failed: \(String(describing: error), privacy: .public)")
             compiledByCategory = [:]
@@ -203,24 +203,53 @@ final class AdblockService {
         }
     }
 
-    /// Garbage-collect compiled rule lists from superseded update versions.
-    /// Each applied update compiles ~15 lists (several MB each) under
-    /// `freedom-adblock.v<N>.*` identifiers in WebKit's store; without this
-    /// they accumulate forever. The unversioned bundled compiles are kept —
-    /// they are the permanent floor.
+    /// Garbage-collect compiled rule lists nothing uses any more. Each list
+    /// set compiles ~20 lists (several MB each) into WebKit's store, and
+    /// without this they accumulate forever. Runs after every compile, so
+    /// lists left by an earlier build go too, not only after an update.
     private func removeStaleCompiles() async {
         guard let store else { return }
-        let keepPrefix = listSource.identifierPrefix
         let identifiers: [String] = await withCheckedContinuation { cont in
             store.getAvailableContentRuleListIdentifiers { cont.resume(returning: $0 ?? []) }
         }
-        for identifier in identifiers
-        where identifier.hasPrefix("freedom-adblock.v") && !identifier.hasPrefix(keepPrefix) {
+        let bundledStems = Set(((try? loadManifest(source: .bundled))?.categories ?? []).flatMap { $0.shards.map(\.filenameStem) })
+        let stale = Self.staleIdentifiers(
+            identifiers,
+            active: listSource,
+            appliedVersion: AdblockUpdateService.appliedState(rootDir: AdblockUpdateService.IO.defaultRootDir)?.feedVersion,
+            bundledStems: bundledStems
+        )
+        if !stale.isEmpty { log.info("removing \(stale.count) stale compiled rule list(s)") }
+        for identifier in stale {
             store.removeContentRuleList(forIdentifier: identifier) { error in
                 if let error {
                     log.warning("stale rule-list cleanup failed for \(identifier, privacy: .public): \(String(describing: error), privacy: .public)")
                 }
             }
+        }
+    }
+
+    /// Which of WebKit's compiled lists are stale:
+    /// - `freedom-adblock.v<N>.*` unless N is the active version or newer
+    ///   than the applied one (an update being staged right now);
+    /// - unversioned `freedom-adblock.<shard>` unless the shard is in the
+    ///   bundled lists, the permanent floor (old shard names from an
+    ///   earlier layout go).
+    /// Other apps' or other features' identifiers are never touched.
+    nonisolated static func staleIdentifiers(
+        _ identifiers: [String], active: AdblockListSource, appliedVersion: Int?, bundledStems: Set<String>
+    ) -> [String] {
+        let prefix = "freedom-adblock."
+        var activeVersion: Int?
+        if case .updated(let version, _) = active { activeVersion = version }
+        return identifiers.filter { identifier in
+            guard identifier.hasPrefix(prefix) else { return false }
+            let rest = identifier.dropFirst(prefix.count)
+            if rest.hasPrefix("v"), let dot = rest.firstIndex(of: "."),
+               let version = Int(rest[rest.index(after: rest.startIndex)..<dot]) {
+                return version != activeVersion && version <= (appliedVersion ?? 0)
+            }
+            return !bundledStems.contains(String(rest))
         }
     }
 
@@ -627,6 +656,14 @@ final class AdblockService {
     }
 
     // MARK: - List I/O (bundle or applied-update dir)
+
+    /// The bundled lists' `generated_at`, to tell whether they are newer
+    /// than an applied update.
+    nonisolated static func bundledGeneratedAt() -> String? {
+        let url = Bundle.main.url(forResource: "metadata", withExtension: "json", subdirectory: "adblock")
+            ?? Bundle.main.url(forResource: "metadata", withExtension: "json")
+        return url.flatMap { AdblockUpdateService.generatedAt(metadata: $0) }
+    }
 
     /// Every list file the app ships with (shards, scriptlets, resources),
     /// for the updater to reuse instead of downloading identical bytes.

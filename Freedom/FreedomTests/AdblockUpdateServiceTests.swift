@@ -107,7 +107,9 @@ final class AdblockUpdateServiceTests: XCTestCase {
         XCTAssertTrue(recorder.precompiled[0].dir.lastPathComponent == "updated.next")
 
         // The derived metadata decodes through the bundled-manifest path.
-        if case .updated(let feedVersion, let dir) = AdblockUpdateService.currentSource(rootDir: root) {
+        // (The fixture is older than the app's bundled lists, which would
+        // win the boot; this checks the update's layout, so no bundle date.)
+        if case .updated(let feedVersion, let dir) = AdblockUpdateService.currentSource(rootDir: root, bundledGeneratedAt: nil) {
             XCTAssertEqual(feedVersion, 5)
             XCTAssertEqual(dir.lastPathComponent, "updated")
         } else {
