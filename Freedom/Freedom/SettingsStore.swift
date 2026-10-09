@@ -278,6 +278,12 @@ final class SettingsStore {
     var swarmSwapEnabled: Bool {
         didSet { defaults.set(swarmSwapEnabled, forKey: Keys.swarmSwapEnabled) }
     }
+    /// The Swarm node's disk chunk cache cap in bytes (one of
+    /// `SwarmCache.sizes`); ant doesn't persist it, so it's passed at
+    /// every start.
+    var swarmCacheCapacityBytes: Int {
+        didSet { defaults.set(swarmCacheCapacityBytes, forKey: Keys.swarmCacheCapacityBytes) }
+    }
     /// Whether the embedded IPFS reader should be running. User-
     /// togglable from the IPFS node sheet. Default **true** — the
     /// Rust reader is lightweight enough to run alongside Bee on
@@ -377,6 +383,7 @@ final class SettingsStore {
             Keys.adblockAutoUpdateEnabled: true,
             Keys.swarmNodeEnabled: true,
             Keys.swarmSwapEnabled: true,
+            Keys.swarmCacheCapacityBytes: Int(SwarmCache.defaultBytes),
             Keys.ipfsNodeEnabled: true,
             Keys.myotisNodeEnabled: true,
             Keys.myotisMainnetEnabled: true,
@@ -417,6 +424,7 @@ final class SettingsStore {
         self.adblockAutoUpdateEnabled = defaults.bool(forKey: Keys.adblockAutoUpdateEnabled)
         self.swarmNodeEnabled = defaults.bool(forKey: Keys.swarmNodeEnabled)
         self.swarmSwapEnabled = defaults.bool(forKey: Keys.swarmSwapEnabled)
+        self.swarmCacheCapacityBytes = Int(SwarmCache.sanitized(defaults.integer(forKey: Keys.swarmCacheCapacityBytes)))
         self.ipfsNodeEnabled = defaults.bool(forKey: Keys.ipfsNodeEnabled)
         self.myotisNodeEnabled = defaults.bool(forKey: Keys.myotisNodeEnabled)
         self.myotisMainnetEnabled = defaults.bool(forKey: Keys.myotisMainnetEnabled)
@@ -546,6 +554,7 @@ final class SettingsStore {
         static let adblockAutoUpdateEnabled = "adblockAutoUpdateEnabled"
         static let swarmNodeEnabled = "swarmNodeEnabled"
         static let swarmSwapEnabled = "swarmSwapEnabled"
+        static let swarmCacheCapacityBytes = "swarmCacheCapacityBytes"
         static let ipfsNodeEnabled = "ipfsNodeEnabled"
         static let myotisNodeEnabled = "myotisNodeEnabled"
         static let myotisMainnetEnabled = "myotisMainnetEnabled"

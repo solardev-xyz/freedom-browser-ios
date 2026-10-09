@@ -167,6 +167,7 @@ struct FreedomApp: App {
             // bypasses the router.
             swarmInstance.unverifiedLogsRPC = SwarmDefaults.pinnedGnosisRPC
             swarmInstance.setSwapEnabled(settings.swarmSwapEnabled)
+            swarmInstance.cacheCapacityBytes = UInt64(settings.swarmCacheCapacityBytes)
             // A wallet scan no RPC quorum can serve is verified against
             // Blockscout's transfer index (desktop #484).
             let transferIndex = BlockscoutTransferIndex()
@@ -415,6 +416,12 @@ struct FreedomApp: App {
                     if let address = try? vault.activeAddress() {
                         permissionStore.reassignAllGrants(to: address)
                     }
+                }
+                .onChange(of: swarm.status) { _, status in
+                    // Earlier builds let the chunk cache grow far past
+                    // what an iPhone can map; shrink it back once.
+                    guard status == .running else { return }
+                    Task { await SwarmCache.shrinkOversizedOnce(swarm: swarm) }
                 }
                 .onChange(of: vault.state) { _, state in
                     // A new or wiped vault starts over with Main Wallet.
