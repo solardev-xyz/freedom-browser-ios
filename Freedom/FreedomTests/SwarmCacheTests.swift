@@ -17,10 +17,12 @@ final class SwarmCacheTests: XCTestCase {
     }
 
     func testOnlyOfferedSizesReachAnt() {
-        XCTAssertEqual(SwarmCache.sanitized(Int(128 * mib)), 128 * mib)
-        XCTAssertEqual(SwarmCache.sanitized(Int(2048 * mib)), SwarmCache.defaultBytes, "desktop's 2 GiB is not safe on iPhone yet")
+        XCTAssertEqual(SwarmCache.sanitized(Int(2048 * mib)), 2048 * mib)
+        XCTAssertEqual(SwarmCache.sanitized(Int(128 * mib)), SwarmCache.defaultBytes, "an older build's size that is no longer offered")
         XCTAssertEqual(SwarmCache.sanitized(0), SwarmCache.defaultBytes)
-        XCTAssertTrue(SwarmCache.sizes.allSatisfy { $0 < 512 * mib }, "512 MiB+ maps ~4.5 GiB across ant's connections")
+        XCTAssertEqual(SwarmCache.defaultBytes, 1024 * mib)
+        XCTAssertTrue(SwarmCache.sizes.allSatisfy { $0 >= 64 * mib && $0 <= 16 * 1024 * mib }, "inside ant's clamp")
+        XCTAssertEqual(SwarmCache.sizes.map(SwarmCache.label), ["256 MB", "512 MB", "1 GB", "2 GB", "5 GB"])
     }
 
     func testInitConfigOnlyNamesWhatIsSet() {
@@ -32,7 +34,7 @@ final class SwarmCacheTests: XCTestCase {
         func status(file: UInt64, cap: UInt64 = 256 << 20) -> SwarmCacheStatus {
             SwarmCacheStatus(diskEnabled: true, usedBytes: 0, capacityBytes: cap, pinnedBytes: 0, fileBytes: file)
         }
-        XCTAssertTrue(SwarmCache.needsShrink(status(file: 842 * mib)), "the 842 MB file from the crash")
+        XCTAssertTrue(SwarmCache.needsShrink(status(file: 842 * mib)), "the 842 MB file from the crash, against a 256 MiB cap")
         XCTAssertFalse(SwarmCache.needsShrink(status(file: 300 * mib)))
         XCTAssertFalse(SwarmCache.needsShrink(SwarmCacheStatus(diskEnabled: false, usedBytes: 0, capacityBytes: 0, pinnedBytes: 0, fileBytes: 0)))
     }

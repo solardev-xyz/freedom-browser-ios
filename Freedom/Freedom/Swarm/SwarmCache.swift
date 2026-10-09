@@ -7,15 +7,17 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "SwarmCache
 /// The Swarm node's disk chunk cache on iPhone (desktop's Settings → Nodes
 /// → Swarm cache, freedom-browser #579, over ant's C calls).
 ///
-/// The sizes stay small for now: ant maps up to 512 MiB of `chunks.sqlite`
-/// into memory per SQLite connection, and it opens a writer plus 8 readers.
-/// A cache file past 512 MiB therefore reserves about 4.5 GiB of address
-/// space, which is what iOS lets an app have — the TestFlight crashes of
-/// 2026-10-08. Raise the sizes once ant's mobile tuning ships.
+/// Since ant v0.5.62 the cache's SQLite connections map nothing (2 readers,
+/// `mmap_size` 0, 8 MiB of page cache each), so the cap only bounds disk
+/// use. Before that, each of 9 connections mapped up to 512 MiB of
+/// `chunks.sqlite`, and a cache past 512 MiB exhausted the address space
+/// iOS gives an app (the TestFlight crashes of 2026-10-08). Desktop offers
+/// 512 MiB–16 GiB with a 2 GiB default; a phone has less space to spare.
 enum SwarmCache {
     static let mib: UInt64 = 1 << 20
-    static let sizes: [UInt64] = [128 * mib, 256 * mib]
-    static let defaultBytes: UInt64 = 256 * mib
+    static let gib: UInt64 = 1 << 30
+    static let sizes: [UInt64] = [256 * mib, 512 * mib, 1 * gib, 2 * gib, 5 * gib]
+    static let defaultBytes: UInt64 = 1 * gib
 
     /// A stored size that isn't offered (an older build's, a typo) falls
     /// back to the default, so ant only ever gets a known value.
@@ -24,7 +26,9 @@ enum SwarmCache {
         return sizes.contains(bytes) ? bytes : defaultBytes
     }
 
-    static func label(_ bytes: UInt64) -> String { "\(bytes / mib) MB" }
+    static func label(_ bytes: UInt64) -> String {
+        bytes >= gib ? "\(bytes / gib) GB" : "\(bytes / mib) MB"
+    }
 
     static func format(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .memory)
@@ -40,7 +44,9 @@ enum SwarmCache {
 
     /// A cache file far past its cap: earlier builds let it grow to ant's
     /// old default, and lowering the cap evicts chunks without shrinking a
-    /// file created by an older ant. Only a clear rebuilds it smaller.
+    /// file created by an older ant. Only a clear rebuilds it smaller. With
+    /// ant's v0.5.62 tuning it no longer threatens the address space; this
+    /// only gives the disk space back.
     static func needsShrink(_ status: SwarmCacheStatus) -> Bool {
         status.diskEnabled && status.fileBytes > max(2 * status.capacityBytes, 512 * mib)
     }
