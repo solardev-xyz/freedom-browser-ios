@@ -10,8 +10,10 @@ The node wallet is the only account that pays. The user sends plain xDAI
 to it and ant (via `freedom-mobile-ffi`) does everything on-chain:
 
 1. `ant_storage_quote(depth, days)` prices a plan **all-in**: the batch
-   itself, plus the one-time settlement deposit for the chequebook when it
-   isn't funded yet, plus gas headroom. The result says what the node
+   itself, plus the settlement deposit for the chequebook when it isn't
+   funded that far yet (sized to the plan since ant v0.5.68: 0.1 xBZZ at
+   depth 21, doubling per level above and halving per level below, within
+   0.001–1 xBZZ), plus gas headroom. The result says what the node
    wallet holds, what it needs, and `sufficient_funds`.
 2. The app shows the shortfall (`xdai_to_send_display`, rounded up to the
    next cent), an EIP-681 QR (`ethereum:<node>@100?value=<wei>`), the node

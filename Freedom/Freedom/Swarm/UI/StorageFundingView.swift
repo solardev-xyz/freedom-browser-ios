@@ -87,7 +87,7 @@ struct StorageFundingView: View {
                 }
             }
             if let quote = funding.quotes[selectedPlanID], quote.includesSettlementDeposit {
-                Text("Includes a one-time \(quote.settlementDepositBzz) xBZZ deposit that backs your node's bandwidth payments.")
+                Text("Includes a \(quote.settlementDepositBzz) xBZZ chequebook deposit, sized to this storage, that backs your node's bandwidth payments.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -239,7 +239,7 @@ struct StorageFundingView: View {
             parts.append("Covers the \(quote.totalCostBzz) xBZZ this plan costs (your node swaps for it) plus a small reserve for its transaction fees.")
         }
         if quote.includesSettlementDeposit {
-            parts.append("Includes a one-time \(quote.settlementDepositBzz) xBZZ deposit that backs your node's bandwidth payments.")
+            parts.append("Includes a \(quote.settlementDepositBzz) xBZZ chequebook deposit, sized to this storage, that backs your node's bandwidth payments.")
         }
         return parts.joined(separator: " ")
     }

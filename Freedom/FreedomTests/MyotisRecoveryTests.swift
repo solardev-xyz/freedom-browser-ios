@@ -163,7 +163,7 @@ final class MyotisRecoveryTests: XCTestCase {
         let node = MyotisNode()
         XCTAssertFalse(node.isReady(chainId: 1))
         XCTAssertNil(node.recovery[1])
-        XCTAssertEqual(MyotisNode.expectedABI, 32)
+        XCTAssertEqual(MyotisNode.expectedABI, 45)
         // The anchor marker contract was introduced at ABI 26 and is what
         // generations are stamped with (desktop parity: a constant, not the
         // engine ABI — bumping it would orphan every verified generation).

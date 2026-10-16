@@ -281,5 +281,15 @@ final class ChainSourceRouterTests: XCTestCase {
         guard case .failed = MyotisBroadcastOutcome.decode(#"{"error":"invalid rlp"}"#) else {
             return XCTFail("expected failed")
         }
+        // ABI 36+: a txpool refusal carries geth's verdict, not a txHash.
+        XCTAssertEqual(
+            MyotisBroadcastOutcome.decode(#"{"status":"rejected","reason":"nonce too low"}"#),
+            .failed(message: "nonce too low")
+        )
+        // ABI 44+: bytes that are no transaction, a permanent refusal.
+        XCTAssertEqual(
+            MyotisBroadcastOutcome.decode(#"{"error":"not a transaction","code":-32602}"#),
+            .failed(message: "not a transaction")
+        )
     }
 }
