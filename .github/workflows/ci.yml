@@ -1,0 +1,137 @@
+# CI: build the Freedom app for the iOS Simulator, run the FreedomTests
+# unit tests on a simulator, and build (and test, once it has test
+# targets) the local SwarmKit package.
+#
+# Signing: the app build runs with code signing disabled. The test run
+# ad-hoc signs ("Sign to Run Locally") instead, with no team, so the
+# hosted test bundle can load into the app on the simulator without any
+# Apple account on the runner.
+#
+# Caching: SwiftPM checkouts and binary artifacts (the ~150 MB
+# FreedomMobile.xcframework from solardev-xyz/freedom-mobile-ffi
+# releases) live in a dedicated SourcePackages dir that is cached,
+# keyed on the package manifests (Package.resolved is gitignored, so the
+# project file + Package.swift are what pin the versions). DerivedData is
+# not cached: it is large, tied to the exact Xcode build and its
+# mtime-based invalidation makes restored caches unreliable.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PROJECT: Freedom/Freedom.xcodeproj
+  SCHEME: Freedom
+  SPM_DIR: ${{ github.workspace }}/.ci/SourcePackages
+  DERIVED_DATA: ${{ github.workspace }}/.ci/DerivedData
+
+jobs:
+  build-and-test:
+    name: build + unit tests (iOS Simulator)
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Select newest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer"
+          xcodebuild -version
+
+      - name: Pick a simulator
+        id: sim
+        run: |
+          # Newest iOS runtime's first available iPhone (the app targets
+          # iOS 26.2, so an older runtime would not do).
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          devs = json.load(sys.stdin)["devices"]
+          def ver(rt):
+              m = re.search(r"iOS-(\d+)-(\d+)", rt)
+              return tuple(map(int, m.groups())) if m else None
+          rts = sorted((r for r in devs if ver(r)), key=ver, reverse=True)
+          for rt in rts:
+              for d in devs[rt]:
+                  if d["name"].startswith("iPhone"):
+                      print(d["udid"]); sys.exit()
+          ')
+          if [ -z "$UDID" ]; then
+            echo "no iPhone simulator available"; xcrun simctl list devices; exit 1
+          fi
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices | grep "$UDID"
+
+      - name: Cache SwiftPM packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SPM_DIR }}
+          key: spm-${{ runner.os }}-${{ hashFiles('Freedom/Freedom.xcodeproj/project.pbxproj', 'Packages/*/Package.swift') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Resolve packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT" -scheme "$SCHEME" \
+            -clonedSourcePackagesDirPath "$SPM_DIR"
+
+      - name: Build app for iOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -clonedSourcePackagesDirPath "$SPM_DIR" \
+            -disableAutomaticPackageResolution \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Run FreedomTests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -clonedSourcePackagesDirPath "$SPM_DIR" \
+            -disableAutomaticPackageResolution \
+            -only-testing:FreedomTests \
+            -resultBundlePath "$RUNNER_TEMP/FreedomTests.xcresult" \
+            CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= CODE_SIGN_STYLE=Manual
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreedomTests.xcresult
+          path: ${{ runner.temp }}/FreedomTests.xcresult
+          if-no-files-found: ignore
+
+      - name: SwarmKit package
+        working-directory: Packages/SwarmKit
+        run: |
+          set -o pipefail
+          DEST="platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}"
+          # SwarmKit is iOS-only (binary xcframework), so it is built with
+          # xcodebuild for the simulator rather than `swift build`.
+          xcodebuild build -scheme SwarmKit-Package -destination "$DEST" \
+            -derivedDataPath "$DERIVED_DATA-swarmkit" \
+            -clonedSourcePackagesDirPath "$SPM_DIR" \
+            CODE_SIGNING_ALLOWED=NO
+          if grep -q 'testTarget' Package.swift; then
+            xcodebuild test -scheme SwarmKit-Package -destination "$DEST" \
+              -derivedDataPath "$DERIVED_DATA-swarmkit" \
+              -clonedSourcePackagesDirPath "$SPM_DIR"
+          else
+            echo "::notice::Packages/SwarmKit declares no test targets: built only."
+          fi
