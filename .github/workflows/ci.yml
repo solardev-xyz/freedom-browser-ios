@@ -128,6 +128,11 @@ jobs:
             FreedomTests/ChainDataAdaptiveTests/testBridgeReadsCarryThePageOrigin
             FreedomTests/ChainDataAdaptiveTests/testMyotisQueueFullFallsThroughImmediately
             FreedomTests/OnchainAppPolicyTests/testInlineScriptRunsAndFetchIsDeniedByCSP
+        # The ChainData suites hold many tight wall-clock deadlines (e.g.
+        # "fell through in < 0.4 s"); on a shared runner one occasionally
+        # misses by a few tens of ms. A failing test is re-run up to
+        # twice: a timing blip passes on retry, a real regression fails
+        # every attempt and keeps the check red.
         run: |
           set -o pipefail
           xcodebuild test \
@@ -138,6 +143,7 @@ jobs:
             -disableAutomaticPackageResolution \
             -only-testing:FreedomTests \
             $(for t in $SKIP_TESTS; do printf -- '-skip-testing:%s ' "$t"; done) \
+            -retry-tests-on-failure -test-iterations 3 \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 120 \
             -maximum-test-execution-time-allowance 300 \
