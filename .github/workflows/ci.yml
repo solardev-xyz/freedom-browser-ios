@@ -97,6 +97,20 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
 
       - name: Run FreedomTests
+        env:
+          # Skipped in CI, with the reason. Tests that need the network, a
+          # local node or a device already skip themselves unless opted in
+          # (TEST_RUNNER_* env vars / a node on :1699), so they need no
+          # entry here.
+          #
+          # Wall-clock-sensitive on a shared runner, where the host app's
+          # own launch (live chain reads, node start) competes for the
+          # main actor: the first asserts a fall-through in < 1 s (took
+          # 1.8 s on macos-26), the second spins on Task.yield() until a
+          # queue fills and never finished (hung the job for 45 min).
+          SKIP_TESTS: >-
+            FreedomTests/ChainDataAdaptiveTests/testBridgeReadsCarryThePageOrigin
+            FreedomTests/ChainDataAdaptiveTests/testMyotisQueueFullFallsThroughImmediately
         run: |
           set -o pipefail
           xcodebuild test \
@@ -106,6 +120,10 @@ jobs:
             -clonedSourcePackagesDirPath "$SPM_DIR" \
             -disableAutomaticPackageResolution \
             -only-testing:FreedomTests \
+            $(for t in $SKIP_TESTS; do printf -- '-skip-testing:%s ' "$t"; done) \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 300 \
             -resultBundlePath "$RUNNER_TEMP/FreedomTests.xcresult" \
             CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= CODE_SIGN_STYLE=Manual
 
