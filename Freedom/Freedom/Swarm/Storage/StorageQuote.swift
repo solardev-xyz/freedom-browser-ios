@@ -11,8 +11,11 @@ struct StorageQuote: Codable, Equatable {
     /// matches the quote.
     let amountPerChunk: String
     let totalCostBzz: String
-    /// One-time xBZZ this purchase also puts behind the node's
-    /// chequebook ("0" once it is funded). Part of the all-in figures.
+    /// xBZZ this purchase also puts behind the node's chequebook. Since
+    /// ant v0.5.68 the deposit is sized to the plan (0.1 xBZZ at depth
+    /// 21, doubling per level above and halving per level below, kept
+    /// within 0.001–1 xBZZ); "0" once the chequebook is funded that far.
+    /// Part of the all-in figures.
     let settlementDepositPlur: String
     let settlementDepositBzz: String
     let capacityBytes: UInt64

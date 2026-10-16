@@ -74,7 +74,9 @@ public enum MyotisGasOutcome: Sendable, Equatable {
     }
 }
 
-/// Broadcast: `{"txHash":"0x…"}` or `{"error"}`.
+/// Broadcast: `{"txHash":"0x…"}`, `{"status":"rejected","reason"}`
+/// (ABI 36+: the txpool refused it, nothing was sent; `reason` is
+/// geth's verdict) or `{"error"}`.
 public enum MyotisBroadcastOutcome: Sendable, Equatable {
     case ok(txHash: String)
     case failed(message: String)
@@ -84,6 +86,9 @@ public enum MyotisBroadcastOutcome: Sendable, Equatable {
             return .failed(message: "undecodable broadcast response")
         }
         if let error = obj["error"] as? String { return .failed(message: error) }
+        if obj["status"] as? String == "rejected" {
+            return .failed(message: obj["reason"] as? String ?? "transaction rejected")
+        }
         guard let hash = (obj["txHash"] ?? obj["result"]) as? String else {
             return .failed(message: "broadcast response missing txHash")
         }

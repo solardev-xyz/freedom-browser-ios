@@ -21,7 +21,7 @@ otherwise BLS-verify.
 Every fresh Gnosis install is therefore stale within a day and a half of
 each engine release. Recovery is mandatory, not optional.
 
-## The engine API (introduced in v0.1.10, ABI 26; the app now pins v0.1.12, ABI 32)
+## The engine API (introduced in v0.1.10, ABI 26; the app now pins v0.1.15, ABI 45)
 
 * `myotis_create_with_checkpoint(network, data_dir, root, slot)` —
   bootstraps a fresh directory from a caller-supplied beacon block root

@@ -210,7 +210,7 @@ public enum MyotisCallOutcome: Sendable, Equatable {
 @MainActor
 @Observable
 public final class MyotisNode {
-    /// The engine ABI this wrapper was written against (myotis v0.1.12).
+    /// The engine ABI this wrapper was written against (myotis v0.1.15).
     /// `start()` refuses to run against any other — a stale framework
     /// would otherwise fail confusingly deep inside a resolve. ABI 26
     /// brought checkpoint recovery (`myotis_create_with_checkpoint`);
@@ -219,7 +219,15 @@ public final class MyotisNode {
     /// refused, `finalized` runs at the finalized block, status reports
     /// `snapServingPeers`, host seed pins via `myotis_set_boot_enodes`,
     /// and the account/code/storage reads take a block selector.
-    public static let expectedABI: Int32 = 32
+    /// 33–45 (v0.1.13–v0.1.15) are additive for every call this wrapper
+    /// makes: an `eth_call`/estimate the executor refuses, a `safe`
+    /// selector and bytes that are no transaction answer a permanent
+    /// `{"error","code":-32602}` (still an `{"error"}`, so callers fall
+    /// through as before), a broadcast the txpool refuses answers
+    /// `{"status":"rejected","reason"}` (see `MyotisBroadcastOutcome`),
+    /// and new exports (`*_tx_json`, access lists, Tor dirs, DNS
+    /// discovery, ENS ownership) are not used here.
+    public static let expectedABI: Int32 = 45
 
     /// Host seed pins per network (see `MyotisSeedPins`): set before
     /// `start()`. Every engine boot — start and every recovery relaunch —
