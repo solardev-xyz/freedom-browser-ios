@@ -13,13 +13,15 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "AgentEngin
 /// (e.g. `faux:`, `ollama:qwen3:8b`) runs `FREEDOM_DEBUG_AGENT_PROMPT` right
 /// away, with `FREEDOM_DEBUG_AGENT_KEY` as the API key.
 ///
-/// The durable agent (Pi's durable runtime on the app's SQLite, scripted
-/// model): `FREEDOM_DEBUG_AGENT_DURABLE=open` opens it at launch and continues
+/// The durable agent (Pi's durable runtime on the app's SQLite) uses the
+/// provider and model above (faux: the scripted model; Ollama isn't wired up
+/// there). `FREEDOM_DEBUG_AGENT_DURABLE=open` opens it at launch and continues
 /// what the last launch left, `=fresh` wipes it first;
 /// `FREEDOM_DEBUG_AGENT_DURABLE_PROMPT` then submits a prompt (once: a
 /// relaunch with the same prompt finds the same submission),
 /// `FREEDOM_DEBUG_AGENT_PACE` sets the scripted model's tokens per second, and
-/// `FREEDOM_DEBUG_AGENT_APPROVE=yes|no` answers approvals after a second.
+/// `FREEDOM_DEBUG_AGENT_APPROVE=yes|no` answers approvals after a second;
+/// `FREEDOM_DEBUG_AGENT` and `_KEY` choose its model as for the bare loop.
 struct AgentSpikeView: View {
     enum Provider: String, CaseIterable, Identifiable {
         case faux, ollama, openrouter, anthropic, openai
@@ -136,7 +138,9 @@ struct AgentSpikeView: View {
                 Text(line).font(.caption.monospaced())
             }
         } header: {
-            Text("Durable agent (scripted model)")
+            Text("Durable agent")
+        } footer: {
+            Text("Uses the provider, model and key above; faux is the scripted model, and the slow switch only slows that one.")
         }
     }
 
@@ -164,6 +168,14 @@ struct AgentSpikeView: View {
                 log.notice("[spike] timers round \(round): 40×50 ms took \(String(describing: r["totalMs"] ?? "?"), privacy: .public) ms (expected 2000), worst late \(String(describing: r["worstLateMs"] ?? "?"), privacy: .public) ms, visibility \(r["visibility"] as? String ?? "?", privacy: .public)")
             }
         }
+        if let spec = env["FREEDOM_DEBUG_AGENT"], !spec.isEmpty {
+            let parts = spec.split(separator: ":", maxSplits: 1).map(String.init)
+            if let chosen = Provider(rawValue: parts[0]) {
+                provider = chosen
+                model = parts.count > 1 && !parts[1].isEmpty ? parts[1] : chosen.defaultModel
+            }
+        }
+        if let key = env["FREEDOM_DEBUG_AGENT_KEY"] { apiKey = key }
         if let mode = env["FREEDOM_DEBUG_AGENT_DURABLE"], ["open", "fresh"].contains(mode) {
             if let pace = env["FREEDOM_DEBUG_AGENT_PACE"].flatMap(Int.init) { slowPace = pace <= 10 }
             autoApprove = env["FREEDOM_DEBUG_AGENT_APPROVE"].map { $0 == "yes" }
@@ -174,12 +186,7 @@ struct AgentSpikeView: View {
             }
             return
         }
-        guard let spec = env["FREEDOM_DEBUG_AGENT"], !spec.isEmpty else { return }
-        let parts = spec.split(separator: ":", maxSplits: 1).map(String.init)
-        guard let chosen = Provider(rawValue: parts[0]) else { return }
-        provider = chosen
-        model = parts.count > 1 && !parts[1].isEmpty ? parts[1] : chosen.defaultModel
-        if let key = env["FREEDOM_DEBUG_AGENT_KEY"] { apiKey = key }
+        guard let spec = env["FREEDOM_DEBUG_AGENT"], !spec.isEmpty, Provider(rawValue: String(spec.prefix { $0 != ":" })) != nil else { return }
         if let text = env["FREEDOM_DEBUG_AGENT_PROMPT"] { prompt = text }
         if env["FREEDOM_DEBUG_AGENT_NETCHECK"] == "1" { await netCheck() }
         // Lets a FREEDOM_DEBUG_OPEN_URL page finish loading before read_page.
@@ -225,7 +232,8 @@ struct AgentSpikeView: View {
         durableTranscript = []
         pendingApproval = nil
         do {
-            let r = try await engine.command("durableOpen", ["wipe": wipe, "pace": pace ?? (slowPace ? 10 : 200)]) as? [String: Any] ?? [:]
+            // A run continued from the last launch may need the key right away.
+            let r = try await engine.command("durableOpen", ["wipe": wipe, "pace": pace ?? (slowPace ? 10 : 200), "apiKeys": durableKeys]) as? [String: Any] ?? [:]
             let resumed = r["resumed"] as? [String: Any] ?? [:]
             durableStatus = "Opened in \(r["openMs"] ?? "?") ms\(wipe ? " (wiped)" : "") · found \(resumed["entries"] ?? 0) entries, \(resumed["busy"] as? Bool == true ? "a run in progress" : "idle")"
             let partial = (resumed["partial"] as? String)?.count ?? 0
@@ -236,11 +244,24 @@ struct AgentSpikeView: View {
         }
     }
 
+    /// Keys for the durable agent: kept in memory (here and in the engine), never in its database.
+    private var durableKeys: [String: String] {
+        provider.needsKey && !apiKey.isEmpty ? [provider.rawValue: apiKey] : [:]
+    }
+
     private func submitDurable(_ text: String, requestId: String) async {
         durableAnswer = ""
+        guard provider != .ollama else {
+            durableStatus = "The durable agent doesn't have Ollama yet; pick another provider."
+            return
+        }
+        let modelRef: [String: String] = provider == .faux
+            ? ["provider": "faux", "modelId": "scripted"]
+            : ["provider": provider.rawValue, "modelId": model]
         do {
-            let r = try await engine.command("durableSubmit", ["prompt": text, "requestId": requestId]) as? [String: Any] ?? [:]
-            log.notice("[durable] submitted \(String(describing: r["submissionId"] ?? "?"), privacy: .public): \(text, privacy: .public)")
+            if provider.needsKey { _ = try await engine.command("durableSetKey", ["provider": provider.rawValue, "key": apiKey]) }
+            let r = try await engine.command("durableSubmit", ["prompt": text, "requestId": requestId, "model": modelRef]) as? [String: Any] ?? [:]
+            log.notice("[durable] submitted \(String(describing: r["submissionId"] ?? "?"), privacy: .public) to \(modelRef["provider"] ?? "?", privacy: .public):\(modelRef["modelId"] ?? "?", privacy: .public): \(text, privacy: .public)")
         } catch {
             durableStatus = "Submit failed: \(error.localizedDescription)"
             log.error("[durable] submit failed: \(error.localizedDescription, privacy: .public)")
@@ -256,7 +277,11 @@ struct AgentSpikeView: View {
 
     private func loadDurableTranscript() async {
         let entries = (try? await engine.command("durableTranscript")) as? [[String: Any]] ?? []
-        durableTranscript = entries.map { "\($0["kind"] as? String ?? "?"): \($0["text"] as? String ?? "")" }
+        durableTranscript = entries.map { entry in
+            var line = "\(entry["kind"] as? String ?? "?"): \(entry["text"] as? String ?? "")"
+            if let cost = entry["cost"] as? Double { line += String(format: "  (%@ tok, $%.6f)", String(describing: entry["tokens"] ?? "?"), cost) }
+            return line
+        }
         for line in durableTranscript { log.notice("[durable] transcript \(line, privacy: .public)") }
     }
 

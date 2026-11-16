@@ -23,15 +23,19 @@ API changes without notice between releases, so upgrade them together and run
   reopens. Tools: `read_page`, and `send_tip`, a stand-in for a wallet action
   that sends nothing. Sensitive tools wait for the user's approval (a
   `beforeTool` hook); the decision is stored with the call, and an approval
-  still pending when the app dies is asked again. The model is scripted
-  (offline, deterministic), so restarts can be tested without a provider.
+  still pending when the app dies is asked again. Models: a scripted one
+  (offline, deterministic), so restarts can be tested without a provider, and
+  OpenRouter, Anthropic and OpenAI. Their API keys stay in memory (pi-ai's
+  `InMemoryCredentialStore`): the database stores which model a conversation
+  uses, never the key, so the app passes the keys on every open.
 - `src/sqlite.js`: Pi's storage runs on a SQLite file the app owns
   (`Application Support/Agent/agent-spike.sqlite`, `AgentDatabase.swift`);
   each statement crosses the bridge.
 - `src/main.js`: the engine's commands: the bare loop (`run`, with
   `@earendil-works/pi-agent-core`) and its providers `faux`, `ollama`,
   `openrouter`, `anthropic`, `openai`; the durable agent (`durableOpen`,
-  `durableSubmit`, `durableApprove`, `durableTranscript`, `durableAbort`);
+  `durableSubmit`, `durableSetKey`, `durableApprove`, `durableTranscript`,
+  `durableAbort`);
   diagnostics (`info`, `netCheck`, `timerCheck`).
 
 The engine's web view sits in the app's window, invisible: iOS WebKit counts a
@@ -49,6 +53,9 @@ FREEDOM_DEBUG_SHOW=agent FREEDOM_DEBUG_OPEN_URL=https://example.com/ FREEDOM_DEB
   FREEDOM_DEBUG_AGENT_PACE=10 FREEDOM_DEBUG_AGENT_DELAY=4 FREEDOM_DEBUG_AGENT_DURABLE_PROMPT="What is the page I have open about?"
 # Relaunch: the run continues.
 FREEDOM_DEBUG_SHOW=agent FREEDOM_DEBUG_AGENT_DURABLE=open
+
+# The same with a real model:
+FREEDOM_DEBUG_AGENT=openrouter:anthropic/claude-haiku-5.5 FREEDOM_DEBUG_AGENT_KEY=<key> …
 ```
 
 (as `SIMCTL_CHILD_…` variables for `xcrun simctl launch`).

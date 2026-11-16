@@ -9,7 +9,10 @@
 // (sqlite.js); test/durable-restart.mjs passes Node's.
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { createRegistry, defineExtension, defineTool, Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { obj, str } from "@earendil-works/pi-schema";
@@ -30,13 +33,22 @@ export const FAUX_MODEL = { provider: "faux", modelId: "scripted" };
  *   `approval` (a sensitive tool call waits for `approve()`), `run_end`.
  * - `pace`: tokens per second of the scripted model; slow it down to have
  *   time to kill the app mid-answer.
+ * - `apiKeys`: `{ openrouter, anthropic, openai }`, any of them. Keys stay in
+ *   memory: the database stores which model a conversation uses, never the
+ *   key, so the host passes them again on every open (a run continued after a
+ *   restart needs them at once).
  */
-export async function openDurableAgent({ database, readPage, emit, pace = 200 }) {
+export async function openDurableAgent({ database, readPage, emit, pace = 200, apiKeys = {} }) {
 	const t0 = performance.now();
 	const approvals = new Map(); // taskId → { request, resolve, reject }
 
-	const models = createModels();
+	const credentials = new InMemoryCredentialStore();
+	const setApiKey = (providerId, key) =>
+		key ? credentials.modify(providerId, async () => ({ type: "api_key", key })) : credentials.delete(providerId);
+	for (const [providerId, key] of Object.entries(apiKeys)) await setApiKey(providerId, key);
+	const models = createModels({ credentials });
 	models.setProvider(scriptedProvider(pace).provider);
+	for (const provider of [openrouterProvider(), anthropicProvider(), openaiProvider()]) models.setProvider(provider);
 
 	const readPageTool = defineTool({
 		name: "read_page",
@@ -175,6 +187,9 @@ export async function openDurableAgent({ database, readPage, emit, pace = 200 })
 			return { submissionId: submission.id };
 		},
 
+		/** Replaces (or with no key, removes) a provider's key for the next requests. */
+		setApiKey,
+
 		approve(taskId, approved) {
 			const pending = approvals.get(taskId);
 			if (!pending) return false;
@@ -229,7 +244,8 @@ function describeEntry(entry) {
 		if (message.stopReason && message.stopReason !== "stop" && message.stopReason !== "toolUse") text += ` [${message.stopReason}]`;
 	}
 	if (message?.role === "toolResult") text = `${message.toolName}${message.isError ? " (error)" : ""}: ${text}`;
-	return { kind: entry.kind, text };
+	const usage = message?.role === "assistant" ? message.usage : undefined;
+	return { kind: entry.kind, text, ...(usage && { tokens: usage.totalTokens, cost: usage.cost?.total }) };
 }
 
 function textOf(message) {

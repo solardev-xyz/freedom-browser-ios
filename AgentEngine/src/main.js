@@ -138,7 +138,7 @@ onCommand("run", async (params) => {
 const DURABLE_DATABASE = "agent-spike";
 let durable;
 
-onCommand("durableOpen", async ({ wipe, pace }) => {
+onCommand("durableOpen", async ({ wipe, pace, apiKeys }) => {
 	if (durable) {
 		await durable.close();
 		durable = undefined;
@@ -149,6 +149,7 @@ onCommand("durableOpen", async ({ wipe, pace }) => {
 		database,
 		emit,
 		pace: pace ?? 200,
+		apiKeys,
 		readPage: () => request("tool", "readPage", {}),
 	});
 	return { openMs: durable.openMs, resumed: durable.resumed };
@@ -159,7 +160,13 @@ const openDurable = () => {
 	return durable;
 };
 
-onCommand("durableSubmit", ({ prompt, requestId }) => openDurable().submit({ prompt, requestId }));
+// `model`: `{ provider, modelId }`; omitted, the conversation keeps its model
+// (the scripted one at first).
+onCommand("durableSubmit", ({ prompt, requestId, model }) => openDurable().submit({ prompt, requestId, model }));
+onCommand("durableSetKey", async ({ provider, key }) => {
+	await openDurable().setApiKey(provider, key);
+	return true;
+});
 onCommand("durableApprove", ({ taskId, approved }) => openDurable().approve(taskId, approved));
 onCommand("durableTranscript", () => openDurable().transcript());
 onCommand("durableAbort", async () => {
