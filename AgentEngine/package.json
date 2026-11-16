@@ -1,0 +1,20 @@
+{
+  "name": "freedom-agent-engine",
+  "private": true,
+  "type": "module",
+  "description": "Pi's agent loop bundled for WebKit; the Freedom app runs it in a hidden WKWebView.",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node test/durable-restart.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.5.2",
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-durable": "1.5.2",
+    "@earendil-works/pi-schema": "1.5.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

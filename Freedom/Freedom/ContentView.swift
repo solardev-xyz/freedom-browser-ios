@@ -60,6 +60,9 @@ struct ContentView: View {
     @State private var isShowingRadicleNode = false
     @State private var isShowingNodesDrawer = false
     @State private var isShowingDownloads = false
+    #if DEBUG
+    @State private var isShowingAgentSpike = false
+    #endif
     /// "On This Page" count for the typed text (nil: nothing to show).
     @State private var pageMatchCount: Int? = nil
     @State private var pageMatchTask: Task<Void, Never>?
@@ -147,11 +150,21 @@ struct ContentView: View {
         )
     }
 
+    /// The menu's "Agent (spike)" entry: DEBUG builds only.
+    private var agentSpikeAction: (() -> Void)? {
+        #if DEBUG
+        { isShowingAgentSpike = true }
+        #else
+        nil
+        #endif
+    }
+
     private func openDebugSettingsIfRequested() {
         #if DEBUG
         // FREEDOM_DEBUG_SHOW=swarm|radicle opens that node's sheet (screenshots).
         if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "swarm" { isShowingNode = true }
         if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "radicle" { isShowingRadicleNode = true }
+        if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "agent" { isShowingAgentSpike = true }
         guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SETTINGS"], !raw.isEmpty else { return }
         Logger(subsystem: "com.browser.Freedom", category: "DebugOpen").notice("[debug-settings] opening \(raw, privacy: .public)")
         // ens | ens:<method> | chains | chain:<id> | chain:<id>:<source>
@@ -281,6 +294,11 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingDownloads) {
             DownloadsView()
         }
+        #if DEBUG
+        .sheet(isPresented: $isShowingAgentSpike) {
+            AgentSpikeView()
+        }
+        #endif
         .sheet(item: approvalBinding) { approval in
             EthereumApprovalSheet(approval: approval)
         }
@@ -540,7 +558,8 @@ struct ContentView: View {
                         onNodes: { isShowingNodesDrawer = true },
                         onSettings: { isShowingSettings = true },
                         onDownloads: { isShowingDownloads = true },
-                        onNewPrivateTab: { tabStore.newTab(isPrivate: true) }
+                        onNewPrivateTab: { tabStore.newTab(isPrivate: true) },
+                        onAgentSpike: agentSpikeAction
                     )
                     .equatable()
                     // iOS 26's `.buttonStyle(.glass)` reserves a slightly

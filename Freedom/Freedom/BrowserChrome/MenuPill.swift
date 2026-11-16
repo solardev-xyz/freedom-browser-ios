@@ -30,6 +30,8 @@ struct MenuPill: View, Equatable {
     let onSettings: () -> Void
     let onDownloads: () -> Void
     let onNewPrivateTab: () -> Void
+    /// DEBUG builds only: opens the agent engine spike.
+    var onAgentSpike: (() -> Void)? = nil
 
     /// Data-only equality: the closures defeat SwiftUI's automatic
     /// diffing, so without this the pill re-evaluates on EVERY
@@ -83,6 +85,13 @@ struct MenuPill: View, Equatable {
                 Button(action: onSettings) {
                     Label("Settings", systemImage: "gear")
                 }
+                #if DEBUG
+                if let onAgentSpike {
+                    Button(action: onAgentSpike) {
+                        Label("Agent (spike)", systemImage: "sparkles")
+                    }
+                }
+                #endif
             }
 
             Section {

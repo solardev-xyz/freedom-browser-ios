@@ -1,0 +1,178 @@
+#if DEBUG
+import Foundation
+import OSLog
+import WebKit
+
+private let log = Logger(subsystem: "com.browser.Freedom", category: "AgentEngine")
+
+/// Pi's agent loop (AgentEngine/, bundled into Resources/agent-engine) running
+/// in a hidden WKWebView. The engine reaches the app through the
+/// `freedomAgent` message handler: tool calls, events and console output.
+/// The app drives it with `command(_:_:)`.
+final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply {
+    enum EngineError: LocalizedError {
+        case notStarted
+        case bootTimedOut
+        case tool(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notStarted: "The agent engine isn't running."
+            case .bootTimedOut: "The agent engine didn't start within 15 s."
+            case .tool(let message): message
+            }
+        }
+    }
+
+    /// Engine events (`text`, `tool_start`, `tool_end`, `done`, …) as JSON objects.
+    var onEvent: (([String: Any]) -> Void)?
+    /// Backs the `read_page` tool.
+    var readPage: (() async throws -> [String: Any])?
+
+    private(set) var webView: WKWebView?
+    private var readyWaiter: CheckedContinuation<Void, Error>?
+    /// The engine's storage (the `sql` service).
+    private let database = AgentDatabase()
+
+    /// Loads the engine and waits for its `ready` event. Returns the boot time in ms.
+    func start() async throws -> Int {
+        let t0 = Date()
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.setURLSchemeHandler(AgentEngineSchemeHandler(), forURLScheme: AgentEngineSchemeHandler.scheme)
+        config.userContentController.addScriptMessageHandler(WeakReplyHandler(self), contentWorld: .page, name: "freedomAgent")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1, height: 1), configuration: config)
+        webView.isInspectable = true
+        self.webView = webView
+        // iOS WebKit counts a web view outside any window as a hidden page and
+        // throttles its timers, which Pi's streaming and commits run on. So the
+        // engine sits in the app's window, invisible and untouchable.
+        // FREEDOM_DEBUG_AGENT_DETACHED=1 leaves it out, to compare.
+        if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_AGENT_DETACHED"] != "1", let window = Self.hostWindow() {
+            webView.alpha = 0
+            webView.isUserInteractionEnabled = false
+            webView.accessibilityElementsHidden = true
+            window.insertSubview(webView, at: 0)
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            readyWaiter = continuation
+            webView.load(URLRequest(url: AgentEngineSchemeHandler.engineURL))
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(15))
+                self?.readyWaiter?.resume(throwing: EngineError.bootTimedOut)
+                self?.readyWaiter = nil
+            }
+        }
+        let ms = Int(Date().timeIntervalSince(t0) * 1000)
+        log.notice("[engine] ready in \(ms) ms")
+        return ms
+    }
+
+    func stop() {
+        webView?.configuration.userContentController.removeAllScriptMessageHandlers()
+        webView?.removeFromSuperview()
+        webView = nil
+        database.close()
+    }
+
+    private static func hostWindow() -> UIWindow? {
+        let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+        return windows.first(where: \.isKeyWindow) ?? windows.first
+    }
+
+    /// Runs `window.__freedomAgent.command(name, params)` in the engine.
+    func command(_ name: String, _ params: [String: Any] = [:]) async throws -> Any? {
+        guard let webView else { throw EngineError.notStarted }
+        return try await webView.callAsyncJavaScript(
+            "return await window.__freedomAgent.command(name, params)",
+            arguments: ["name": name, "params": params],
+            in: nil,
+            contentWorld: .page
+        )
+    }
+
+    // MARK: - Engine → app
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage,
+        replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void
+    ) {
+        guard let body = message.body as? [String: Any],
+              let service = body["service"] as? String else {
+            replyHandler(nil, "Malformed message")
+            return
+        }
+        let method = body["method"] as? String ?? ""
+        switch service {
+        case "event":
+            let event = body["params"] as? [String: Any] ?? [:]
+            if event["type"] as? String == "ready" {
+                readyWaiter?.resume()
+                readyWaiter = nil
+            }
+            onEvent?(event)
+            replyHandler(nil, nil)
+        case "log":
+            let text = body["params"] as? String ?? ""
+            if method == "error" || method == "warn" {
+                log.error("[engine:\(method, privacy: .public)] \(text, privacy: .public)")
+            } else {
+                log.notice("[engine:\(method, privacy: .public)] \(text, privacy: .public)")
+            }
+            replyHandler(nil, nil)
+        case "sql":
+            let operation: AgentDatabase.Operation
+            do {
+                operation = try AgentDatabase.Operation(method: method, params: body["params"] as? [String: Any] ?? [:])
+            } catch {
+                replyHandler(nil, error.localizedDescription)
+                return
+            }
+            database.perform(operation) { result in
+                Task { @MainActor in
+                    switch result {
+                    case .success(let reply): replyHandler(reply.value, nil)
+                    case .failure(let error): replyHandler(nil, error.localizedDescription)
+                    }
+                }
+            }
+        case "tool":
+            guard method == "readPage", let readPage else {
+                replyHandler(nil, "Unknown tool: \(method)")
+                return
+            }
+            Task {
+                do {
+                    replyHandler(try await readPage(), nil)
+                } catch {
+                    replyHandler(nil, error.localizedDescription)
+                }
+            }
+        default:
+            replyHandler(nil, "Unknown service: \(service)")
+        }
+    }
+}
+
+/// WKUserContentController retains its handlers; this keeps it from
+/// retaining the engine.
+private final class WeakReplyHandler: NSObject, WKScriptMessageHandlerWithReply {
+    weak var target: (any WKScriptMessageHandlerWithReply)?
+
+    init(_ target: any WKScriptMessageHandlerWithReply) { self.target = target }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage,
+        replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void
+    ) {
+        guard let target else {
+            replyHandler(nil, "The agent engine is gone")
+            return
+        }
+        target.userContentController(userContentController, didReceive: message, replyHandler: replyHandler)
+    }
+}
+#endif
