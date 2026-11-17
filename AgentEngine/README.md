@@ -57,6 +57,18 @@ releases, so upgrade them together and run `npm run check` afterwards.
   state; the app keeps the per-chat record (AgentPrivacy.swift,
   Application Support/Agent/privacy.json) and shows it from the agent sheet.
   Desktop's hardware attestation and end-to-end encryption checks aren't here.
+- `mcp.js`: connected services (desktop's mcp-connections.js and
+  pi-mcp-tools.js): remote MCP servers over Streamable HTTP with
+  `@earendil-works/pi-mcp`, public or with OAuth (dynamic client
+  registration, PKCE; the app opens the sign-in page in
+  ASWebAuthenticationSession with the redirect `com.browser.freedom:/mcp-oauth`
+  and keeps the OAuth state in the Keychain, AgentMcp.swift). The model gets
+  desktop's two tools, `mcp_discover` and `mcp_request`; every request asks
+  (agent.js `mcpGate`), in every mode. Discovery matches the query's words,
+  not the whole query (desktop's substring match found nothing for the
+  phrases models send). No GET stream, no local (stdio) servers. pi-mcp is
+  written for Node: build.mjs gives its modules a small Buffer and
+  node:crypto (src/shims/) and stubs its process and loopback-server imports.
 - `tools/page.js`: the browser tools, with desktop's names, parameters and
   descriptions: `browser_get_tab`, `browser_list_tabs`, `browser_create_tab`,
   `browser_focus_tab`, `browser_close_tab`, `browser_snapshot`,

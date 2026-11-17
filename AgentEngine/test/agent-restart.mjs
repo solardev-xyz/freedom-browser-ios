@@ -22,6 +22,8 @@
 // 14. A download asks even in "allow_website_interactions".
 // 15. Attached files: the message names them; images go along only for models that accept them.
 // 16. A node request that changes state asks even in "allow_website_interactions"; reads don't.
+// 18. A connected-service request to a server that isn't connected is
+//     blocked before anyone is asked, even in "allow_website_interactions".
 // 17. Opened with askBeforeResuming, a run killed mid-answer waits: nothing
 //     streams until the app answers; "stop" ends it, "continue" finishes it.
 
@@ -136,6 +138,9 @@ async function main() {
 				answerMode === "ask-continue" ? "asked before resuming, continue finishes the run" : "asked before resuming, nothing runs until answered; stop ends the run",
 			);
 		}
+
+		const service = JSON.parse((await runChild("service", join(dir, "service.sqlite"))).stdout);
+		check(service.approvalsAsked === 0 && /^Not used: [\s\S]*MCP connection is unavailable/.test(service.answer), "a request to a service that isn't connected is blocked without asking");
 
 		const stamps = JSON.parse((await runChild("stamps", join(dir, "stamps.sqlite"))).stdout);
 		check(
@@ -257,12 +262,12 @@ async function child(mode, file) {
 	};
 	let wasBusy = false;
 	let partialLength = 0;
-	const approvalMode = ["allow", "dialog", "download", "stamps"].includes(mode) ? "allow_website_interactions" : ["uninspectable", "visual", "sensitive-submit"].includes(mode) ? "sensitive_actions" : "every_interaction";
-	agent = await openAgent({ database, page, wallet, nodes, emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000, askBeforeResuming: mode.startsWith("ask-") });
+	const approvalMode = ["allow", "dialog", "download", "stamps", "service"].includes(mode) ? "allow_website_interactions" : ["uninspectable", "visual", "sensitive-submit"].includes(mode) ? "sensitive_actions" : "every_interaction";
+	agent = await openAgent({ database, page, wallet, nodes, mcp: async () => null, mcpServers: [], emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000, askBeforeResuming: mode.startsWith("ask-") });
 	// One chat per database: the first run creates it and the restart finds it under the same ID.
 	const chatId = await findOrCreateChat(agent, file);
 	await agent.view(chatId);
-	const question = ["kill-mid-answer", "resume"].includes(mode) ? QUESTION : mode === "dialog" ? "Answer the dialog" : /transfer/.test(mode) ? "Send 0.01 ETH to vitalik.eth" : mode === "download" ? "Download the file" : mode === "stamps" ? "Buy stamps" : CLICK;
+	const question = ["kill-mid-answer", "resume"].includes(mode) ? QUESTION : mode === "dialog" ? "Answer the dialog" : /transfer/.test(mode) ? "Send 0.01 ETH to vitalik.eth" : mode === "download" ? "Download the file" : mode === "stamps" ? "Buy stamps" : mode === "service" ? "Use the service" : CLICK;
 	let interrupted;
 	let grewWhilePaused;
 	if (mode.startsWith("ask-")) {

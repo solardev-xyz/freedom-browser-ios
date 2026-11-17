@@ -10,7 +10,26 @@ import { build } from "esbuild";
 const outdir = new URL("../Freedom/Freedom/Resources/agent-engine/", import.meta.url);
 await mkdir(outdir, { recursive: true });
 
+// pi-mcp (MCP servers) is written for Node: its HTTP and OAuth code needs a
+// little of Buffer and node:crypto, and its stdio transport and loopback
+// sign-in server need processes and sockets, which a phone doesn't offer.
+const shim = (name) => new URL(`src/shims/${name}`, import.meta.url).pathname;
+const piMcpForWebKit = {
+	name: "pi-mcp-for-webkit",
+	setup(build) {
+		build.onResolve({ filter: /^node:crypto$/ }, () => ({ path: shim("node-crypto.js") }));
+		build.onResolve({ filter: /^(node:child_process|node:process|node:http|cross-spawn)$/ }, () => ({ path: shim("unavailable.js") }));
+		// Buffer, for pi-mcp's own modules only.
+		build.onLoad({ filter: /node_modules\/@earendil-works\/pi-mcp\/dist\/.*\.js$/ }, async (args) => {
+			const { readFile } = await import("node:fs/promises");
+			const source = await readFile(args.path, "utf8");
+			return { contents: `import { Buffer } from ${JSON.stringify(shim("buffer.js"))};\n${source}`, loader: "js" };
+		});
+	},
+};
+
 const result = await build({
+	plugins: [piMcpForWebKit],
 	entryPoints: ["src/main.js"],
 	outfile: new URL("agent-engine.js", outdir).pathname,
 	bundle: true,

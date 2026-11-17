@@ -42,6 +42,8 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigation
     var attachmentStore: AgentAttachmentStore?
     /// Freedom's nodes, for the node and Swarm tools.
     var nodeDriver: AgentNodeDriver?
+    /// The `mcp` service: connected services' sign-in and Keychain state (AgentMcp.swift).
+    var mcpDriver: AgentMcpDriver?
 
     private(set) var webView: WKWebView?
     private var readyWaiter: CheckedContinuation<Void, Error>?
@@ -204,6 +206,19 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigation
             Task {
                 do {
                     replyHandler(try await attachmentStore.handle(method, params), nil)
+                } catch {
+                    replyHandler(nil, error.localizedDescription)
+                }
+            }
+        case "mcp":
+            guard let mcpDriver else {
+                replyHandler(nil, "Connected services aren't available")
+                return
+            }
+            let params = body["params"] as? [String: Any] ?? [:]
+            Task {
+                do {
+                    replyHandler(try await mcpDriver.handle(method, params), nil)
                 } catch {
                     replyHandler(nil, error.localizedDescription)
                 }

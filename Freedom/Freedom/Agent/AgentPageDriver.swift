@@ -7,7 +7,8 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "AgentEngin
 
 /// Whichever of a result and a timeout comes first resumes the caller.
 @MainActor
-private final class ResumeOnce {
+/// Resumes a continuation once: the first of several racing callbacks wins.
+final class ResumeOnce {
     private(set) var done = false
     var isDone: Bool { done }
     func claim() -> Bool {

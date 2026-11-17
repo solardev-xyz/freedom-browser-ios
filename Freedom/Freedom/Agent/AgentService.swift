@@ -154,6 +154,10 @@ final class AgentService {
     let attachments = AgentAttachmentStore()
     /// Where each chat's model requests went (Conversation privacy).
     let privacy = AgentPrivacyLedger()
+    /// Connected services (MCP servers) the user added, and how each is doing.
+    let mcp = AgentMcpStore()
+    private(set) var mcpStatuses: [String: AgentMcpStatus] = [:]
+    private let mcpDriver = AgentMcpDriver()
     private let wallet: WalletServices
     private let balances: WalletBalanceStore
     private let userWallets: UserWalletStore
@@ -216,6 +220,7 @@ final class AgentService {
             self?.walletPrompt = prompt
         }
         engine.walletDriver = walletDriver
+        engine.mcpDriver = mcpDriver
         self.walletDriver = walletDriver
         engine.onEvent = { [weak self] event in self?.handle(event) }
         engine.onTerminated = { [weak self] in self?.engineDied() }
@@ -245,6 +250,7 @@ final class AgentService {
                 "openrouterZeroRetention": settings.openrouterZeroRetention,
                 "wipe": wipe,
                 "askBeforeResuming": askBeforeResuming,
+                "mcpServers": mcp.servers.map(\.engineValue),
             ]) as? [String: Any] ?? [:]
             for raw in result["approvals"] as? [[String: Any]] ?? [] {
                 if let approval = AgentApproval(raw) { approvals.append(approval) }
@@ -277,6 +283,14 @@ final class AgentService {
             #if DEBUG
             if !debugLaunchHandled {
                 debugLaunchHandled = true
+                // FREEDOM_DEBUG_AGENT_MCP_SIGNIN=<name>: sign in to that connected service at launch.
+                if let name = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_AGENT_MCP_SIGNIN"],
+                   let server = mcp.servers.first(where: { $0.name == name }) {
+                    Task {
+                        await self.signInMcp(server.id)
+                        log.notice("[mcp] debug sign-in ended: \(self.mcpStatuses[server.id]?.state ?? "?", privacy: .public) \(self.mcpStatuses[server.id]?.message ?? "", privacy: .public)")
+                    }
+                }
                 await runDebugPrompt()
             }
             #endif
@@ -452,6 +466,56 @@ final class AgentService {
         guard let engine, let chatID = currentChatID else { return }
         dropInterrupted()
         _ = try? await engine.command("agentAbort", ["chatId": chatID])
+    }
+
+    // MARK: - Connected services
+
+    private func applyMcpStatuses(_ value: Any?) {
+        let list = value as? [[String: Any]] ?? (value as? [String: Any]).map { [$0] } ?? []
+        for raw in list {
+            if let id = raw["id"] as? String, let status = AgentMcpStatus(raw) { mcpStatuses[id] = status }
+        }
+    }
+
+    private func mcpCommand(_ params: [String: Any]) async {
+        guard let engine else { return }
+        do {
+            applyMcpStatuses(try await engine.command("agentMcp", params))
+        } catch {
+            log.error("[mcp] \(String(describing: params["action"] ?? ""), privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Connects the services not connected yet, so settings show their state and tools.
+    func connectMcpServers() async {
+        await mcpCommand(["action": "list"])
+        for server in mcp.servers where mcpStatuses[server.id]?.state != "connected" {
+            mcpStatuses[server.id] = AgentMcpStatus(["state": "connecting"])
+            await mcpCommand(["action": "connect", "id": server.id])
+        }
+    }
+
+    func addMcp(name: String, url: String) async throws {
+        let server = try mcp.add(name: name, url: url)
+        await mcpCommand(["action": "set", "servers": mcp.servers.map(\.engineValue)])
+        mcpStatuses[server.id] = AgentMcpStatus(["state": "connecting"])
+        await mcpCommand(["action": "connect", "id": server.id])
+    }
+
+    func removeMcp(_ id: String) async {
+        mcp.remove(id)
+        mcpStatuses[id] = nil
+        await mcpCommand(["action": "set", "servers": mcp.servers.map(\.engineValue)])
+    }
+
+    func reconnectMcp(_ id: String) async {
+        mcpStatuses[id] = AgentMcpStatus(["state": "connecting"])
+        await mcpCommand(["action": "reconnect", "id": id])
+    }
+
+    func signInMcp(_ id: String) async {
+        mcpStatuses[id] = AgentMcpStatus(["state": "signing-in"])
+        await mcpCommand(["action": "signin", "id": id])
     }
 
     // MARK: - Background
@@ -650,6 +714,11 @@ final class AgentService {
         if let baseURL = env["FREEDOM_DEBUG_AGENT_BASE_URL"], !baseURL.isEmpty { settings.compatibleBaseURL = baseURL }
         if let key = env["FREEDOM_DEBUG_AGENT_KEY"], !key.isEmpty { try? setKey(key, for: provider) }
         if let mode = env["FREEDOM_DEBUG_AGENT_MODE"].flatMap(AgentSettings.ApprovalMode.init) { settings.approvalMode = mode }
+        // FREEDOM_DEBUG_AGENT_MCP="Name|https://url;Name|https://url": connected services to add.
+        for entry in (env["FREEDOM_DEBUG_AGENT_MCP"] ?? "").split(separator: ";") {
+            let parts = entry.split(separator: "|", maxSplits: 1).map(String.init)
+            if parts.count == 2 { _ = try? mcp.add(name: parts[0], url: parts[1]) }
+        }
         settings.consentedProviders.insert(provider.rawValue)
         settings.isEnabled = true
     }

@@ -165,14 +165,14 @@ const openedAgent = () => {
 	return agent;
 };
 
-onCommand("agentOpen", async ({ apiKeys, approvalMode, openrouterZeroRetention, compatible, wipe, askBeforeResuming }) => {
+onCommand("agentOpen", async ({ apiKeys, approvalMode, openrouterZeroRetention, compatible, wipe, askBeforeResuming, mcpServers }) => {
 	if (agent) {
 		await agent.close();
 		agent = undefined;
 	}
 	if (wipe) await wipeAppDatabase(AGENT_DATABASE);
 	const database = await openAppDatabase(AGENT_DATABASE);
-	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, compatible, askBeforeResuming: askBeforeResuming === true, page: (method, params) => request("page", method, params), wallet: (method, params) => request("wallet", method, params), files: (method, params) => request("attachments", method, params), nodes: (method, params) => request("nodes", method, params) });
+	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, compatible, askBeforeResuming: askBeforeResuming === true, mcp: (method, params) => request("mcp", method, params), mcpServers: mcpServers ?? [], page: (method, params) => request("page", method, params), wallet: (method, params) => request("wallet", method, params), files: (method, params) => request("attachments", method, params), nodes: (method, params) => request("nodes", method, params) });
 	return { openMs: agent.openMs, approvals: agent.pendingApprovals(), interrupted: agent.interrupted() };
 });
 onCommand("agentResumeInterrupted", async ({ proceed }) => {
@@ -180,6 +180,7 @@ onCommand("agentResumeInterrupted", async ({ proceed }) => {
 	return true;
 });
 onCommand("agentActivity", () => openedAgent().activity());
+onCommand("agentMcp", (params) => openedAgent().mcp(params));
 onCommand("agentCreateChat", ({ model }) => openedAgent().createChat({ model }));
 onCommand("agentSubmit", ({ chatId, prompt, requestId, model, attachments, images }) => openedAgent().submit({ chatId, prompt, requestId, model, attachments, images }));
 onCommand("agentView", ({ chatId }) => (chatId === undefined || chatId === null ? openedAgent().unview().then(() => true) : openedAgent().view(chatId)));

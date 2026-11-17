@@ -93,6 +93,12 @@ struct AgentSettingsView: View {
                 }
 
                 Section {
+                    NavigationLink("Connected services") { AgentConnectionsView() }
+                } footer: {
+                    Text("MCP services whose tools the agent may use. It asks you before every request.")
+                }
+
+                Section {
                     Button("Delete all chats", role: .destructive) { isConfirmingDelete = true }
                         .confirmationDialog("Delete all agent chats?", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
                             Button("Delete all chats", role: .destructive) { Task { await agent.deleteAllChats() } }

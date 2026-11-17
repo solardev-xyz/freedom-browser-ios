@@ -352,6 +352,17 @@ private struct AgentApprovalCard: View {
             if let summary = approval.summary ?? approval.intent {
                 Text(summary).font(.footnote)
             }
+            // A connected service gets exactly these arguments.
+            if approval.tool == "mcp_request", let json = approval.arguments["argumentsJSON"] {
+                DisclosureGroup("Tool arguments") {
+                    ScrollView {
+                        Text(json).font(.caption.monospaced()).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 160)
+                }
+                .font(.footnote)
+            }
             ForEach(approval.uncertainties, id: \.self) { uncertainty in
                 Label(uncertainty, systemImage: "questionmark.circle").font(.caption).foregroundStyle(.secondary)
             }
@@ -415,6 +426,7 @@ enum AgentToolLabel {
         case "node_status", "node_diagnostics": "server.rack"
         case "node_request": "terminal"
         case "swarm_publish", "swarm_publication_status": "icloud.and.arrow.up"
+        case "mcp_discover", "mcp_request": "puzzlepiece.extension"
         case "skill_read": "book"
         case "browser_upload": "paperclip"
         case "browser_download", "browser_list_downloads": "arrow.down.circle"
@@ -457,6 +469,8 @@ enum AgentToolLabel {
         case "node_diagnostics": "Reading a node's log…"
         case "swarm_publish": "Publishing to Swarm…"
         case "swarm_publication_status": "Checking the publication…"
+        case "mcp_discover": "Finding connected services…"
+        case "mcp_request": "Using a connected service…"
         case "skill_read": "Reading a skill…"
         case "browser_upload": "Waiting for you to choose a file…"
         case "browser_download": "Downloading…"
@@ -492,6 +506,8 @@ enum AgentToolLabel {
         case "node_diagnostics": return "Read the \(arguments["service"] ?? "node") log"
         case "swarm_publish": return "Published to Swarm"
         case "swarm_publication_status": return "Checked the publication"
+        case "mcp_discover": return "Looked up connected services"
+        case "mcp_request": return "Used \(arguments["name"] ?? arguments["action"] ?? "a connected service")"
         case "skill_read": return "Read the \(arguments["name"] ?? "") skill"
         case "browser_upload": return "Attached a file"
         case "browser_download": return "Downloaded a file"
@@ -523,6 +539,8 @@ enum AgentToolLabel {
             return "Send \(approval.label) to Freedom's Swarm node"
         case "node_diagnostics":
             return "Share the \(approval.label) with the model provider"
+        case "mcp_request":
+            return "Run “\(approval.label)” on \(approval.arguments["service"] ?? "a connected service")"
         case "swarm_publish":
             if approval.arguments["target"] == "draft" { return "Create a private draft link for \(approval.label)" }
             if let name = approval.arguments["stableAddress"], !name.isEmpty {
