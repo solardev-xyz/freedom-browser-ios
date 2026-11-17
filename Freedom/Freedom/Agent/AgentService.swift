@@ -159,10 +159,7 @@ final class AgentService {
         guard AgentSettings.isAvailable, settings.isEnabled, phase == .off || phase.isFailed else { return }
         phase = .starting
         let engine = AgentEngine()
-        let driver = AgentPageDriver(
-            currentTab: { [tabStore] in tabStore.activeTab },
-            openTab: { [tabStore] in tabStore.activeTabOpeningIfNeeded() }
-        )
+        let driver = AgentPageDriver(tabs: tabStore, defaults: defaults)
         engine.pageDriver = driver
         engine.onEvent = { [weak self] event in self?.handle(event) }
         engine.onTerminated = { [weak self] in self?.engineDied() }
@@ -179,6 +176,7 @@ final class AgentService {
                 chats = []
                 currentChatID = nil
                 saveChats()
+                driver.forgetAll()
             }
             #endif
             let result = try await engine.command("agentOpen", [
@@ -272,6 +270,7 @@ final class AgentService {
     func forget(_ chatID: Int) {
         chats.removeAll { $0.id == chatID }
         saveChats()
+        pageDriver?.forget(chatID: chatID)
         if currentChatID == chatID { newChat() }
     }
 
@@ -288,10 +287,14 @@ final class AgentService {
                 guard let id = (created as? NSNumber)?.intValue else { throw AgentEngine.EngineError.tool("The chat couldn't be created.") }
                 chats.insert(AgentChat(id: id, title: String(prompt.prefix(80)), updated: Date()), at: 0)
                 saveChats()
+                // IDs start over when the chat database is deleted: a new chat starts with no tabs.
+                pageDriver?.forget(chatID: id)
                 chatID = id
                 await select(id)
             }
             guard let chatID else { return }
+            // The tab the user is looking at is the one this message is about.
+            pageDriver?.beginTurn(chatID: chatID)
             _ = try await engine.command("agentSubmit", ["chatId": chatID, "prompt": prompt, "requestId": UUID().uuidString, "model": model])
             touch(chatID)
         } catch {
@@ -337,6 +340,7 @@ final class AgentService {
         currentChatID = nil
         items = []
         saveChats()
+        AgentPageDriver(tabs: tabStore, defaults: defaults).forgetAll()
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(at: AgentDatabase.directory.appending(path: "agent.sqlite\(suffix)"))
         }

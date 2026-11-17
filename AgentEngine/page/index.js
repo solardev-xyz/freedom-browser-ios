@@ -77,13 +77,19 @@ async function click(ref) {
 	if (!inspected.ok) return inspected;
 	const { element } = reference(ref);
 	const doc = element.ownerDocument;
-	const view = doc.defaultView;
 	// inspectReferencedElement scrolled it to the centre; tap that point in its own frame.
 	const rect = element.getBoundingClientRect();
 	const x = rect.left + rect.width / 2;
 	const y = rect.top + rect.height / 2;
 	const hit = deepHit(doc, x, y);
 	const target = hit && (hit === element || element.contains(hit)) ? hit : element;
+	return { ...(await tap(target, x, y)), ref };
+}
+
+/** The events of a tap at client point (x, y) of `target`'s frame. */
+async function tap(target, x, y) {
+	const doc = target.ownerDocument;
+	const view = doc.defaultView;
 	const base = { bubbles: true, cancelable: true, composed: true, view, clientX: x, clientY: y, screenX: x, screenY: y };
 	const pointer = { ...base, pointerId: 1, pointerType: "touch", isPrimary: true, width: 1, height: 1, pressure: 0.5 };
 	const fire = (event) => target.dispatchEvent(event);
@@ -105,7 +111,7 @@ async function click(ref) {
 	fire(new view.PointerEvent("pointerout", pointer));
 	fire(new view.PointerEvent("pointerleave", { ...pointer, bubbles: false, cancelable: false }));
 	// A page that cancels touchend handled the tap itself: browsers then send no mouse events or click.
-	if (touchCancelled) return { clicked: true, ref, trusted: false, handledByTouch: true };
+	if (touchCancelled) return { clicked: true, trusted: false, handledByTouch: true };
 
 	const mouse = { ...base, button: 0, detail: 1 };
 	fire(new view.MouseEvent("mouseover", mouse));
@@ -119,7 +125,79 @@ async function click(ref) {
 	fire(new view.MouseEvent("mouseup", { ...mouse, buttons: 0 }));
 	// Runs the activation behaviour too: links follow, checkboxes toggle, submit buttons submit.
 	fire(new view.MouseEvent("click", { ...mouse, buttons: 0 }));
-	return { clicked: true, ref, trusted: false };
+	return { clicked: true, trusted: false };
+}
+
+// MARK: - visual targets
+
+// Desktop's visual targets (visual-targets.js): a point in a screenshot,
+// for canvas and custom controls the snapshot can't name. The app binds a
+// screenshot to this viewport state; a point is usable only while the
+// viewport and the DOM are unchanged, and only on the top document.
+
+function viewport() {
+	if (!globalThis.__FREEDOM_VISUAL_REVISION__) {
+		const state = { revision: 0 };
+		new MutationObserver(() => {
+			state.revision += 1;
+		}).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+		globalThis.__FREEDOM_VISUAL_REVISION__ = state;
+	}
+	return {
+		revision: globalThis.__FREEDOM_VISUAL_REVISION__.revision,
+		width: innerWidth,
+		height: innerHeight,
+		x: scrollX,
+		y: scrollY,
+		dpr: devicePixelRatio,
+		scale: visualViewport?.scale || 1,
+		offsetX: visualViewport?.offsetLeft || 0,
+		offsetY: visualViewport?.offsetTop || 0,
+	};
+}
+
+// Desktop's inspectVisualPoint, unchanged: keeps the exact element under
+// the point, refuses semantic and file controls (they have references and
+// their own policies), frames, and anything invisible.
+function inspectVisualPoint(ref, x, y, create) {
+  const store = (globalThis.__FREEDOM_VISUAL_TARGETS__ ||= new Map());
+  let hit = document.elementFromPoint(x, y);
+  while (hit?.shadowRoot) {
+    const next = hit.shadowRoot.elementFromPoint(x, y);
+    if (!next || next === hit) break;
+    hit = next;
+  }
+  if (
+    !hit ||
+    hit.getRootNode() !== document ||
+    ['HTML', 'BODY', 'IFRAME', 'FRAME'].includes(hit.tagName)
+  )
+    return false;
+  for (let node = hit; node; node = node.parentElement || node.getRootNode()?.host) {
+    // Semantic and file controls must use their reference-specific policies.
+    if (
+      node.matches(
+        'a,button,input,select,textarea,label,form,[contenteditable]:not([contenteditable="false"])'
+      )
+    )
+      return false;
+    const style = getComputedStyle(node);
+    if (style.visibility !== 'visible' || Number(style.opacity) === 0 || node.inert) return false;
+  }
+  if (create) {
+    store.set(ref, hit);
+    while (store.size > 8) store.delete(store.keys().next().value);
+  }
+  return store.get(ref) === hit && hit.isConnected;
+}
+
+/** Taps a visual target at its point, once. */
+async function visualClick(ref, x, y) {
+	if (!inspectVisualPoint(ref, x, y, false)) return { ok: false, reason: "changed" };
+	const store = globalThis.__FREEDOM_VISUAL_TARGETS__;
+	const target = store.get(ref);
+	store.delete(ref);
+	return { ...(await tap(target, x, y)), ref, visual: true };
 }
 
 function touchEvents(view, target, x, y) {
@@ -359,6 +437,9 @@ const methods = {
 		return describeReferencedElement(ref, action, key ?? "");
 	},
 	click: ({ ref }) => click(ref),
+	viewport: () => viewport(),
+	visualTarget: ({ ref, x, y, create }) => ({ ok: inspectVisualPoint(ref, x, y, create === true) }),
+	visualClick: ({ ref, x, y }) => visualClick(ref, x, y),
 	type: ({ ref, text, replace }) => type(ref, text, replace !== false),
 	select: ({ ref, value }) => {
 		const result = selectOptionByValue(ref, value);

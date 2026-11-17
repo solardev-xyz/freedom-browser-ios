@@ -199,6 +199,12 @@ final class TabStore {
         save()
     }
 
+    /// The tab with record `id`, brought up if it isn't live yet; nil
+    /// once it's closed. The agent's chats keep tabs by record ID.
+    func tab(for id: UUID) -> BrowserTab? {
+        record(for: id) == nil ? nil : ensureLiveTab(for: id)
+    }
+
     /// The active tab, or a new one brought to the front when there is
     /// none: the agent navigating from the start page.
     func activeTabOpeningIfNeeded() -> BrowserTab {

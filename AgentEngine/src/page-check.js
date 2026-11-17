@@ -13,6 +13,16 @@ function matches(element, finder) {
 	return test(finder.role, element.role) && test(finder.name, element.name) && test(finder.tag, element.tag);
 }
 
+// A test page loaded straight into the tab (DEBUG builds only): colored
+// boxes in the four corners of the viewport and a canvas, each reporting
+// where it was tapped. Checks that screenshot coordinates land on the page.
+const VISUAL_PAGE = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Visual targets</title>
+<style>html,body{margin:0;height:300%}.c{position:fixed;width:12%;height:6%}#tl{top:0;left:0;background:#e00}#tr{top:0;right:0;background:#0b0}
+#bl{bottom:0;left:0;background:#00e}#br{bottom:0;right:0;background:#c0c}canvas{position:fixed;top:40%;left:20%;width:60%;height:20%;background:#ddd}
+#out{position:fixed;top:20%;left:10%;font:20px sans-serif}</style>
+<div class=c id=tl></div><div class=c id=tr></div><div class=c id=bl></div><div class=c id=br></div><canvas id=cv></canvas><p id=out>nothing yet</p>
+<script>const out=document.getElementById("out");for(const id of ["tl","tr","bl","br"])document.getElementById(id).addEventListener("click",()=>{out.textContent="hit "+id});
+document.getElementById("cv").addEventListener("click",e=>{const r=e.target.getBoundingClientRect();out.textContent="canvas "+Math.round((e.clientX-r.left)/r.width*100)+" "+Math.round((e.clientY-r.top)/r.height*100)})</script>`;
 export const CASES = [
 	{
 		name: "wikipedia-search-form",
@@ -72,6 +82,25 @@ export const CASES = [
 			{ expect: { text: '"custname": "Freedom Agent"' } },
 			{ expect: { text: '"size": "medium"' } },
 			{ expect: { text: '"topping": "bacon"' } },
+		],
+	},
+	{
+		name: "visual-targets",
+		what: "screenshot points land where they should: viewport corners and a canvas",
+		html: VISUAL_PAGE,
+		steps: [
+			{ visual: [0.5, 0.5] },
+			{ expect: { pattern: /canvas (49|50|51) (49|50|51)/ } },
+			{ visual: [0.35, 0.45] },
+			{ expect: { pattern: /canvas (24|25|26) (24|25|26)/ } },
+			{ visual: [0.02, 0.01] },
+			{ expect: { pattern: /hit tl/ } },
+			{ visual: [0.97, 0.01] },
+			{ expect: { pattern: /hit tr/ } },
+			{ visual: [0.02, 0.98] },
+			{ expect: { pattern: /hit bl/ } },
+			{ visual: [0.97, 0.98] },
+			{ expect: { pattern: /hit br/ } },
 		],
 	},
 	{
@@ -146,7 +175,8 @@ export async function runPageChecks(call, names, log = console.log, { loadOnly =
 		const context = {};
 		let ok = true;
 		try {
-			await call("navigate", { url: testCase.url });
+			if (testCase.html) await call("debugLoadHTML", { html: testCase.html });
+			else await call("navigate", { url: testCase.url });
 			const loaded = await waitFor(call, { condition: "load", timeoutMs: testCase.timeoutMs ?? 30_000 });
 			if (!loaded.ok) throw new Error(`page didn't load: ${JSON.stringify(loaded.tab)}`);
 			await sleep(800); // scripts that build the page after load
@@ -178,7 +208,7 @@ export async function runPageChecks(call, names, log = console.log, { loadOnly =
 }
 
 function label(step) {
-	const [kind] = Object.keys(step).filter((k) => ["type", "press", "click", "select", "scroll", "expect"].includes(k));
+	const [kind] = Object.keys(step).filter((k) => ["type", "press", "click", "select", "scroll", "visual", "expect"].includes(k));
 	return `${kind} ${JSON.stringify(step[kind], (_, v) => (v instanceof RegExp ? String(v) : v))}${step.key ? ` ${step.key}` : ""}${step.text ? ` "${step.text}"` : ""}`;
 }
 
@@ -227,6 +257,15 @@ async function runStep(call, step, testCase, context) {
 		if (!r.moved) throw new Error(`didn't scroll: ${r.outcome}`);
 		return { outcome: r.outcome, deltaY: r.deltaY };
 	}
+	if (step.visual) {
+		// browser_screenshot → browser_target_point → browser_click, as the agent would.
+		const shot = await call("screenshot");
+		if (!shot.captureRef) throw new Error(`the screenshot has no captureRef (viewport moved?): ${shot.width}×${shot.height}`);
+		const [x, y] = step.visual;
+		const target = await call("targetPoint", { captureRef: shot.captureRef, x, y });
+		const r = await call("click", { ref: target.ref });
+		return { image: `${shot.width}×${shot.height}`, kb: Math.round((shot.base64.length * 3) / 4 / 1024), label: target.label, clicked: r.clicked };
+	}
 	if (step.expect) return expectation(call, step.expect, testCase.timeoutMs ?? 10_000, context);
 	throw new Error("unknown step");
 }
@@ -240,6 +279,12 @@ async function expectation(call, expect, timeoutMs, context) {
 		if (expect.url && expect.url.test(tab.url)) return { url: tab.url };
 		if (expect.loaded && !tab.loading && tab.url) return { url: tab.url, title: tab.title };
 		if (expect.navigated && tab.url && tab.url !== context.urlBefore) return { url: tab.url };
+		if (expect.pattern && !tab.loading) {
+			const snap = await call("snapshot", { options: {} });
+			const found = snap.text?.match(expect.pattern);
+			if (found) return { text: found[0] };
+			last = { text: snap.text?.slice(0, 200) };
+		}
 		if (expect.text && !tab.loading) {
 			const r = await call("containsText", { text: expect.text });
 			if (r.matched) return { text: expect.text };

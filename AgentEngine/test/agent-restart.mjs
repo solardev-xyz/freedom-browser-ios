@@ -11,6 +11,9 @@
 // 5. A page that changed while the approval was pending blocks the click.
 // 6. An element that can't be inspected asks instead of running unasked.
 // 7. With no page open, an interaction is blocked without asking.
+// 8. Every page call carries the chat's ID (each chat has its own tabs).
+// 9. A click at a screenshot point asks even in "sensitive_actions".
+// 10. browser_stop_loading ends a running browser_wait.
 
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -19,6 +22,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import { openAgent, SCRIPTED_MODEL } from "../src/agent.js";
+import { createPageTools } from "../src/tools/page.js";
 
 const QUESTION = "What is the page I have open about?";
 const CLICK = "Please click the button";
@@ -63,6 +67,12 @@ async function main() {
 
 		const noTab = JSON.parse((await runChild("no-tab", join(dir, "no-tab.sqlite"))).stdout);
 		check(noTab.approvalsAsked === 0 && noTab.clicks === 0 && /didn't click/.test(noTab.answer), "with no page open, an interaction is blocked without asking");
+		check(approved.chatIds.length === 1 && approved.chatIds[0] === approved.chatId && approved.unboundCalls === 0, "every page call carries the chat's ID");
+
+		const visual = JSON.parse((await runChild("visual", join(dir, "visual.sqlite"))).stdout);
+		check(visual.approvalsAsked === 1 && visual.approval?.uncertainties?.includes("visual_effect_unknown") && visual.clicks === 1, "a click at a screenshot point asks in sensitive_actions");
+
+		check(await stopEndsWait(), "browser_stop_loading ends a running browser_wait");
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -79,20 +89,35 @@ function runChild(mode, db) {
 	});
 }
 
+/** The tools alone: a wait on a page that never finishes loading, stopped after 200 ms. */
+async function stopEndsWait() {
+	const { tools } = createPageTools(async (method) => (method === "tab" ? { url: "https://slow.example/", loading: true, navigationId: 1 } : { stopped: true }));
+	const tool = (name) => tools.find((t) => t.name === name);
+	const api = { conversationId: 7 };
+	const started = Date.now();
+	const wait = tool("browser_wait").execute({ condition: "load", timeoutMs: 10_000 }, api, {});
+	setTimeout(() => tool("browser_stop_loading").execute({}, api, {}), 200);
+	const result = JSON.parse((await wait).output[0].text);
+	return result.stopped === true && Date.now() - started < 2_000;
+}
+
 /** A page with one button; `describe` changes its label once `relabel` is set. */
-function fakePage({ describeThrows = false, noTab = false } = {}) {
-	const state = { clicks: 0, relabel: false };
-	const page = async (method) => {
+function fakePage({ describeThrows = false, noTab = false, visual = false } = {}) {
+	const state = { clicks: 0, relabel: false, chatIds: new Set(), unboundCalls: 0 };
+	const page = async (method, params = {}) => {
+		if (params.chatId === undefined) state.unboundCalls += 1;
+		else state.chatIds.add(params.chatId);
 		switch (method) {
 			case "tab":
 				if (noTab && state.snapshotted) throw new Error("No tab is open.");
 				return { url: "https://shop.example/", title: "Example Shop", loading: false, navigationId: 1 };
 			case "snapshot":
 				state.snapshotted = true;
-				return { url: "https://shop.example/", title: "Example Shop", text: "A shop.", frames: [], elements: [{ ref: "ref_a_0", role: "button", name: "Buy now", tag: "button" }], documentId: "document_1" };
+				return { url: "https://shop.example/", title: "Example Shop", text: "A shop.", frames: [], elements: [{ ref: visual ? "visual_1" : "ref_a_0", role: "button", name: "Buy now", tag: "button" }], documentId: "document_1" };
 			case "describe":
 				if (describeThrows) throw new Error("crypto.subtle is unavailable");
 				if (noTab) throw new Error("No tab is open.");
+				if (visual) return { ok: true, label: "Visual point (40%, 60%); effect unknown", effect: "", visual: true };
 				return { ok: true, label: state.relabel ? "Delete account" : "Buy now" };
 			case "click":
 				state.clicks += 1;
@@ -106,7 +131,7 @@ function fakePage({ describeThrows = false, noTab = false } = {}) {
 
 async function child(mode, file) {
 	const database = await openNodeSqliteDatabase(file);
-	const { page, state } = fakePage({ describeThrows: mode === "uninspectable", noTab: mode === "no-tab" });
+	const { page, state } = fakePage({ describeThrows: mode === "uninspectable", noTab: mode === "no-tab", visual: mode === "visual" });
 	const ended = Promise.withResolvers();
 	let approvalsAsked = 0;
 	let approval;
@@ -131,12 +156,12 @@ async function child(mode, file) {
 			approval = event;
 			if (mode === "kill-at-approval") process.kill(process.pid, "SIGKILL");
 			if (mode === "changed") state.relabel = true;
-			if (["approve", "changed", "uninspectable"].includes(mode)) agent.approve(event.taskId, true);
+			if (["approve", "changed", "uninspectable", "visual"].includes(mode)) agent.approve(event.taskId, true);
 			if (mode === "decline") agent.approve(event.taskId, false);
 		}
 	};
 	let wasBusy = false;
-	const approvalMode = mode === "allow" ? "allow_website_interactions" : mode === "uninspectable" ? "sensitive_actions" : "every_interaction";
+	const approvalMode = mode === "allow" ? "allow_website_interactions" : ["uninspectable", "visual"].includes(mode) ? "sensitive_actions" : "every_interaction";
 	agent = await openAgent({ database, page, emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000 });
 	// One chat per database: the first run creates it and the restart finds it under the same ID.
 	const chatId = await findOrCreateChat(agent, file);
@@ -147,7 +172,7 @@ async function child(mode, file) {
 	await ended.promise;
 	clearTimeout(timeout);
 	await new Promise((resolve) => setTimeout(resolve, 50)); // the last chat_items
-	process.stdout.write(JSON.stringify({ firstLive, items, answer, approvalsAsked, approval, clicks: state.clicks }));
+	process.stdout.write(JSON.stringify({ firstLive, items, answer, approvalsAsked, approval, clicks: state.clicks, chatId, chatIds: [...state.chatIds], unboundCalls: state.unboundCalls }));
 	await agent.close();
 	await database.close();
 }

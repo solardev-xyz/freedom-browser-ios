@@ -98,10 +98,7 @@ struct AgentSpikeView: View {
 
     private func boot() async {
         engine.readPage = { [tabStore] in try await Self.readActivePage(tabStore) }
-        let driver = AgentPageDriver(
-            currentTab: { [tabStore] in tabStore.activeTab },
-            openTab: { [tabStore] in tabStore.activeTabOpeningIfNeeded() }
-        )
+        let driver = AgentPageDriver(tabs: tabStore)
         pageDriver = driver
         engine.pageDriver = driver
         engine.onEvent = { event in handle(event) }
