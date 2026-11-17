@@ -200,15 +200,25 @@ extension View {
 
 private struct AgentSheetPresenter: ViewModifier {
     @Environment(AgentService.self) private var agent
+    @Environment(TabStore.self) private var tabStore
     @Binding var isPresented: Bool
+
+    /// A page prompt showing from the root: the agent's sheet waits for it.
+    private var pagePromptPending: Bool { tabStore.activeTab?.hasPendingPrompt == true }
 
     func body(content: Content) -> some View {
         content
             .onChange(of: agent.approvals.count) { old, new in
-                if new > old, !isPresented { isPresented = true }
+                if new > old, !isPresented, !pagePromptPending { isPresented = true }
             }
-            .sheet(isPresented: $isPresented) {
+            .onChange(of: pagePromptPending) { _, pending in
+                if !pending, !agent.approvals.isEmpty, !isPresented { isPresented = true }
+            }
+            .sheet(isPresented: $isPresented, onDismiss: { agent.isSheetOnScreen = false }) {
                 AgentSheet()
+                    .onAppear { agent.isSheetOnScreen = true }
+                    // A page the agent operates may ask for the wallet, a permission, Swarm or Radicle.
+                    .pagePromptSheets(inAgentSheet: true)
                     .presentationDetents([.medium, .large])
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }

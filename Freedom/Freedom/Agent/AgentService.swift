@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import WebKit
 
 private let log = Logger(subsystem: "com.browser.Freedom", category: "AgentEngine")
 
@@ -124,6 +125,9 @@ final class AgentService {
     private(set) var approvals: [AgentApproval] = []
     /// The last error of a user action (sending, stopping), for the sheet.
     var lastError: String?
+    /// The agent's sheet is on screen (from appearing until dismissed), so
+    /// page prompts present over it instead of from the root (PagePrompts.swift).
+    var isSheetOnScreen = false
 
     let settings: AgentSettings
     private let tabStore: TabStore
@@ -423,6 +427,12 @@ final class AgentService {
         let env = ProcessInfo.processInfo.environment
         guard let prompt = env["FREEDOM_DEBUG_AGENT_ASK"], !prompt.isEmpty else { return }
         if let delay = env["FREEDOM_DEBUG_AGENT_DELAY"].flatMap(Double.init) { try? await Task.sleep(for: .seconds(delay)) }
+        // FREEDOM_DEBUG_AGENT_HTML_B64: a test page of the run's own in the active tab (base64 HTML).
+        if let encoded = env["FREEDOM_DEBUG_AGENT_HTML_B64"], let data = Data(base64Encoded: encoded),
+           let html = String(data: data, encoding: .utf8), let tab = tabStore.activeTab {
+            tab.webView.loadHTMLString(html, baseURL: URL(string: "https://agent-check.invalid/"))
+            try? await Task.sleep(for: .seconds(2))
+        }
         newChat()
         log.notice("[agent] debug prompt: \(prompt, privacy: .public)")
         await send(prompt)

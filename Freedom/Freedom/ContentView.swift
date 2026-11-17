@@ -83,7 +83,7 @@ struct ContentView: View {
 
     /// Sheet binding for a parked approval: swipe-dismiss (set to nil)
     /// resolves it as denied — the single point that resumes the parked
-    /// continuation, for all three approval sources.
+    /// continuation (openlv here; the page's in PagePrompts.swift).
     private func approvalBinding(
         get: @escaping () -> ApprovalRequest?,
         deny: @escaping () -> Void
@@ -93,40 +93,6 @@ struct ContentView: View {
             set: { newValue in
                 if newValue == nil { deny() }
             }
-        )
-    }
-
-    /// Swipe-dismissing the permission prompt is a dismissal: denied
-    /// once, counted toward the session embargo, nothing remembered.
-    private var permissionBinding: Binding<SitePermissionRequest?> {
-        Binding(
-            get: { tabStore.activeTab?.pendingPermissionRequest },
-            set: { newValue in
-                if newValue == nil, let request = tabStore.activeTab?.pendingPermissionRequest {
-                    request.respond(.dismiss, false)
-                }
-            }
-        )
-    }
-
-    private var approvalBinding: Binding<ApprovalRequest?> {
-        approvalBinding(
-            get: { tabStore.activeTab?.pendingEthereumApproval },
-            deny: { tabStore.activeTab?.resolvePendingApproval(.denied) }
-        )
-    }
-
-    private var swarmApprovalBinding: Binding<ApprovalRequest?> {
-        approvalBinding(
-            get: { tabStore.activeTab?.pendingSwarmApproval },
-            deny: { tabStore.activeTab?.resolvePendingSwarmApproval(.denied) }
-        )
-    }
-
-    private var radicleApprovalBinding: Binding<ApprovalRequest?> {
-        approvalBinding(
-            get: { tabStore.activeTab?.pendingRadicleApproval },
-            deny: { tabStore.activeTab?.resolvePendingRadicleApproval(.denied) }
         )
     }
 
@@ -303,12 +269,8 @@ struct ContentView: View {
             AgentSpikeView()
         }
         #endif
-        .sheet(item: approvalBinding) { approval in
-            EthereumApprovalSheet(approval: approval)
-        }
-        .sheet(item: permissionBinding) { request in
-            SitePermissionPrompt(request: request)
-        }
+        // The page's wallet, permission, Swarm and Radicle prompts (PagePrompts.swift).
+        .pagePromptSheets()
         .sheet(item: openlvApprovalBinding, onDismiss: {
             openlvSheetSettling = false
             presentedOpenlvApproval = openlvSession.pendingApproval
@@ -322,36 +284,6 @@ struct ContentView: View {
             isShowingWallet = false
             if presentedOpenlvApproval == nil, !openlvSheetSettling {
                 presentedOpenlvApproval = openlvSession.pendingApproval
-            }
-        }
-        .sheet(item: swarmApprovalBinding) { approval in
-            switch approval.kind {
-            case .swarmConnect:
-                SwarmConnectSheet(approval: approval)
-            case .swarmPublish(let details):
-                SwarmPublishSheet(approval: approval, details: details)
-            case .swarmFeedAccess(let details):
-                SwarmFeedAccessSheet(approval: approval, details: details)
-            case .swarmMessaging(let details):
-                SwarmMessagingSheet(approval: approval, details: details)
-            case .swarmManifest(let details):
-                SwarmManifestSheet(approval: approval, details: details)
-            case .connect, .personalSign, .typedData,
-                 .sendTransaction, .switchChain,
-                 .radicleConnect, .radicleSeed, .radicleSigning:
-                EmptyView()  // routed via approvalBinding's / radicle's sheet
-            }
-        }
-        .sheet(item: radicleApprovalBinding) { approval in
-            switch approval.kind {
-            case .radicleConnect:
-                RadicleConnectSheet(approval: approval)
-            case .radicleSeed(let rid):
-                RadicleSeedSheet(approval: approval, rid: rid)
-            case .radicleSigning:
-                RadicleSigningSheet(approval: approval)
-            default:
-                EmptyView()  // other kinds route via their own bindings
             }
         }
         .onChange(of: tabStore.activeTab?.displayURL) { _, new in
