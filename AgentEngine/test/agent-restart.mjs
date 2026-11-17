@@ -10,6 +10,7 @@
 // 4. "allow_website_interactions" clicks without asking.
 // 5. A page that changed while the approval was pending blocks the click.
 // 6. An element that can't be inspected asks instead of running unasked.
+// 7. With no page open, an interaction is blocked without asking.
 
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -59,6 +60,9 @@ async function main() {
 
 		const uninspectable = JSON.parse((await runChild("uninspectable", join(dir, "uninspectable.sqlite"))).stdout);
 		check(uninspectable.approvalsAsked === 1 && /couldn't inspect/.test(uninspectable.approval?.summary ?? ""), "an element that can't be inspected asks first");
+
+		const noTab = JSON.parse((await runChild("no-tab", join(dir, "no-tab.sqlite"))).stdout);
+		check(noTab.approvalsAsked === 0 && noTab.clicks === 0 && /didn't click/.test(noTab.answer), "with no page open, an interaction is blocked without asking");
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -76,16 +80,19 @@ function runChild(mode, db) {
 }
 
 /** A page with one button; `describe` changes its label once `relabel` is set. */
-function fakePage({ describeThrows = false } = {}) {
+function fakePage({ describeThrows = false, noTab = false } = {}) {
 	const state = { clicks: 0, relabel: false };
 	const page = async (method) => {
 		switch (method) {
 			case "tab":
+				if (noTab && state.snapshotted) throw new Error("No tab is open.");
 				return { url: "https://shop.example/", title: "Example Shop", loading: false, navigationId: 1 };
 			case "snapshot":
+				state.snapshotted = true;
 				return { url: "https://shop.example/", title: "Example Shop", text: "A shop.", frames: [], elements: [{ ref: "ref_a_0", role: "button", name: "Buy now", tag: "button" }], documentId: "document_1" };
 			case "describe":
 				if (describeThrows) throw new Error("crypto.subtle is unavailable");
+				if (noTab) throw new Error("No tab is open.");
 				return { ok: true, label: state.relabel ? "Delete account" : "Buy now" };
 			case "click":
 				state.clicks += 1;
@@ -99,7 +106,7 @@ function fakePage({ describeThrows = false } = {}) {
 
 async function child(mode, file) {
 	const database = await openNodeSqliteDatabase(file);
-	const { page, state } = fakePage({ describeThrows: mode === "uninspectable" });
+	const { page, state } = fakePage({ describeThrows: mode === "uninspectable", noTab: mode === "no-tab" });
 	const ended = Promise.withResolvers();
 	let approvalsAsked = 0;
 	let approval;

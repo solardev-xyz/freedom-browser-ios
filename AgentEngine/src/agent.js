@@ -18,7 +18,7 @@ import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { createRegistry, defineExtension, Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { classifyInteraction, mayProceed } from "./classifier.js";
-import { createPageTools, INTERACTION_TOOLS } from "./tools/page.js";
+import { createPageTools, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -91,7 +91,16 @@ export async function openAgent({ database, page, emit, apiKeys = {}, approvalMo
 					if (stored === "declined") return { block: "The user declined this action." };
 					if (stored !== undefined) return undefined;
 
-					const inspection = await pageTools.describeAction(call.name, call.arguments);
+					let inspection = await pageTools.describeAction(call.name, call.arguments);
+					if (inspection.unavailable) {
+						// Often the page just isn't there yet (the app restarted, the tab is loading).
+						const tab = await pageTools.call("tab").catch(() => undefined);
+						if (!tab) return { block: "No page is open in the tab the agent works in. Navigate first, then take a new snapshot." };
+						if (tab.loading) {
+							await waitFor(pageTools.call, { condition: "load", timeoutMs: 10_000 }, ctx.abortSignal).catch(() => {});
+							inspection = await pageTools.describeAction(call.name, call.arguments);
+						}
+					}
 					// A reference that no longer resolves fails in the tool itself, with the reason.
 					if (inspection.stale) return undefined;
 					// An element Freedom couldn't inspect never runs unasked (outside "allow").

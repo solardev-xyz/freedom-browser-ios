@@ -46,7 +46,7 @@ final class AgentPageDriver {
 
     /// One call from the engine's `page` service.
     func handle(_ method: String, _ params: [String: Any]) async throws -> Any? {
-        let tab = try usableTab(opening: method == "navigate")
+        let tab = try await usableTab(opening: method == "navigate")
         switch method {
         case "tab":
             return state(of: tab)
@@ -70,8 +70,15 @@ final class AgentPageDriver {
         }
     }
 
-    private func usableTab(opening: Bool = false) throws -> BrowserTab {
-        guard let tab = currentTab() ?? (opening ? openTab() : nil) else { throw DriverError.noTab }
+    private func usableTab(opening: Bool = false) async throws -> BrowserTab {
+        // Right after launch the restored tab takes a moment to come up, and a run
+        // the app was killed during resumes at once: give it a few seconds.
+        var tab = currentTab()
+        for _ in 0..<50 where tab == nil && !opening {
+            try? await Task.sleep(for: .milliseconds(100))
+            tab = currentTab()
+        }
+        guard let tab = tab ?? (opening ? openTab() : nil) else { throw DriverError.noTab }
         guard !tab.isPrivate else { throw DriverError.privateTab }
         observeNavigations(tab.webView)
         return tab
