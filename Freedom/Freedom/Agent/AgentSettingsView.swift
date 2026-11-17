@@ -24,10 +24,23 @@ struct AgentSettingsView: View {
                         ForEach(AgentSettings.Provider.allCases) { Text($0.displayName).tag($0) }
                     }
                     .onChange(of: settings.provider) { keyDraft = ""; keySaved = false }
-                    TextField("Model", text: Binding(get: { settings.model }, set: { settings.model = $0 }))
+                    if settings.provider == .compatible {
+                        TextField("Base URL (https://…/v1)", text: $settings.compatibleBaseURL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .font(.body.monospaced())
+                    }
+                    TextField(settings.provider.isOpenAICompatible ? "Model ID" : "Model", text: Binding(get: { settings.model }, set: { settings.model = $0 }))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
+                    if settings.provider.isOpenAICompatible {
+                        Toggle("Model accepts images", isOn: Binding(
+                            get: { settings.acceptsImages[settings.provider.rawValue] ?? false },
+                            set: { settings.acceptsImages[settings.provider.rawValue] = $0 }
+                        ))
+                    }
                     if settings.provider == .openrouter {
                         Toggle("Require zero data retention", isOn: $settings.openrouterZeroRetention)
                             .onChange(of: settings.openrouterZeroRetention) { agent.zeroRetentionChanged() }
@@ -37,6 +50,10 @@ struct AgentSettingsView: View {
                 } footer: {
                     if settings.provider == .openrouter {
                         Text("OpenRouter passes requests to an inference provider. With zero data retention it only picks providers that keep nothing; that's their policy, not encryption, and fewer models are available.")
+                    } else if settings.provider == .compatible {
+                        Text("Any server with the OpenAI chat-completions API, such as one you run yourself. Requests go to that server under its operator's policy. Only https addresses work.")
+                    } else if settings.provider.isOpenAICompatible {
+                        Text("Enter a model ID from \(settings.provider.displayName)'s model list. Its privacy varies by model; Freedom on iPhone doesn't check attestations yet.")
                     }
                 }
 
@@ -52,7 +69,9 @@ struct AgentSettingsView: View {
                     if !keyDraft.isEmpty {
                         Button("Save key") { saveKey(keyDraft) }
                     }
-                    Link("Get a key from \(settings.provider.displayName)", destination: settings.provider.keyURL)
+                    if let keyURL = settings.provider.keyURL {
+                        Link("Get a key from \(settings.provider.displayName)", destination: keyURL)
+                    }
                     if let keyError {
                         Text(keyError).foregroundStyle(.red).font(.footnote)
                     }
@@ -148,7 +167,9 @@ struct AgentSetupView: View {
                     SecureField("Paste your \(settings.provider.displayName) API key", text: $keyDraft)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Link("Get a key from \(settings.provider.displayName)", destination: settings.provider.keyURL)
+                    if let keyURL = settings.provider.keyURL {
+                        Link("Get a key from \(settings.provider.displayName)", destination: keyURL)
+                    }
                 } else {
                     LabeledContent("API key", value: "Stored in the Keychain")
                 }

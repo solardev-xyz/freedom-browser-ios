@@ -17,7 +17,9 @@ final class AgentSettings {
 
     /// Model providers the agent can use with an API key.
     enum Provider: String, CaseIterable, Identifiable, Sendable {
-        case openrouter, anthropic, openai, xai, meta
+        case openrouter, anthropic, openai, xai, meta, venice
+        case nearAI = "near-ai"
+        case compatible
 
         var id: String { rawValue }
 
@@ -28,6 +30,21 @@ final class AgentSettings {
             case .openai: "OpenAI"
             case .xai: "xAI (Grok)"
             case .meta: "Meta (Muse)"
+            case .venice: "Venice"
+            case .nearAI: "NEAR AI"
+            case .compatible: "Custom (OpenAI-compatible)"
+            }
+        }
+
+        /// Spoken to with the OpenAI chat-completions API at a base URL; the user names the model.
+        var isOpenAICompatible: Bool { [.venice, .nearAI, .compatible].contains(self) }
+
+        /// The fixed endpoint of a compatible provider (Custom has the user's).
+        var presetBaseURL: String? {
+            switch self {
+            case .venice: "https://api.venice.ai/api/v1"
+            case .nearAI: "https://cloud-api.near.ai/v1"
+            default: nil
             }
         }
 
@@ -38,12 +55,17 @@ final class AgentSettings {
             case .openai: "gpt-5.4-mini"
             case .xai: "grok-4.3"
             case .meta: "muse-spark-1.3"
+            // The user names the model of a compatible provider.
+            case .venice, .nearAI, .compatible: ""
             }
         }
 
-        /// Where the user gets a key.
-        var keyURL: URL {
+        /// Where the user gets a key (Custom: from whoever runs the server).
+        var keyURL: URL? {
             switch self {
+            case .venice: URL(string: "https://venice.ai/settings/api")!
+            case .nearAI: URL(string: "https://cloud.near.ai")!
+            case .compatible: nil
             case .openrouter: URL(string: "https://openrouter.ai/settings/keys")!
             case .anthropic: URL(string: "https://console.anthropic.com/settings/keys")!
             case .openai: URL(string: "https://platform.openai.com/api-keys")!
@@ -93,6 +115,35 @@ final class AgentSettings {
     var openrouterZeroRetention: Bool {
         didSet { defaults.set(openrouterZeroRetention, forKey: Keys.zeroRetention) }
     }
+    /// The Custom provider's base URL (https).
+    var compatibleBaseURL: String {
+        didSet { defaults.set(compatibleBaseURL, forKey: Keys.compatibleBaseURL) }
+    }
+    /// Whether a compatible provider's chosen model accepts images, per provider.
+    var acceptsImages: [String: Bool] {
+        didSet { defaults.set(acceptsImages, forKey: Keys.acceptsImages) }
+    }
+
+    /// A compatible provider's endpoint, when it's a valid https URL.
+    func baseURL(for provider: Provider) -> String? {
+        let raw = provider.presetBaseURL ?? compatibleBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: raw), url.scheme?.lowercased() == "https", url.host() != nil else { return nil }
+        return raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+    }
+
+    /// The compatible providers set up enough to use, for the engine.
+    var compatibleProviders: [[String: Any]] {
+        Provider.allCases.filter(\.isOpenAICompatible).compactMap { provider in
+            let model = (models[provider.rawValue] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !model.isEmpty, let baseURL = baseURL(for: provider) else { return nil }
+            return ["id": provider.rawValue, "name": provider.displayName, "baseUrl": baseURL, "modelId": model, "vision": acceptsImages[provider.rawValue] ?? false]
+        }
+    }
+
+    /// The chosen provider has a model (and a compatible one an endpoint).
+    var hasModel: Bool {
+        !model.isEmpty && (!provider.isOpenAICompatible || baseURL(for: provider) != nil)
+    }
     /// The providers the user agreed to send page content and messages to
     /// (App Store guideline 5.1.2(i): ask before sharing personal data with
     /// a third-party AI). Asked again for a provider not in here.
@@ -117,6 +168,8 @@ final class AgentSettings {
         approvalMode = defaults.string(forKey: Keys.approvalMode).flatMap(ApprovalMode.init) ?? .sensitiveActions
         consentedProviders = Set(defaults.stringArray(forKey: Keys.consented) ?? [])
         openrouterZeroRetention = defaults.object(forKey: Keys.zeroRetention) as? Bool ?? true
+        compatibleBaseURL = defaults.string(forKey: Keys.compatibleBaseURL) ?? ""
+        acceptsImages = defaults.dictionary(forKey: Keys.acceptsImages) as? [String: Bool] ?? [:]
     }
 
     private enum Keys {
@@ -126,5 +179,7 @@ final class AgentSettings {
         static let approvalMode = "agent.approvalMode"
         static let consented = "agent.consentedProviders"
         static let zeroRetention = "agent.openrouterZeroRetention"
+        static let compatibleBaseURL = "agent.compatibleBaseURL"
+        static let acceptsImages = "agent.acceptsImages"
     }
 }

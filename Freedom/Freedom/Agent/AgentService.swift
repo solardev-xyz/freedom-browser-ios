@@ -177,7 +177,7 @@ final class AgentService {
     private var keyedProviders: Set<String>
     var hasKey: Bool { keyedProviders.contains(settings.provider.rawValue) }
     /// Ready to chat: enabled, consented for the provider, with a key.
-    var isConfigured: Bool { settings.isEnabled && settings.hasConsented && hasKey }
+    var isConfigured: Bool { settings.isEnabled && settings.hasConsented && hasKey && settings.hasModel }
 
     // MARK: - Lifecycle
 
@@ -226,6 +226,7 @@ final class AgentService {
             #endif
             let result = try await engine.command("agentOpen", [
                 "apiKeys": keys,
+                "compatible": settings.compatibleProviders,
                 "approvalMode": settings.approvalMode.rawValue,
                 "openrouterZeroRetention": settings.openrouterZeroRetention,
                 "wipe": wipe,
@@ -365,6 +366,10 @@ final class AgentService {
             guard let chatID else { return }
             // The tab the user is looking at is the one this message is about.
             pageDriver?.beginTurn(chatID: chatID)
+            // A compatible provider's settings as they are now (the model ID may have just changed).
+            if settings.provider.isOpenAICompatible {
+                _ = try await engine.command("agentSetCompatible", ["providers": settings.compatibleProviders])
+            }
             // Attached files: images go into the message for models that see them, every file to the chat's store.
             let sending = stagedAttachments
             let images = attachments.images(of: sending)
@@ -495,6 +500,7 @@ final class AgentService {
         guard let provider = AgentSettings.Provider(rawValue: parts[0]) else { return }
         settings.provider = provider
         if parts.count > 1, !parts[1].isEmpty { settings.model = parts[1] }
+        if let baseURL = env["FREEDOM_DEBUG_AGENT_BASE_URL"], !baseURL.isEmpty { settings.compatibleBaseURL = baseURL }
         if let key = env["FREEDOM_DEBUG_AGENT_KEY"], !key.isEmpty { try? setKey(key, for: provider) }
         if let mode = env["FREEDOM_DEBUG_AGENT_MODE"].flatMap(AgentSettings.ApprovalMode.init) { settings.approvalMode = mode }
         settings.consentedProviders.insert(provider.rawValue)

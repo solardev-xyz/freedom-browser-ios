@@ -165,14 +165,14 @@ const openedAgent = () => {
 	return agent;
 };
 
-onCommand("agentOpen", async ({ apiKeys, approvalMode, openrouterZeroRetention, wipe }) => {
+onCommand("agentOpen", async ({ apiKeys, approvalMode, openrouterZeroRetention, compatible, wipe }) => {
 	if (agent) {
 		await agent.close();
 		agent = undefined;
 	}
 	if (wipe) await wipeAppDatabase(AGENT_DATABASE);
 	const database = await openAppDatabase(AGENT_DATABASE);
-	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, page: (method, params) => request("page", method, params), wallet: (method, params) => request("wallet", method, params), files: (method, params) => request("attachments", method, params), nodes: (method, params) => request("nodes", method, params) });
+	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, compatible, page: (method, params) => request("page", method, params), wallet: (method, params) => request("wallet", method, params), files: (method, params) => request("attachments", method, params), nodes: (method, params) => request("nodes", method, params) });
 	return { openMs: agent.openMs, approvals: agent.pendingApprovals() };
 });
 onCommand("agentCreateChat", ({ model }) => openedAgent().createChat({ model }));
@@ -181,6 +181,10 @@ onCommand("agentView", ({ chatId }) => (chatId === undefined || chatId === null 
 onCommand("agentApprove", ({ taskId, approved }) => openedAgent().approve(taskId, approved));
 onCommand("agentAbort", async ({ chatId }) => {
 	await openedAgent().abort(chatId);
+	return true;
+});
+onCommand("agentSetCompatible", ({ providers }) => {
+	openedAgent().setCompatible(providers);
 	return true;
 });
 onCommand("agentSummaries", ({ chatIds }) => openedAgent().summaries(chatIds));

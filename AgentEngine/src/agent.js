@@ -22,6 +22,7 @@ import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { classifyInteraction, mayProceed } from "./classifier.js";
 import { ALWAYS_ASK_TOOLS, createPageTools, DIALOG_TOOLS, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
 import { createWalletTools } from "./tools/wallet.js";
+import { compatibleProvider } from "./compatible.js";
 import { createAttachmentTools, messageWithAttachments } from "./tools/attachments.js";
 import { createNodeTools, nodeCallAsks } from "./tools/node.js";
 import { skillsSection, skillTool } from "./skills/index.js";
@@ -67,9 +68,11 @@ const PREAMBLE = [
  * - `approvalMode`: one of APPROVAL_MODES.
  * - `openrouterZeroRetention`: OpenRouter routes only to providers that keep
  *   no data (desktop's "Require zero data retention", on by default).
+ * - `compatible`: OpenAI-compatible providers from the app's settings,
+ *   `[{ id, name, baseUrl, modelId, vision }]` (compatible.js).
  * - `scriptedPace`: tokens per second of the offline test model.
  */
-export async function openAgent({ database, page, wallet, files, nodes, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, scriptedPace = 200 }) {
+export async function openAgent({ database, page, wallet, files, nodes, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, compatible = [], scriptedPace = 200 }) {
 	const t0 = performance.now();
 	const approvals = new Map(); // taskId → { chatId, request, resolve }
 	let mode = APPROVAL_MODES.includes(approvalMode) ? approvalMode : "sensitive_actions";
@@ -83,6 +86,10 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 	const models = createModels({ credentials });
 	models.setProvider(scriptedProvider(scriptedPace).provider);
 	for (const provider of [openrouterProvider(), anthropicProvider(), openaiProvider(), xaiProvider(), metaProvider()]) models.setProvider(provider);
+	const setCompatible = (list = []) => {
+		for (const config of list) if (config?.id && config.baseUrl && config.modelId) models.setProvider(compatibleProvider(config));
+	};
+	setCompatible(compatible);
 
 	const pageTools = createPageTools(page);
 
@@ -431,6 +438,7 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 		},
 
 		setApiKey,
+		setCompatible,
 		setApprovalMode(next) {
 			if (APPROVAL_MODES.includes(next)) mode = next;
 			return mode;
