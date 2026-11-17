@@ -20,6 +20,7 @@ import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { classifyInteraction, mayProceed } from "./classifier.js";
 import { ALWAYS_ASK_TOOLS, createPageTools, DIALOG_TOOLS, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
 import { createWalletTools } from "./tools/wallet.js";
+import { createAttachmentTools, messageWithAttachments } from "./tools/attachments.js";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -49,6 +50,8 @@ const PREAMBLE = [
  * - `page(method, params)`: the host's page service (AgentPageDriver.swift).
  * - `wallet(method, params)`: the host's wallet service (AgentWallet.swift);
  *   without it, no wallet tools.
+ * - `files(method, params)`: the host's attachments service
+ *   (AgentAttachments.swift); without it, no attachment tools.
  * - `emit(event)`: `approval` (a website interaction waits for `approve()`),
  *   `approval_gone`, and for the chat being viewed `chat_items` (its
  *   transcript changed) and `chat_live` (busy, streamed answer, tools).
@@ -60,7 +63,7 @@ const PREAMBLE = [
  *   no data (desktop's "Require zero data retention", on by default).
  * - `scriptedPace`: tokens per second of the offline test model.
  */
-export async function openAgent({ database, page, wallet, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, scriptedPace = 200 }) {
+export async function openAgent({ database, page, wallet, files, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, scriptedPace = 200 }) {
 	const t0 = performance.now();
 	const approvals = new Map(); // taskId → { chatId, request, resolve }
 	let mode = APPROVAL_MODES.includes(approvalMode) ? approvalMode : "sensitive_actions";
@@ -80,7 +83,7 @@ export async function openAgent({ database, page, wallet, emit, apiKeys = {}, ap
 	const freedom = defineExtension({
 		name: "freedom",
 		sections: [section("preamble", () => PREAMBLE, { tag: false })],
-		tools: [...pageTools.tools, ...(wallet ? createWalletTools(wallet) : [])],
+		tools: [...pageTools.tools, ...(wallet ? createWalletTools(wallet) : []), ...(files ? createAttachmentTools(files) : [])],
 	});
 
 	let harness;
@@ -338,11 +341,13 @@ export async function openAgent({ database, page, wallet, emit, apiKeys = {}, ap
 		},
 
 		/** Starts a run; returns once the input is stored. The same `requestId` again adds nothing. */
-		async submit({ chatId, prompt, requestId, model }) {
+		async submit({ chatId, prompt, requestId, model, attachments = [], images = [] }) {
 			const conversation = await harness.conversation(chatId, context);
 			if (!conversation) throw new Error("That chat doesn't exist.");
 			if (model) await conversation.configure({ model }, context);
-			const submission = await conversation.submit({ type: "input", content: prompt, requestId }, context);
+			const resolved = model && models.getModel(model.provider, model.modelId);
+			const content = messageWithAttachments(prompt, attachments, images, resolved?.input?.includes("image") === true);
+			const submission = await conversation.submit({ type: "input", content, requestId }, context);
 			return { submissionId: submission.id };
 		},
 

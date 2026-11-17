@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import UniformTypeIdentifiers
 import WebKit
 
 private let log = Logger(subsystem: "com.browser.Freedom", category: "AgentEngine")
@@ -138,6 +139,9 @@ final class AgentService {
     private(set) var walletPrompt: AgentTransferPrompt?
     /// A file the agent asked to upload (browser_upload), waiting for the user's choice.
     private(set) var filePrompt: AgentFilePrompt?
+    /// Files the user attached to the next message.
+    private(set) var stagedAttachments: [AgentAttachment] = []
+    let attachments = AgentAttachmentStore()
     private let wallet: WalletServices
     private let balances: WalletBalanceStore
     private let userWallets: UserWalletStore
@@ -187,6 +191,7 @@ final class AgentService {
             return await AgentFilePrompt.ask(AgentFilePrompt(site: site, field: field)) { self.filePrompt = $0 }
         }
         engine.pageDriver = driver
+        engine.attachmentStore = attachments
         let walletDriver = AgentWalletDriver(services: wallet, balances: balances, userWallets: userWallets) { [weak self] prompt in
             self?.walletPrompt = prompt
         }
@@ -208,6 +213,7 @@ final class AgentService {
                 currentChatID = nil
                 saveChats()
                 driver.forgetAll()
+                attachments.forgetAll()
             }
             #endif
             let result = try await engine.command("agentOpen", [
@@ -305,12 +311,31 @@ final class AgentService {
         chats.removeAll { $0.id == chatID }
         saveChats()
         pageDriver?.forget(chatID: chatID)
+        attachments.forget(chatID: chatID)
         if currentChatID == chatID { newChat() }
     }
 
     /// Sends `text` to the current chat, creating one first if needed.
+    // MARK: - Attachments
+
+    func stageAttachment(data: Data, name: String, mimeType: String) {
+        do {
+            stagedAttachments.append(try attachments.stage(data: data, name: name, mimeType: mimeType, alreadyStaged: stagedAttachments))
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func unstageAttachment(_ attachment: AgentAttachment) {
+        stagedAttachments.removeAll { $0.id == attachment.id }
+        attachments.unstage(attachment)
+    }
+
+    var canSendAttachmentsOnly: Bool { !stagedAttachments.isEmpty }
+
     func send(_ text: String) async {
-        let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = typed.isEmpty && !stagedAttachments.isEmpty ? "See the attached files." : typed
         guard !prompt.isEmpty, let engine, phase == .ready else { return }
         lastError = nil
         let model: [String: String] = ["provider": settings.provider.rawValue, "modelId": settings.model]
@@ -321,15 +346,24 @@ final class AgentService {
                 guard let id = (created as? NSNumber)?.intValue else { throw AgentEngine.EngineError.tool("The chat couldn't be created.") }
                 chats.insert(AgentChat(id: id, title: String(prompt.prefix(80)), updated: Date()), at: 0)
                 saveChats()
-                // IDs start over when the chat database is deleted: a new chat starts with no tabs.
+                // IDs start over when the chat database is deleted: a new chat starts with no tabs or files.
                 pageDriver?.forget(chatID: id)
+                attachments.forget(chatID: id)
                 chatID = id
                 await select(id)
             }
             guard let chatID else { return }
             // The tab the user is looking at is the one this message is about.
             pageDriver?.beginTurn(chatID: chatID)
-            _ = try await engine.command("agentSubmit", ["chatId": chatID, "prompt": prompt, "requestId": UUID().uuidString, "model": model])
+            // Attached files: images go into the message for models that see them, every file to the chat's store.
+            let sending = stagedAttachments
+            let images = attachments.images(of: sending)
+            try attachments.commit(sending, to: chatID)
+            stagedAttachments = []
+            _ = try await engine.command("agentSubmit", [
+                "chatId": chatID, "prompt": prompt, "requestId": UUID().uuidString, "model": model,
+                "attachments": sending.map(\.info), "images": images,
+            ])
             touch(chatID)
         } catch {
             lastError = error.localizedDescription
@@ -378,6 +412,8 @@ final class AgentService {
         items = []
         saveChats()
         AgentPageDriver(tabs: tabStore, defaults: defaults).forgetAll()
+        attachments.forgetAll()
+        stagedAttachments = []
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(at: AgentDatabase.directory.appending(path: "agent.sqlite\(suffix)"))
         }
@@ -460,6 +496,13 @@ final class AgentService {
         let env = ProcessInfo.processInfo.environment
         guard let prompt = env["FREEDOM_DEBUG_AGENT_ASK"], !prompt.isEmpty else { return }
         if let delay = env["FREEDOM_DEBUG_AGENT_DELAY"].flatMap(Double.init) { try? await Task.sleep(for: .seconds(delay)) }
+        // FREEDOM_DEBUG_AGENT_ATTACH: files in the app's tmp directory, comma-separated, attached to the prompt.
+        for name in (env["FREEDOM_DEBUG_AGENT_ATTACH"] ?? "").split(separator: ",").map(String.init) {
+            let url = FileManager.default.temporaryDirectory.appending(path: name)
+            guard let data = try? Data(contentsOf: url) else { continue }
+            let type = UTType(filenameExtension: url.pathExtension)
+            stageAttachment(data: data, name: name, mimeType: type?.preferredMIMEType ?? "application/octet-stream")
+        }
         // FREEDOM_DEBUG_AGENT_HTML_B64: a test page of the run's own in the active tab (base64 HTML).
         if let encoded = env["FREEDOM_DEBUG_AGENT_HTML_B64"], let data = Data(base64Encoded: encoded),
            let html = String(data: data, encoding: .utf8), let tab = tabStore.activeTab {

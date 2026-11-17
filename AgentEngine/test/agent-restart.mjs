@@ -18,6 +18,7 @@
 // 12. wallet_transfer reaches the app's wallet service with the chat's ID.
 // 13. Killed while the wallet waited for the user: reopening never sends again.
 // 14. A download asks even in "allow_website_interactions".
+// 15. Attached files: the message names them; images go along only for models that accept them.
 
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -27,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import { openAgent, SCRIPTED_MODEL } from "../src/agent.js";
 import { createPageTools } from "../src/tools/page.js";
+import { messageWithAttachments } from "../src/tools/attachments.js";
 
 const QUESTION = "What is the page I have open about?";
 const CLICK = "Please click the button";
@@ -91,6 +93,16 @@ async function main() {
 
 		const download = JSON.parse((await runChild("download", join(dir, "download.sqlite"))).stdout);
 		check(download.approvalsAsked === 1 && download.approval?.tool === "browser_download" && download.downloads === 1, "a download asks even in allow_website_interactions");
+
+		const files = [{ resourceId: "attachment_0123456789abcdef0123", name: "cv.pdf", mimeType: "application/pdf", bytes: 120_000 }];
+		const images = [{ base64: "AAAA", mimeType: "image/jpeg" }];
+		const withVision = messageWithAttachments("Check my CV", files, images, true);
+		const withoutVision = messageWithAttachments("Check my CV", files, images, false);
+		check(
+			Array.isArray(withVision) && withVision[1]?.type === "image" && /cv\.pdf \(attachment_0123456789abcdef0123, application\/pdf, 117 KB\)/.test(withVision[0].text) &&
+				typeof withoutVision === "string" && messageWithAttachments("Hi") === "Hi",
+			"attached files are named in the message; images only for models that accept them",
+		);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -178,7 +190,10 @@ async function child(mode, file) {
 			firstLive ??= event;
 			// Past Pi's one-second window for storing a streaming answer, so some of it is saved.
 			if (mode === "kill-mid-answer" && event.partial.length >= 120) process.kill(process.pid, "SIGKILL");
-			if (wasBusy && !event.busy) ended.resolve();
+			// A resumed run can finish before the chat is watched: idle with a finished answer ends it too.
+			const last = items.at(-1);
+			const finished = last?.role === "assistant" && !last.interrupted && !last.tools?.length;
+			if (!event.busy && (wasBusy || finished)) ended.resolve();
 			wasBusy = event.busy;
 		}
 		if (event.type === "chat_items") {

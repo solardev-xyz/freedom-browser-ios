@@ -132,7 +132,11 @@ struct AgentSheet: View {
     }
 
     private var composer: some View {
+        VStack(alignment: .leading, spacing: 6) {
+        AgentStagedAttachments()
         HStack(alignment: .bottom, spacing: 8) {
+            AgentAttachButton()
+                .padding(.bottom, 8)
             TextField("Message the agent", text: $draft, axis: .vertical)
                 .lineLimit(1...5)
                 .focused($composerFocused)
@@ -147,8 +151,9 @@ struct AgentSheet: View {
             } else {
                 Button("Send", systemImage: "arrow.up.circle.fill", action: send)
                     .labelStyle(.iconOnly).font(.title)
-                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty || agent.phase != .ready)
+                    .disabled((draft.trimmingCharacters(in: .whitespaces).isEmpty && !agent.canSendAttachmentsOnly) || agent.phase != .ready)
             }
+        }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -253,11 +258,17 @@ private struct AgentItemRow: View {
     var body: some View {
         switch item.role {
         case .user:
-            Text(item.text)
-                .textSelection(.enabled)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 16))
-                .frame(maxWidth: .infinity, alignment: .trailing)
+            let message = AgentAttachmentNote.split(item.text)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(message.text)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 16))
+                ForEach(message.names, id: \.self) { name in
+                    Label(name, systemImage: "paperclip").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         case .assistant:
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(item.toolCalls) { call in

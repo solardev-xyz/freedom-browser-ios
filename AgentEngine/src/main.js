@@ -172,11 +172,11 @@ onCommand("agentOpen", async ({ apiKeys, approvalMode, openrouterZeroRetention, 
 	}
 	if (wipe) await wipeAppDatabase(AGENT_DATABASE);
 	const database = await openAppDatabase(AGENT_DATABASE);
-	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, page: (method, params) => request("page", method, params), wallet: (method, params) => request("wallet", method, params) });
+	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, page: (method, params) => request("page", method, params), wallet: (method, params) => request("wallet", method, params), files: (method, params) => request("attachments", method, params) });
 	return { openMs: agent.openMs, approvals: agent.pendingApprovals() };
 });
 onCommand("agentCreateChat", ({ model }) => openedAgent().createChat({ model }));
-onCommand("agentSubmit", ({ chatId, prompt, requestId, model }) => openedAgent().submit({ chatId, prompt, requestId, model }));
+onCommand("agentSubmit", ({ chatId, prompt, requestId, model, attachments, images }) => openedAgent().submit({ chatId, prompt, requestId, model, attachments, images }));
 onCommand("agentView", ({ chatId }) => (chatId === undefined || chatId === null ? openedAgent().unview().then(() => true) : openedAgent().view(chatId)));
 onCommand("agentApprove", ({ taskId, approved }) => openedAgent().approve(taskId, approved));
 onCommand("agentAbort", async ({ chatId }) => {

@@ -69,6 +69,13 @@ releases, so upgrade them together and run `npm run check` afterwards.
   and shows the exact transfer on the agent's sheet; nothing is signed until
   the user slides to send. Replay `unsafe`: a transfer interrupted by a
   restart is reported, never sent again.
+- `tools/attachments.js`: desktop's `attachment_list`, `attachment_read`,
+  `attachment_render_page`. Files the user attaches in the composer (photo
+  library or Files; 10 per message, 20 MB each, 50 MB in all, like desktop)
+  live per chat in `Application Support/Agent/attachments`
+  (`AgentAttachments.swift`). The message names them, and for a model that
+  accepts images their images go along; the tools read bounded text, images,
+  PDF text (PDFKit, 1–4 pages) and PDF pages as images.
 - `classifier.js`: desktop's interaction-intent classifier.
 - `page-check.js`: scripted checks of the browser tools on real sites, no model.
 - `bridge.js`: engine ↔ app messages (`freedomAgent` handler, `window.__freedomAgent.command`).

@@ -38,6 +38,8 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigation
     var pageDriver: AgentPageDriver?
     /// The agent's wallet tool (`wallet_transfer`), a reference like `pageDriver`.
     var walletDriver: AgentWalletDriver?
+    /// The chats' attached files, for the attachment tools.
+    var attachmentStore: AgentAttachmentStore?
 
     private(set) var webView: WKWebView?
     private var readyWaiter: CheckedContinuation<Void, Error>?
@@ -174,6 +176,19 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigation
             Task {
                 do {
                     replyHandler(try await pageDriver.handle(method, params), nil)
+                } catch {
+                    replyHandler(nil, error.localizedDescription)
+                }
+            }
+        case "attachments":
+            guard let attachmentStore else {
+                replyHandler(nil, "Attachments aren't available")
+                return
+            }
+            let params = body["params"] as? [String: Any] ?? [:]
+            Task {
+                do {
+                    replyHandler(try await attachmentStore.handle(method, params), nil)
                 } catch {
                     replyHandler(nil, error.localizedDescription)
                 }
