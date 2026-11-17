@@ -35,7 +35,12 @@ const hex = (bytes) => Array.from(crypto.getRandomValues(new Uint8Array(bytes)),
 const documentId = `document_${hex(16)}`;
 
 const reference = (ref) => globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__?.refs?.get(ref);
-const nextFrame = (view) => new Promise((resolve) => view.requestAnimationFrame(() => resolve()));
+// A page that isn't rendering (its tab off screen) gets no frames: a timer stands in.
+const nextFrame = (view) =>
+	new Promise((resolve) => {
+		view.requestAnimationFrame(() => resolve());
+		view.setTimeout(resolve, 100);
+	});
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function deepHit(root, x, y) {

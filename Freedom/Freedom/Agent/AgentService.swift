@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import UIKit
 import UniformTypeIdentifiers
 import WebKit
 
@@ -129,6 +130,15 @@ final class AgentService {
     /// The agent's sheet is on screen (from appearing until dismissed), so
     /// page prompts present over it instead of from the root (PagePrompts.swift).
     var isSheetOnScreen = false
+    /// Chats whose runs were cut off when Freedom closed or was put away mid-run,
+    /// waiting for the user to continue or stop them (`resumeInterrupted`).
+    private(set) var interruptedChats: [Int] = []
+    enum Interruption { case closed, background }
+    private(set) var interruption: Interruption = .closed
+    /// Whether opening the engine asks before continuing what its database left
+    /// unfinished: at launch, after the engine was stopped in the background, and
+    /// until the user answered. A restart after the engine crashed doesn't ask.
+    private var askBeforeResuming = true
 
     let settings: AgentSettings
     private let tabStore: TabStore
@@ -167,6 +177,7 @@ final class AgentService {
         self.defaults = defaults
         chats = (defaults.data(forKey: Self.chatsKey)).flatMap { try? JSONDecoder().decode([AgentChat].self, from: $0) } ?? []
         keyedProviders = Set(AgentKeyStore.allKeys(AgentSettings.Provider.allCases.map(\.rawValue)).keys)
+        observeAppLifecycle()
     }
 
     private static let chatsKey = "agent.chats"
@@ -230,9 +241,26 @@ final class AgentService {
                 "approvalMode": settings.approvalMode.rawValue,
                 "openrouterZeroRetention": settings.openrouterZeroRetention,
                 "wipe": wipe,
+                "askBeforeResuming": askBeforeResuming,
             ]) as? [String: Any] ?? [:]
             for raw in result["approvals"] as? [[String: Any]] ?? [] {
                 if let approval = AgentApproval(raw) { approvals.append(approval) }
+            }
+            interruptedChats = (result["interrupted"] as? [NSNumber] ?? []).map(\.intValue)
+            if interruptedChats.isEmpty {
+                askBeforeResuming = false
+            } else {
+                log.notice("[agent] interrupted runs in chats \(self.interruptedChats, privacy: .public); asking before continuing")
+                if !interruptedChats.contains(where: { $0 == currentChatID }) { currentChatID = interruptedChats.first }
+                #if DEBUG
+                // FREEDOM_DEBUG_AGENT_RESUME=continue|stop answers the question after 2 s (simulator runs).
+                if let answer = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_AGENT_RESUME"], !answer.isEmpty {
+                    Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        await self.resumeInterrupted(answer == "continue")
+                    }
+                }
+                #endif
             }
             phase = .ready
             log.notice("[agent] open in \(String(describing: result["openMs"] ?? "?"), privacy: .public) ms, \(self.chats.count) chats")
@@ -273,6 +301,31 @@ final class AgentService {
         log.notice("[agent] engine died; restarting it to continue")
         currentChatID = chat
         Task { await start() }
+    }
+
+    /// The user's answer for the interrupted runs: continue them, or end them as stopped.
+    func resumeInterrupted(_ proceed: Bool) async {
+        guard let engine, !interruptedChats.isEmpty else { return }
+        if proceed {
+            let shown = interruptedChats.first { $0 == currentChatID } ?? interruptedChats[0]
+            pageDriver?.showWorkingTab(chatID: shown)
+        }
+        interruptedChats = []
+        askBeforeResuming = false
+        do {
+            _ = try await engine.command("agentResumeInterrupted", ["proceed": proceed])
+            log.notice("[agent] interrupted runs \(proceed ? "continued" : "stopped", privacy: .public)")
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Sending or stopping ends interrupted runs the user didn't continue (the engine does it first).
+    private func dropInterrupted() {
+        guard !interruptedChats.isEmpty else { return }
+        interruptedChats = []
+        askBeforeResuming = false
+        log.notice("[agent] interrupted runs stopped by a new message or Stop")
     }
 
     func stop() {
@@ -348,6 +401,7 @@ final class AgentService {
         let prompt = typed.isEmpty && !stagedAttachments.isEmpty ? "See the attached files." : typed
         guard !prompt.isEmpty, let engine, phase == .ready else { return }
         lastError = nil
+        dropInterrupted()
         let model: [String: String] = ["provider": settings.provider.rawValue, "modelId": settings.model]
         do {
             var chatID = currentChatID
@@ -391,7 +445,90 @@ final class AgentService {
         walletDriver?.cancelPending()
         filePrompt?.cancel()
         guard let engine, let chatID = currentChatID else { return }
+        dropInterrupted()
         _ = try? await engine.command("agentAbort", ["chatId": chatID])
+    }
+
+    // MARK: - Background
+
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    /// The last check in the background found a run working (not waiting for the user).
+    private var workingInBackground = false
+    /// The engine was stopped in the background mid-run: start it again when Freedom is back.
+    private var stoppedInBackground = false
+    private var lifecycleObservers: [NSObjectProtocol] = []
+
+    private func observeAppLifecycle() {
+        let center = NotificationCenter.default
+        lifecycleObservers = [
+            center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.didEnterBackground() }
+            },
+            center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.willEnterForeground() }
+            },
+        ]
+    }
+
+    /// A working run gets the time iOS allows in the background (about 30 s) to
+    /// finish. If it's still working when that ends, the engine stops as if the
+    /// app had been killed, and coming back asks whether to continue. A run
+    /// waiting for the user (an approval, a transfer, a file) just waits.
+    private func didEnterBackground() {
+        guard phase == .ready, let engine, backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Freedom Agent") { [weak self] in
+            MainActor.assumeIsolated { self?.backgroundTimeEnded() }
+        }
+        workingInBackground = true
+        #if DEBUG
+        // FREEDOM_DEBUG_AGENT_BACKGROUND_SECONDS=<n>: the background time ends after n seconds (simulator runs).
+        if let seconds = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_AGENT_BACKGROUND_SECONDS"].flatMap(Double.init) {
+            Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                self.backgroundTimeEnded()
+            }
+        }
+        #endif
+        Task {
+            while backgroundTask != .invalid {
+                let activity = (try? await engine.command("agentActivity", [:])) as? [String: Any] ?? [:]
+                let waitingForUser = (activity["approvals"] as? Int ?? 0) > 0 || (activity["interrupted"] as? Int ?? 0) > 0
+                    || walletPrompt != nil || filePrompt != nil
+                workingInBackground = activity["busy"] as? Bool == true && !waitingForUser
+                if !workingInBackground {
+                    endBackgroundTask()
+                    return
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    private func backgroundTimeEnded() {
+        guard backgroundTask != .invalid else { return }
+        if workingInBackground {
+            log.notice("[agent] background time ended mid-run; the engine stops until Freedom is back")
+            let chat = currentChatID
+            stop()
+            currentChatID = chat
+            askBeforeResuming = true
+            interruption = .background
+            stoppedInBackground = true
+        }
+        endBackgroundTask()
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
+
+    private func willEnterForeground() {
+        endBackgroundTask()
+        guard stoppedInBackground else { return }
+        stoppedInBackground = false
+        Task { await start() }
     }
 
     func answer(_ approval: AgentApproval, approved: Bool) async {

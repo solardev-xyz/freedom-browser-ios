@@ -71,8 +71,13 @@ const PREAMBLE = [
  * - `compatible`: OpenAI-compatible providers from the app's settings,
  *   `[{ id, name, baseUrl, modelId, vision }]` (compatible.js).
  * - `scriptedPace`: tokens per second of the offline test model.
+ * - `askBeforeResuming`: don't continue what the last process left; list
+ *   those chats in `interrupted` and wait for `resumeInterrupted(proceed)`
+ *   (the app asks the user when Freedom was closed or put away mid-run).
+ *   Sending a message or stopping a run first ends them as stopped, since
+ *   scheduling can't resume for one chat and not another.
  */
-export async function openAgent({ database, page, wallet, files, nodes, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, compatible = [], scriptedPace = 200 }) {
+export async function openAgent({ database, page, wallet, files, nodes, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, compatible = [], scriptedPace = 200, askBeforeResuming = false }) {
 	const t0 = performance.now();
 	const approvals = new Map(); // taskId → { chatId, request, resolve }
 	let mode = APPROVAL_MODES.includes(approvalMode) ? approvalMode : "sensitive_actions";
@@ -381,8 +386,37 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 		}
 	}
 
-	// Continue the runs, tool calls and approvals the last process left.
-	harness.resume();
+	// Continue the runs, tool calls and approvals the last process left, or
+	// with `askBeforeResuming`, wait for the app's answer first.
+	let interrupted = askBeforeResuming ? await unfinishedChats() : [];
+	if (interrupted.length === 0) harness.resume();
+
+	/** Chats with live tasks or queued input, from the store (runs nothing). */
+	async function unfinishedChats() {
+		const { tasks, submissions } = await harness.inspect(context);
+		const chats = new Set();
+		for (const { record } of tasks) if (!record.background) chats.add(record.conversationId);
+		for (const submission of submissions) chats.add(submission.conversationId);
+		return [...chats];
+	}
+
+	/** Continues the interrupted chats, or ends their runs as stopped; then schedules again. */
+	async function resumeInterrupted(proceed) {
+		if (interrupted.length === 0) return;
+		const chats = new Set(interrupted);
+		interrupted = [];
+		if (!proceed) {
+			const { tasks, submissions } = await harness.inspect(context);
+			for (const submission of submissions) {
+				if (chats.has(submission.conversationId)) await harness.abortSubmission(submission.id, context, submission.conversationId);
+			}
+			// The runs themselves: abortTask marks without scheduling (Conversation.abort would resume first).
+			for (const { record } of tasks) {
+				if (!record.background && record.owner === undefined && chats.has(record.conversationId)) await harness.abortTask(record.id, context);
+			}
+		}
+		harness.resume();
+	}
 
 	return {
 		openMs: Math.round(performance.now() - t0),
@@ -395,6 +429,7 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 
 		/** Starts a run; returns once the input is stored. The same `requestId` again adds nothing. */
 		async submit({ chatId, prompt, requestId, model, attachments = [], images = [] }) {
+			await resumeInterrupted(false);
 			const conversation = await harness.conversation(chatId, context);
 			if (!conversation) throw new Error("That chat doesn't exist.");
 			if (model) await conversation.configure({ model }, context);
@@ -417,7 +452,18 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 
 		pendingApprovals: () => [...approvals].map(([taskId, { chatId, request }]) => ({ taskId, chatId, ...request })),
 
+		/** Chats whose runs wait for `resumeInterrupted` (see `askBeforeResuming`). */
+		interrupted: () => [...interrupted],
+		resumeInterrupted,
+
+		/** Whether any run is working or waiting to retry, and how many approvals wait for the user. */
+		activity() {
+			const wake = harness.wake();
+			return { busy: wake.active || wake.at !== undefined, approvals: approvals.size, interrupted: interrupted.length };
+		},
+
 		async abort(chatId) {
+			await resumeInterrupted(false);
 			const conversation = await harness.conversation(chatId, context);
 			await conversation?.abort(context);
 		},

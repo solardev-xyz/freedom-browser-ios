@@ -23,6 +23,17 @@ releases, so upgrade them together and run `npm run check` afterwards.
   the app reopens: a streaming answer is requested again, a read-only tool runs
   again, a page action the app died during reports "interrupted" to the model
   instead of repeating, and an approval still pending is asked again.
+  - Asking first (`askBeforeResuming`, Florian 2026-11-17): at launch, and
+    when the engine was stopped in the background, the app opens the agent
+    without continuing; `interrupted()` lists the chats (from
+    `harness.inspect()`, which runs nothing), the sheet asks "Continue" or
+    "Stop", and `resumeInterrupted(proceed)` continues them or aborts their
+    runs with `abortTask` (which, unlike `Conversation.abort`, doesn't start
+    scheduling) before `resume()`. Sending or stopping in the meantime stops
+    them first. A restart after the engine's process crashed continues
+    without asking. In the background, a working run gets iOS's background
+    time (about 30 s); still working when it ends, the engine stops as if
+    killed (AgentService), and coming back asks.
   - Chats are Pi conversations; the app keeps the list of chat IDs.
   - Models: OpenRouter, Anthropic, OpenAI, and a scripted offline one for tests.
     API keys stay in memory (pi-ai's `InMemoryCredentialStore`): the database
@@ -143,4 +154,7 @@ FREEDOM_DEBUG_SHOW=agent FREEDOM_DEBUG_OPEN_URL=https://en.wikipedia.org/ FREEDO
 # The browser tools on real sites, without a model (the test bench):
 FREEDOM_DEBUG_SHOW=agent-bench FREEDOM_DEBUG_OPEN_URL=https://example.com/ FREEDOM_DEBUG_AGENT_DELAY=4 \
   FREEDOM_DEBUG_AGENT_PAGECHECK=all
+# Also: FREEDOM_DEBUG_AGENT_RESUME=continue|stop answers the "continue?" question after a
+# kill or a stop in the background; FREEDOM_DEBUG_AGENT_BACKGROUND_SECONDS=<n> ends the
+# background time after n seconds.
 ```

@@ -48,6 +48,16 @@ struct AgentSheet: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
+                    if let other = agent.interruptedChats.first(where: { $0 != agent.currentChatID }) {
+                        Button {
+                            Task { await agent.select(other) }
+                        } label: {
+                            Label("Another chat's task was cut off", systemImage: "pause.circle.fill")
+                                .font(.footnote)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    }
                     if let waiting = agent.approvals.first(where: { $0.chatID != agent.currentChatID }) {
                         Button {
                             Task { await agent.select(waiting.chatID) }
@@ -69,7 +79,11 @@ struct AgentSheet: View {
                     ForEach(agent.items) { item in
                         AgentItemRow(item: item)
                     }
-                    liveRows
+                    if let chat = agent.currentChatID, agent.interruptedChats.contains(chat) {
+                        AgentInterruptedCard()
+                    } else {
+                        liveRows
+                    }
                     ForEach(agent.pendingApprovalsForCurrentChat) { approval in
                         AgentApprovalCard(approval: approval)
                     }
@@ -86,6 +100,7 @@ struct AgentSheet: View {
             .onChange(of: agent.items.count) { proxy.scrollTo("bottom", anchor: .bottom) }
             .onChange(of: agent.live.partial) { proxy.scrollTo("bottom", anchor: .bottom) }
             .onChange(of: agent.approvals.count) { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .onChange(of: agent.interruptedChats) { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
         }
         .safeAreaInset(edge: .bottom) { composer }
     }
@@ -231,6 +246,10 @@ private struct AgentSheetPresenter: ViewModifier {
             .onChange(of: agent.walletPrompt?.id) { _, id in
                 if id != nil, !isPresented, !pagePromptPending { isPresented = true }
             }
+            // A task cut off when Freedom closed or was put away: ask whether to continue it.
+            .onChange(of: agent.interruptedChats.isEmpty) { _, empty in
+                if !empty, !isPresented, !pagePromptPending { isPresented = true }
+            }
             .sheet(isPresented: $isPresented, onDismiss: { agent.isSheetOnScreen = false }) {
                 AgentSheet()
                     .onAppear { agent.isSheetOnScreen = true }
@@ -321,6 +340,35 @@ private struct AgentApprovalCard: View {
                 Button("Allow") { Task { await agent.answer(approval, approved: true) } }
                     .buttonStyle(.borderedProminent)
                 Button("Don't allow", role: .cancel) { Task { await agent.answer(approval, approved: false) } }
+                    .buttonStyle(.bordered)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.orange.opacity(0.4)))
+    }
+}
+
+/// A run cut off when Freedom closed (or was put away mid-run): continue or stop it.
+private struct AgentInterruptedCard: View {
+    @Environment(AgentService.self) private var agent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(
+                agent.interruption == .background
+                    ? "This task paused while Freedom was in the background."
+                    : "This task was cut off when Freedom closed.",
+                systemImage: "pause.circle.fill"
+            )
+            .font(.headline)
+            Text("Continue where it left off? Sending a new message stops it.")
+                .font(.footnote).foregroundStyle(.secondary)
+            HStack {
+                Button("Continue") { Task { await agent.resumeInterrupted(true) } }
+                    .buttonStyle(.borderedProminent)
+                Button("Stop", role: .cancel) { Task { await agent.resumeInterrupted(false) } }
                     .buttonStyle(.bordered)
             }
         }

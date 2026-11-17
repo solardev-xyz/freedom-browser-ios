@@ -254,6 +254,17 @@ final class AgentPageDriver {
         log.notice("[page] chat \(chat, privacy: .public) turn on tab \(Self.tabID(tab.recordID).prefix(8), privacy: .public); tabs \(entry.all.map { Self.tabID($0).prefix(8) }.joined(separator: ","), privacy: .public)")
     }
 
+    /// A run continues where it was cut off: bring the chat's tab to the front, so it
+    /// renders (a tab off screen gets no animation frames and slow timers) and the
+    /// user watches the agent work in it.
+    func showWorkingTab(chatID: Int) {
+        guard let id = chatTabs[String(chatID)]?.active, tabs.tab(for: id) != nil,
+              tabs.activeTab?.recordID != id else { return }
+        tabs.activate(id)
+        tabs.externalOpenToken += 1
+        log.notice("[page] chat \(chatID) continues on tab \(Self.tabID(id).prefix(8), privacy: .public), now in front")
+    }
+
     func forget(chatID: Int) {
         chatTabs[String(chatID)] = nil
         saveChatTabs()

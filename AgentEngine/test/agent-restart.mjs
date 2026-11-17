@@ -22,6 +22,8 @@
 // 14. A download asks even in "allow_website_interactions".
 // 15. Attached files: the message names them; images go along only for models that accept them.
 // 16. A node request that changes state asks even in "allow_website_interactions"; reads don't.
+// 17. Opened with askBeforeResuming, a run killed mid-answer waits: nothing
+//     streams until the app answers; "stop" ends it, "continue" finishes it.
 
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -123,6 +125,18 @@ async function main() {
 			"attached files are named in the message; images only for models that accept them",
 		);
 
+		for (const answerMode of ["ask-stop", "ask-continue"]) {
+			const db = join(dir, `${answerMode}.sqlite`);
+			await runChild("kill-mid-answer", db);
+			const asked = JSON.parse((await runChild(answerMode, db)).stdout);
+			const finished = /That is the end of the answer\.$/.test(asked.answer);
+			check(
+				asked.interrupted?.length === 1 && asked.interrupted[0] === asked.chatId && asked.grewWhilePaused === false &&
+					(answerMode === "ask-continue" ? finished : !finished && asked.activity?.busy === false),
+				answerMode === "ask-continue" ? "asked before resuming, continue finishes the run" : "asked before resuming, nothing runs until answered; stop ends the run",
+			);
+		}
+
 		const stamps = JSON.parse((await runChild("stamps", join(dir, "stamps.sqlite"))).stdout);
 		check(
 			stamps.approvalsAsked === 1 && stamps.approval?.tool === "node_request" && stamps.nodeRequests === 1 &&
@@ -219,6 +233,7 @@ async function child(mode, file) {
 	const emit = (event) => {
 		if (event.type === "chat_live") {
 			firstLive ??= event;
+			partialLength = Math.max(partialLength, event.partial?.length ?? 0);
 			// Past Pi's one-second window for storing a streaming answer, so some of it is saved.
 			if (mode === "kill-mid-answer" && event.partial.length >= 120) process.kill(process.pid, "SIGKILL");
 			// A resumed run can finish before the chat is watched: idle with a finished answer ends it too.
@@ -241,18 +256,32 @@ async function child(mode, file) {
 		}
 	};
 	let wasBusy = false;
+	let partialLength = 0;
 	const approvalMode = ["allow", "dialog", "download", "stamps"].includes(mode) ? "allow_website_interactions" : ["uninspectable", "visual", "sensitive-submit"].includes(mode) ? "sensitive_actions" : "every_interaction";
-	agent = await openAgent({ database, page, wallet, nodes, emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000 });
+	agent = await openAgent({ database, page, wallet, nodes, emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000, askBeforeResuming: mode.startsWith("ask-") });
 	// One chat per database: the first run creates it and the restart finds it under the same ID.
 	const chatId = await findOrCreateChat(agent, file);
 	await agent.view(chatId);
 	const question = ["kill-mid-answer", "resume"].includes(mode) ? QUESTION : mode === "dialog" ? "Answer the dialog" : /transfer/.test(mode) ? "Send 0.01 ETH to vitalik.eth" : mode === "download" ? "Download the file" : mode === "stamps" ? "Buy stamps" : CLICK;
-	if (!["approve", "transfer-resume"].includes(mode)) await agent.submit({ chatId, prompt: question, requestId: `${question}-1`, model: SCRIPTED_MODEL });
+	let interrupted;
+	let grewWhilePaused;
+	if (mode.startsWith("ask-")) {
+		interrupted = agent.interrupted();
+		// The view settles on what's stored (the cut-off answer included); then nothing may change.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		const before = JSON.stringify(items);
+		const partialBefore = partialLength;
+		// Longer than the 2 s backoff a continued run waits before its next attempt.
+		await new Promise((resolve) => setTimeout(resolve, 3500));
+		grewWhilePaused = partialLength !== partialBefore || JSON.stringify(items) !== before;
+		await agent.resumeInterrupted(mode === "ask-continue");
+	} else if (!["approve", "transfer-resume"].includes(mode)) await agent.submit({ chatId, prompt: question, requestId: `${question}-1`, model: SCRIPTED_MODEL });
 	const timeout = setTimeout(() => ended.reject(new Error(`${mode}: the run didn't end within 30 s`)), 30_000);
 	await ended.promise;
 	clearTimeout(timeout);
 	await new Promise((resolve) => setTimeout(resolve, 50)); // the last chat_items
-	process.stdout.write(JSON.stringify({ firstLive, items, answer, approvalsAsked, approval, clicks: state.clicks, dialogAnswers: state.dialogAnswers, transfers: walletState.transfers, nodeRequests: walletState.nodeRequests, downloads: state.downloads, transferChat: walletState.chatId, chatId, chatIds: [...state.chatIds], unboundCalls: state.unboundCalls }));
+	const activity = agent.activity();
+	process.stdout.write(JSON.stringify({ interrupted, grewWhilePaused, activity, firstLive, items, answer, approvalsAsked, approval, clicks: state.clicks, dialogAnswers: state.dialogAnswers, transfers: walletState.transfers, nodeRequests: walletState.nodeRequests, downloads: state.downloads, transferChat: walletState.chatId, chatId, chatIds: [...state.chatIds], unboundCalls: state.unboundCalls }));
 	await agent.close();
 	await database.close();
 }
