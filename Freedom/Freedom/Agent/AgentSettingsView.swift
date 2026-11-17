@@ -6,6 +6,7 @@ struct AgentSettingsView: View {
     @State private var keyDraft = ""
     @State private var keyError: String?
     @State private var keySaved = false
+    @State private var isConfirmingDelete = false
 
     var body: some View {
         @Bindable var settings = agent.settings
@@ -18,7 +19,7 @@ struct AgentSettingsView: View {
             }
 
             if settings.isEnabled {
-                Section("Model") {
+                Section {
                     Picker("Provider", selection: $settings.provider) {
                         ForEach(AgentSettings.Provider.allCases) { Text($0.displayName).tag($0) }
                     }
@@ -27,6 +28,16 @@ struct AgentSettingsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
+                    if settings.provider == .openrouter {
+                        Toggle("Require zero data retention", isOn: $settings.openrouterZeroRetention)
+                            .onChange(of: settings.openrouterZeroRetention) { agent.zeroRetentionChanged() }
+                    }
+                } header: {
+                    Text("Model")
+                } footer: {
+                    if settings.provider == .openrouter {
+                        Text("OpenRouter passes requests to an inference provider. With zero data retention it only picks providers that keep nothing; that's their policy, not encryption, and fewer models are available.")
+                    }
                 }
 
                 Section {
@@ -60,6 +71,17 @@ struct AgentSettingsView: View {
                     Text("Approvals")
                 } footer: {
                     Text(approvalFooter(settings.approvalMode))
+                }
+
+                Section {
+                    Button("Delete all chats", role: .destructive) { isConfirmingDelete = true }
+                        .confirmationDialog("Delete all agent chats?", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
+                            Button("Delete all chats", role: .destructive) { Task { await agent.deleteAllChats() } }
+                        } message: {
+                            Text("Their history is removed from this iPhone. Your key and settings stay.")
+                        }
+                } footer: {
+                    Text("Chats are stored on this iPhone only.")
                 }
 
                 if settings.hasConsented {

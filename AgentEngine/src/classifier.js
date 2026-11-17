@@ -82,7 +82,7 @@ const RETRYABLE = new Set(["classifier_empty_output", "classifier_invalid_json",
  * `model` through `models.completeSimple`. Two attempts at most (the second
  * restates the output contract) within 15 s; never throws.
  */
-export async function classifyInteraction(models, model, input, signal) {
+export async function classifyInteraction(models, model, input, signal, transformPayload) {
 	let envelope;
 	try {
 		envelope = JSON.stringify({
@@ -113,7 +113,7 @@ export async function classifyInteraction(models, model, input, signal) {
 			const message = await models.completeSimple(
 				model,
 				{ systemPrompt: SYSTEM_PROMPT, messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
-				{ signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
+				{ signal: signal ? AbortSignal.any([signal, timeout]) : timeout, ...(transformPayload && { onPayload: async (payload) => transformPayload(payload) }) },
 			);
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
 				classification = uncertain(timeout.aborted ? "classifier_timeout" : "classifier_provider_error");

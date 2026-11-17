@@ -165,14 +165,14 @@ const openedAgent = () => {
 	return agent;
 };
 
-onCommand("agentOpen", async ({ apiKeys, approvalMode, wipe }) => {
+onCommand("agentOpen", async ({ apiKeys, approvalMode, openrouterZeroRetention, wipe }) => {
 	if (agent) {
 		await agent.close();
 		agent = undefined;
 	}
 	if (wipe) await wipeAppDatabase(AGENT_DATABASE);
 	const database = await openAppDatabase(AGENT_DATABASE);
-	agent = await openAgent({ database, emit, apiKeys, approvalMode, page: (method, params) => request("page", method, params) });
+	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, page: (method, params) => request("page", method, params) });
 	return { openMs: agent.openMs, approvals: agent.pendingApprovals() };
 });
 onCommand("agentCreateChat", ({ model }) => openedAgent().createChat({ model }));
@@ -189,6 +189,7 @@ onCommand("agentSetKey", async ({ provider, key }) => {
 	return true;
 });
 onCommand("agentSetApprovalMode", ({ mode }) => openedAgent().setApprovalMode(mode));
+onCommand("agentSetZeroRetention", ({ on }) => openedAgent().setZeroRetention(on));
 
 function resolveModel({ provider, model: modelId, baseUrl }) {
 	const models = createModels();

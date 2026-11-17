@@ -196,6 +196,7 @@ struct ContentView: View {
         case "ipfs": debugSettingsPath = [.ipfs]
         case "myotis": debugSettingsPath = [.myotis]
         case "adblock": debugSettingsPath = [.adblock]
+        case "agent": debugSettingsPath = [.agent]
         case "search": debugSettingsPath = [.search]
         case "permissions": debugSettingsPath = [.sitePermissions]
         case "chain":

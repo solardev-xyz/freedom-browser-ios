@@ -82,6 +82,11 @@ final class AgentSettings {
     var approvalMode: ApprovalMode {
         didSet { defaults.set(approvalMode.rawValue, forKey: Keys.approvalMode) }
     }
+    /// OpenRouter routes only to providers that keep no data (desktop's
+    /// "Require zero data retention"); fewer models, on by default.
+    var openrouterZeroRetention: Bool {
+        didSet { defaults.set(openrouterZeroRetention, forKey: Keys.zeroRetention) }
+    }
     /// The providers the user agreed to send page content and messages to
     /// (App Store guideline 5.1.2(i): ask before sharing personal data with
     /// a third-party AI). Asked again for a provider not in here.
@@ -105,6 +110,7 @@ final class AgentSettings {
         models = defaults.dictionary(forKey: Keys.models) as? [String: String] ?? [:]
         approvalMode = defaults.string(forKey: Keys.approvalMode).flatMap(ApprovalMode.init) ?? .sensitiveActions
         consentedProviders = Set(defaults.stringArray(forKey: Keys.consented) ?? [])
+        openrouterZeroRetention = defaults.object(forKey: Keys.zeroRetention) as? Bool ?? true
     }
 
     private enum Keys {
@@ -113,5 +119,6 @@ final class AgentSettings {
         static let models = "agent.models"
         static let approvalMode = "agent.approvalMode"
         static let consented = "agent.consentedProviders"
+        static let zeroRetention = "agent.openrouterZeroRetention"
     }
 }

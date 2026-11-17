@@ -181,7 +181,12 @@ final class AgentService {
                 saveChats()
             }
             #endif
-            let result = try await engine.command("agentOpen", ["apiKeys": keys, "approvalMode": settings.approvalMode.rawValue, "wipe": wipe]) as? [String: Any] ?? [:]
+            let result = try await engine.command("agentOpen", [
+                "apiKeys": keys,
+                "approvalMode": settings.approvalMode.rawValue,
+                "openrouterZeroRetention": settings.openrouterZeroRetention,
+                "wipe": wipe,
+            ]) as? [String: Any] ?? [:]
             for raw in result["approvals"] as? [[String: Any]] ?? [] {
                 if let approval = AgentApproval(raw) { approvals.append(approval) }
             }
@@ -318,6 +323,25 @@ final class AgentService {
 
     func approvalModeChanged() {
         Task { _ = try? await engine?.command("agentSetApprovalMode", ["mode": settings.approvalMode.rawValue]) }
+    }
+
+    func zeroRetentionChanged() {
+        Task { _ = try? await engine?.command("agentSetZeroRetention", ["on": settings.openrouterZeroRetention]) }
+    }
+
+    /// Deletes every chat (the database file) and the chat list; keys and settings stay.
+    func deleteAllChats() async {
+        let wasRunning = engine != nil
+        stop()
+        chats = []
+        currentChatID = nil
+        items = []
+        saveChats()
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(at: AgentDatabase.directory.appending(path: "agent.sqlite\(suffix)"))
+        }
+        log.notice("[agent] deleted all chats")
+        if wasRunning { await start() }
     }
 
     func enabledChanged() async {

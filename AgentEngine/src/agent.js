@@ -15,7 +15,7 @@ import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCal
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
-import { createRegistry, defineExtension, Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, GenerationTask, Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { classifyInteraction, mayProceed } from "./classifier.js";
 import { createPageTools, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
@@ -52,12 +52,16 @@ const PREAMBLE = [
  *   database stores which model a chat uses, never a key, so pass them on
  *   every open (a run continued after a restart needs them at once).
  * - `approvalMode`: one of APPROVAL_MODES.
+ * - `openrouterZeroRetention`: OpenRouter routes only to providers that keep
+ *   no data (desktop's "Require zero data retention", on by default).
  * - `scriptedPace`: tokens per second of the offline test model.
  */
-export async function openAgent({ database, page, emit, apiKeys = {}, approvalMode = "sensitive_actions", scriptedPace = 200 }) {
+export async function openAgent({ database, page, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, scriptedPace = 200 }) {
 	const t0 = performance.now();
 	const approvals = new Map(); // taskId → { chatId, request, resolve }
 	let mode = APPROVAL_MODES.includes(approvalMode) ? approvalMode : "sensitive_actions";
+	let zeroRetention = openrouterZeroRetention !== false;
+	const privacyPayload = (model, payload) => (model.provider === "openrouter" && zeroRetention ? withZeroRetention(payload) : payload);
 
 	const credentials = new InMemoryCredentialStore();
 	const setApiKey = (providerId, key) =>
@@ -178,6 +182,7 @@ export async function openAgent({ database, page, emit, apiKeys = {}, approvalMo
 							untrustedContext: { label: described.label },
 						},
 						ctx.abortSignal,
+						(payload) => privacyPayload(model, payload),
 					)
 				: { kind: "uncertain", confidence: 0, summary: "The offline test model can't classify interactions.", uncertainties: ["scripted_model"] };
 		return { proceed: mayProceed(classification), classification };
@@ -205,9 +210,16 @@ export async function openAgent({ database, page, emit, apiKeys = {}, approvalMo
 		});
 	}
 
+	// Every model request, agent and classifier alike.
+	const privacy = defineExtension({
+		name: "privacy",
+		hooks: [hook(GenerationTask, { beforeProviderRequest: ({ model, payload }) => ({ payload: privacyPayload(model, payload) }) })],
+	});
+
 	const registry = createRegistry();
 	registry.install(freedom);
 	registry.install(approvalGate);
+	registry.install(privacy);
 
 	const storage = await SqliteStorage.open(database);
 	harness = await Harness.open(
@@ -318,6 +330,10 @@ export async function openAgent({ database, page, emit, apiKeys = {}, approvalMo
 			if (APPROVAL_MODES.includes(next)) mode = next;
 			return mode;
 		},
+		setZeroRetention(on) {
+			zeroRetention = on !== false;
+			return zeroRetention;
+		},
 
 		async close() {
 			await unview();
@@ -387,6 +403,17 @@ export function textOf(message) {
 		.filter((c) => c.type === "text")
 		.map((c) => c.text)
 		.join("");
+}
+
+// MARK: - Privacy
+
+/** Desktop's OpenRouter zero-data-retention routing (provider-resolver.js). */
+function withZeroRetention(payload) {
+	if (!payload || typeof payload !== "object") return payload;
+	const body = { ...payload, provider: { ...payload.provider, zdr: true, data_collection: "deny", require_parameters: true }, plugins: [] };
+	delete body.models;
+	delete body.route;
+	return body;
 }
 
 // MARK: - Approval helpers
