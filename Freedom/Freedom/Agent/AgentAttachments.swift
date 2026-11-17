@@ -105,6 +105,13 @@ final class AgentAttachmentStore {
         try? FileManager.default.removeItem(at: root)
     }
 
+    /// An attachment of `chat` with its bytes (for publishing it).
+    func file(chat: String, id: String) -> (attachment: AgentAttachment, data: Data)? {
+        guard let attachment = list(chat).first(where: { $0.id == id }),
+              let data = try? Data(contentsOf: chatDirectory(chat).appending(path: id)) else { return nil }
+        return (attachment, data)
+    }
+
     private func list(_ chat: String) -> [AgentAttachment] {
         (try? Data(contentsOf: indexURL(chat))).flatMap { try? JSONDecoder().decode([AgentAttachment].self, from: $0) } ?? []
     }

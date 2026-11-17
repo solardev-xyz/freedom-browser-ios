@@ -317,7 +317,11 @@ struct FreedomApp: App {
             )
             self._tabStore = State(wrappedValue: tabs)
             self._agent = State(wrappedValue: AgentService(
-                settings: AgentSettings(), tabStore: tabs, wallet: wallet, balances: walletBalances, userWallets: userWallets
+                settings: AgentSettings(), tabStore: tabs, wallet: wallet, balances: walletBalances, userWallets: userWallets,
+                nodes: AgentNodes(
+                    swarm: swarmInstance, readiness: readiness, stamps: stamps, swarmServices: swarmServices,
+                    ipfs: ipfsInstance, radicle: radicleInstance, myotis: myotisInstance
+                )
             ))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")

@@ -19,6 +19,7 @@
 // 13. Killed while the wallet waited for the user: reopening never sends again.
 // 14. A download asks even in "allow_website_interactions".
 // 15. Attached files: the message names them; images go along only for models that accept them.
+// 16. A node request that changes state asks even in "allow_website_interactions"; reads don't.
 
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -29,6 +30,7 @@ import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import { openAgent, SCRIPTED_MODEL } from "../src/agent.js";
 import { createPageTools } from "../src/tools/page.js";
 import { messageWithAttachments } from "../src/tools/attachments.js";
+import { nodeCallAsks } from "../src/tools/node.js";
 
 const QUESTION = "What is the page I have open about?";
 const CLICK = "Please click the button";
@@ -103,6 +105,13 @@ async function main() {
 				typeof withoutVision === "string" && messageWithAttachments("Hi") === "Hi",
 			"attached files are named in the message; images only for models that accept them",
 		);
+
+		const stamps = JSON.parse((await runChild("stamps", join(dir, "stamps.sqlite"))).stdout);
+		check(
+			stamps.approvalsAsked === 1 && stamps.approval?.tool === "node_request" && stamps.nodeRequests === 1 &&
+				!nodeCallAsks("node_request", { request: { method: "GET", path: "/stamps" } }) && nodeCallAsks("swarm_publish", {}),
+			"a state-changing node request asks even in allow mode; reads don't",
+		);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -170,7 +179,11 @@ function fakePage({ describeThrows = false, noTab = false, visual = false } = {}
 
 async function child(mode, file) {
 	const database = await openNodeSqliteDatabase(file);
-	const walletState = { transfers: 0 };
+	const walletState = { transfers: 0, nodeRequests: 0 };
+	const nodes = async (method) => {
+		if (method === "request") walletState.nodeRequests += 1;
+		return { status: 201, body: "{\"batchID\":\"abc\"}" };
+	};
 	const wallet = async (method, params) => {
 		if (mode === "kill-at-transfer") process.kill(process.pid, "SIGKILL");
 		walletState.transfers += 1;
@@ -205,23 +218,23 @@ async function child(mode, file) {
 			approval = event;
 			if (mode === "kill-at-approval") process.kill(process.pid, "SIGKILL");
 			if (mode === "changed") state.relabel = true;
-			if (["approve", "changed", "uninspectable", "visual", "dialog", "download"].includes(mode)) agent.approve(event.taskId, true);
+			if (["approve", "changed", "uninspectable", "visual", "dialog", "download", "stamps"].includes(mode)) agent.approve(event.taskId, true);
 			if (mode === "decline") agent.approve(event.taskId, false);
 		}
 	};
 	let wasBusy = false;
-	const approvalMode = ["allow", "dialog", "download"].includes(mode) ? "allow_website_interactions" : ["uninspectable", "visual"].includes(mode) ? "sensitive_actions" : "every_interaction";
-	agent = await openAgent({ database, page, wallet, emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000 });
+	const approvalMode = ["allow", "dialog", "download", "stamps"].includes(mode) ? "allow_website_interactions" : ["uninspectable", "visual"].includes(mode) ? "sensitive_actions" : "every_interaction";
+	agent = await openAgent({ database, page, wallet, nodes, emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000 });
 	// One chat per database: the first run creates it and the restart finds it under the same ID.
 	const chatId = await findOrCreateChat(agent, file);
 	await agent.view(chatId);
-	const question = ["kill-mid-answer", "resume"].includes(mode) ? QUESTION : mode === "dialog" ? "Answer the dialog" : /transfer/.test(mode) ? "Send 0.01 ETH to vitalik.eth" : mode === "download" ? "Download the file" : CLICK;
+	const question = ["kill-mid-answer", "resume"].includes(mode) ? QUESTION : mode === "dialog" ? "Answer the dialog" : /transfer/.test(mode) ? "Send 0.01 ETH to vitalik.eth" : mode === "download" ? "Download the file" : mode === "stamps" ? "Buy stamps" : CLICK;
 	if (!["approve", "transfer-resume"].includes(mode)) await agent.submit({ chatId, prompt: question, requestId: `${question}-1`, model: SCRIPTED_MODEL });
 	const timeout = setTimeout(() => ended.reject(new Error(`${mode}: the run didn't end within 30 s`)), 30_000);
 	await ended.promise;
 	clearTimeout(timeout);
 	await new Promise((resolve) => setTimeout(resolve, 50)); // the last chat_items
-	process.stdout.write(JSON.stringify({ firstLive, items, answer, approvalsAsked, approval, clicks: state.clicks, dialogAnswers: state.dialogAnswers, transfers: walletState.transfers, downloads: state.downloads, transferChat: walletState.chatId, chatId, chatIds: [...state.chatIds], unboundCalls: state.unboundCalls }));
+	process.stdout.write(JSON.stringify({ firstLive, items, answer, approvalsAsked, approval, clicks: state.clicks, dialogAnswers: state.dialogAnswers, transfers: walletState.transfers, nodeRequests: walletState.nodeRequests, downloads: state.downloads, transferChat: walletState.chatId, chatId, chatIds: [...state.chatIds], unboundCalls: state.unboundCalls }));
 	await agent.close();
 	await database.close();
 }

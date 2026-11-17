@@ -145,6 +145,8 @@ final class AgentService {
     private let wallet: WalletServices
     private let balances: WalletBalanceStore
     private let userWallets: UserWalletStore
+    private let nodes: AgentNodes
+    private var nodeDriver: AgentNodeDriver?
     private let defaults: UserDefaults
 
     init(
@@ -153,8 +155,10 @@ final class AgentService {
         wallet: WalletServices,
         balances: WalletBalanceStore,
         userWallets: UserWalletStore,
+        nodes: AgentNodes,
         defaults: UserDefaults = .standard
     ) {
+        self.nodes = nodes
         self.settings = settings
         self.tabStore = tabStore
         self.wallet = wallet
@@ -192,6 +196,9 @@ final class AgentService {
         }
         engine.pageDriver = driver
         engine.attachmentStore = attachments
+        let nodeDriver = AgentNodeDriver(nodes: nodes, attachments: attachments, defaults: defaults)
+        engine.nodeDriver = nodeDriver
+        self.nodeDriver = nodeDriver
         let walletDriver = AgentWalletDriver(services: wallet, balances: balances, userWallets: userWallets) { [weak self] prompt in
             self?.walletPrompt = prompt
         }
@@ -214,6 +221,7 @@ final class AgentService {
                 saveChats()
                 driver.forgetAll()
                 attachments.forgetAll()
+                nodeDriver.forgetAll()
             }
             #endif
             let result = try await engine.command("agentOpen", [
@@ -312,6 +320,7 @@ final class AgentService {
         saveChats()
         pageDriver?.forget(chatID: chatID)
         attachments.forget(chatID: chatID)
+        nodeDriver?.forget(chatID: chatID)
         if currentChatID == chatID { newChat() }
     }
 
@@ -349,6 +358,7 @@ final class AgentService {
                 // IDs start over when the chat database is deleted: a new chat starts with no tabs or files.
                 pageDriver?.forget(chatID: id)
                 attachments.forget(chatID: id)
+                nodeDriver?.forget(chatID: id)
                 chatID = id
                 await select(id)
             }
@@ -412,6 +422,7 @@ final class AgentService {
         items = []
         saveChats()
         AgentPageDriver(tabs: tabStore, defaults: defaults).forgetAll()
+        AgentNodeDriver(nodes: nodes, attachments: attachments, defaults: defaults).forgetAll()
         attachments.forgetAll()
         stagedAttachments = []
         for suffix in ["", "-wal", "-shm"] {

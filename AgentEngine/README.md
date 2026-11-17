@@ -76,6 +76,15 @@ releases, so upgrade them together and run `npm run check` afterwards.
   (`AgentAttachments.swift`). The message names them, and for a model that
   accepts images their images go along; the tools read bounded text, images,
   PDF text (PDFKit, 1–4 pages) and PDF pages as images.
+- `tools/node.js`: desktop's `node_status`, `node_request`,
+  `node_diagnostics`, `swarm_publish`, `swarm_publication_status` on the
+  phone's nodes (`AgentNodes.swift`): status of Swarm (Ant), IPFS, Radicle
+  and Myotis; raw requests to Ant's Bee-compatible API at 127.0.0.1:1633
+  (reads run, anything else asks); a node's own log (asks; the app's home
+  folder shows as ~); publishing an attachment or bounded text, public only
+  (no drafts or stable addresses on iPhone yet), always asked with the
+  storage it uses. `skills/`: desktop's swarm-publishing and swarm-postage
+  skills adapted to the phone, read with `skill_read`.
 - `classifier.js`: desktop's interaction-intent classifier.
 - `page-check.js`: scripted checks of the browser tools on real sites, no model.
 - `bridge.js`: engine ↔ app messages (`freedomAgent` handler, `window.__freedomAgent.command`).

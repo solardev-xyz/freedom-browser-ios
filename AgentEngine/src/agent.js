@@ -23,6 +23,8 @@ import { classifyInteraction, mayProceed } from "./classifier.js";
 import { ALWAYS_ASK_TOOLS, createPageTools, DIALOG_TOOLS, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
 import { createWalletTools } from "./tools/wallet.js";
 import { createAttachmentTools, messageWithAttachments } from "./tools/attachments.js";
+import { createNodeTools, nodeCallAsks } from "./tools/node.js";
+import { skillsSection, skillTool } from "./skills/index.js";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -54,6 +56,8 @@ const PREAMBLE = [
  *   without it, no wallet tools.
  * - `files(method, params)`: the host's attachments service
  *   (AgentAttachments.swift); without it, no attachment tools.
+ * - `nodes(method, params)`: the host's node service (AgentNodes.swift);
+ *   without it, no node or Swarm tools.
  * - `emit(event)`: `approval` (a website interaction waits for `approve()`),
  *   `approval_gone`, and for the chat being viewed `chat_items` (its
  *   transcript changed) and `chat_live` (busy, streamed answer, tools).
@@ -65,7 +69,7 @@ const PREAMBLE = [
  *   no data (desktop's "Require zero data retention", on by default).
  * - `scriptedPace`: tokens per second of the offline test model.
  */
-export async function openAgent({ database, page, wallet, files, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, scriptedPace = 200 }) {
+export async function openAgent({ database, page, wallet, files, nodes, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, scriptedPace = 200 }) {
 	const t0 = performance.now();
 	const approvals = new Map(); // taskId → { chatId, request, resolve }
 	let mode = APPROVAL_MODES.includes(approvalMode) ? approvalMode : "sensitive_actions";
@@ -84,8 +88,13 @@ export async function openAgent({ database, page, wallet, files, emit, apiKeys =
 
 	const freedom = defineExtension({
 		name: "freedom",
-		sections: [section("preamble", () => PREAMBLE, { tag: false })],
-		tools: [...pageTools.tools, ...(wallet ? createWalletTools(wallet) : []), ...(files ? createAttachmentTools(files) : [])],
+		sections: [section("preamble", () => PREAMBLE, { tag: false }), ...(nodes ? [section("skills", skillsSection, { tag: false })] : [])],
+		tools: [
+			...pageTools.tools,
+			...(wallet ? createWalletTools(wallet) : []),
+			...(files ? createAttachmentTools(files) : []),
+			...(nodes ? [...createNodeTools(nodes), skillTool] : []),
+		],
 	});
 
 	let harness;
@@ -100,6 +109,7 @@ export async function openAgent({ database, page, wallet, files, emit, apiKeys =
 			hook(ToolTask, {
 				beforeTool: async (call, api, ctx) => {
 					if (DIALOG_TOOLS.has(call.name)) return dialogGate(call, api, ctx);
+					if (nodes && nodeCallAsks(call.name, call.arguments)) return nodeGate(call, api, ctx);
 					if (!INTERACTION_TOOLS.has(call.name)) return undefined;
 					const stored = await api.memo("approval", ctx);
 					if (stored === "declined") return { block: "The user declined this action." };
@@ -196,6 +206,42 @@ export async function openAgent({ database, page, wallet, files, emit, apiKeys =
 		if (answer !== "approved") return { block: "The user declined answering the dialog. It is still open." };
 		if ((await current())?.dialogRef !== call.arguments.dialogRef) return { block: "That dialog closed while the approval was pending." };
 		return undefined;
+	}
+
+	/**
+	 * Freedom's own capabilities that change something or share local data:
+	 * a node request that isn't a read, node diagnostics, a publication.
+	 * Always asked, in every mode, with what exactly would happen.
+	 */
+	async function nodeGate(call, api, ctx) {
+		const stored = await api.memo("approval", ctx);
+		if (stored === "declined") return { block: "The user declined this. Don't retry it in another form unless they ask again." };
+		if (stored !== undefined) return undefined;
+		const args = call.arguments;
+		let request;
+		if (call.name === "swarm_publish") {
+			// What would be published and which storage it uses, from the app (or why it can't be).
+			let preview;
+			try {
+				preview = await nodes("publishPreview", { ...args, chatId: api.conversationId });
+			} catch (error) {
+				return { block: error?.message ?? String(error) };
+			}
+			request = {
+				label: preview.what,
+				effect: "swarm_publish",
+				summary: preview.summary,
+				uncertainties: preview.warnings ?? [],
+			};
+		} else if (call.name === "node_diagnostics") {
+			request = { label: `${args.service} log`, effect: "share_diagnostics", summary: `Share the recent ${args.service} log and status with the model provider.`, uncertainties: [] };
+		} else {
+			const method = String(args.request?.method ?? "").toUpperCase();
+			request = { label: `${method} ${args.request?.path ?? ""}`, effect: "node_request", summary: `Send ${method} ${args.request?.path ?? ""} to Freedom's Swarm node${args.request?.body ? " with a body" : ""}.`, uncertainties: [] };
+		}
+		const answer = await waitForApproval(api.taskId, api.conversationId, { tool: call.name, arguments: summarizeArguments(args), ...request }, ctx);
+		await api.memo("approval", answer, ctx);
+		return answer === "approved" ? undefined : { block: "The user declined this. Don't retry it in another form unless they ask again." };
 	}
 
 	/** Whether an interaction may run without asking, by mode. */
@@ -524,6 +570,11 @@ function scriptedProvider(pace) {
 				if (element) return fauxAssistantMessage([fauxToolCall("browser_download", { ref: element.ref })], { stopReason: "toolUse" });
 			}
 			return fauxAssistantMessage(last.isError ? `Not downloaded: ${textOf(last)}` : "Downloaded.");
+		}
+		// "stamps": one state-changing node request (a postage purchase), then report.
+		if (/\bstamps\b/i.test(prompt)) {
+			if (!last) return fauxAssistantMessage([fauxToolCall("node_request", { service: "ant", transport: "http", request: { method: "POST", path: "/stamps/1000000/20" } })], { stopReason: "toolUse" });
+			return fauxAssistantMessage(last.isError ? `Not bought: ${textOf(last)}` : `Bought: ${textOf(last)}`);
 		}
 		// "send": one wallet transfer, then report its result.
 		if (/\bsend\b/i.test(prompt)) {

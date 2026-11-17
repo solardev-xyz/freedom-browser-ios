@@ -40,6 +40,8 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigation
     var walletDriver: AgentWalletDriver?
     /// The chats' attached files, for the attachment tools.
     var attachmentStore: AgentAttachmentStore?
+    /// Freedom's nodes, for the node and Swarm tools.
+    var nodeDriver: AgentNodeDriver?
 
     private(set) var webView: WKWebView?
     private var readyWaiter: CheckedContinuation<Void, Error>?
@@ -176,6 +178,19 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigation
             Task {
                 do {
                     replyHandler(try await pageDriver.handle(method, params), nil)
+                } catch {
+                    replyHandler(nil, error.localizedDescription)
+                }
+            }
+        case "nodes":
+            guard let nodeDriver else {
+                replyHandler(nil, "The node tools aren't available")
+                return
+            }
+            let params = body["params"] as? [String: Any] ?? [:]
+            Task {
+                do {
+                    replyHandler(try await nodeDriver.handle(method, params), nil)
                 } catch {
                     replyHandler(nil, error.localizedDescription)
                 }

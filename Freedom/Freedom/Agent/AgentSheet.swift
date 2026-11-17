@@ -345,6 +345,10 @@ enum AgentToolLabel {
         case "browser_get_dialog", "browser_handle_dialog": "exclamationmark.bubble"
         case "browser_list_frames", "browser_read_frame": "rectangle.inset.filled"
         case "wallet_transfer": "arrow.up.right.circle"
+        case "node_status", "node_diagnostics": "server.rack"
+        case "node_request": "terminal"
+        case "swarm_publish", "swarm_publication_status": "icloud.and.arrow.up"
+        case "skill_read": "book"
         case "browser_upload": "paperclip"
         case "browser_download", "browser_list_downloads": "arrow.down.circle"
         case "browser_navigate": "arrow.up.right.square"
@@ -381,6 +385,12 @@ enum AgentToolLabel {
         case "browser_list_frames": "Finding embedded frames…"
         case "browser_read_frame": "Reading an embedded frame…"
         case "wallet_transfer": "Waiting for you to approve the transfer…"
+        case "node_status": "Checking Freedom's nodes…"
+        case "node_request": "Asking the Swarm node…"
+        case "node_diagnostics": "Reading a node's log…"
+        case "swarm_publish": "Publishing to Swarm…"
+        case "swarm_publication_status": "Checking the publication…"
+        case "skill_read": "Reading a skill…"
         case "browser_upload": "Waiting for you to choose a file…"
         case "browser_download": "Downloading…"
         case "browser_list_downloads": "Checking downloads…"
@@ -410,6 +420,12 @@ enum AgentToolLabel {
         case "browser_get_dialog": return "Read the dialog"
         case "browser_list_frames": return "Found embedded frames"
         case "browser_read_frame": return "Read an embedded frame"
+        case "node_status": return "Checked Freedom's nodes"
+        case "node_request": return "\(arguments["request"].flatMap { $0.contains("POST") ? "Sent" : nil } ?? "Asked") the Swarm node"
+        case "node_diagnostics": return "Read the \(arguments["service"] ?? "node") log"
+        case "swarm_publish": return "Published to Swarm"
+        case "swarm_publication_status": return "Checked the publication"
+        case "skill_read": return "Read the \(arguments["name"] ?? "") skill"
         case "browser_upload": return "Attached a file"
         case "browser_download": return "Downloaded a file"
         case "browser_list_downloads": return "Checked downloads"
@@ -436,6 +452,12 @@ enum AgentToolLabel {
             return "Scroll \(approval.arguments["direction"] ?? "") in \(target)"
         case "browser_download":
             return "Download \(approval.navigationTarget ?? target)"
+        case "node_request":
+            return "Send \(approval.label) to Freedom's Swarm node"
+        case "node_diagnostics":
+            return "Share the \(approval.label) with the model provider"
+        case "swarm_publish":
+            return "Publish \(approval.label) publicly to Swarm"
         case "browser_upload":
             return "Attach a file you choose to \(target)"
         case "browser_handle_dialog":
