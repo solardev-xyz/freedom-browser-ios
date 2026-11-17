@@ -424,6 +424,12 @@ final class BrowserTab {
         // previous, Done), entered from the address bar's "On This Page"
         // row — Safari's flow, desktop's Cmd+F bar.
         self.webView.isFindInteractionEnabled = true
+        // Swipe from the left edge for Back, from the right edge for
+        // Forward, as in Safari (the zoom transition's own edge swipe is
+        // turned off in TabsRoot). History traversal still passes the
+        // navigation delegate's `.backForward` path, so ENS names are
+        // re-verified exactly as with the buttons.
+        self.webView.allowsBackForwardNavigationGestures = true
         self.webView.navigationDelegate = navDelegate
         navDelegate.owner = self
         self.webView.uiDelegate = uiDelegate
