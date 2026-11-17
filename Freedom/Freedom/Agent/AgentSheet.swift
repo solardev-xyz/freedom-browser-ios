@@ -208,6 +208,10 @@ private struct AgentSheetPresenter: ViewModifier {
         Binding(get: { agent.walletPrompt }, set: { if $0 == nil { agent.walletPrompt?.cancel() } })
     }
 
+    private var filePromptBinding: Binding<AgentFilePrompt?> {
+        Binding(get: { agent.filePrompt }, set: { if $0 == nil { agent.filePrompt?.cancel() } })
+    }
+
     /// A page prompt showing from the root: the agent's sheet waits for it.
     private var pagePromptPending: Bool { tabStore.activeTab?.hasPendingPrompt == true }
 
@@ -230,6 +234,10 @@ private struct AgentSheetPresenter: ViewModifier {
                     // The agent's own transfer (wallet_transfer).
                     .sheet(item: walletPromptBinding) { prompt in
                         AgentTransferSheet(prompt: prompt)
+                    }
+                    // A file the agent asked to upload (browser_upload).
+                    .sheet(item: filePromptBinding) { prompt in
+                        AgentFileSheet(prompt: prompt)
                     }
                     .presentationDetents([.medium, .large])
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
@@ -326,6 +334,8 @@ enum AgentToolLabel {
         case "browser_get_dialog", "browser_handle_dialog": "exclamationmark.bubble"
         case "browser_list_frames", "browser_read_frame": "rectangle.inset.filled"
         case "wallet_transfer": "arrow.up.right.circle"
+        case "browser_upload": "paperclip"
+        case "browser_download", "browser_list_downloads": "arrow.down.circle"
         case "browser_navigate": "arrow.up.right.square"
         case "browser_click": "hand.tap"
         case "browser_type": "keyboard"
@@ -360,6 +370,9 @@ enum AgentToolLabel {
         case "browser_list_frames": "Finding embedded frames…"
         case "browser_read_frame": "Reading an embedded frame…"
         case "wallet_transfer": "Waiting for you to approve the transfer…"
+        case "browser_upload": "Waiting for you to choose a file…"
+        case "browser_download": "Downloading…"
+        case "browser_list_downloads": "Checking downloads…"
         default: "Working…"
         }
     }
@@ -386,6 +399,9 @@ enum AgentToolLabel {
         case "browser_get_dialog": return "Read the dialog"
         case "browser_list_frames": return "Found embedded frames"
         case "browser_read_frame": return "Read an embedded frame"
+        case "browser_upload": return "Attached a file"
+        case "browser_download": return "Downloaded a file"
+        case "browser_list_downloads": return "Checked downloads"
         case "wallet_transfer": return "Send \(arguments["amount"] ?? "") \(arguments["asset"] ?? "") to \(arguments["recipient"] ?? "")"
         case "browser_handle_dialog": return arguments["accept"] == "1" ? "Answered OK to the dialog" : "Answered Cancel to the dialog"
         default: return name
@@ -407,6 +423,10 @@ enum AgentToolLabel {
             return "Press \(approval.arguments["key"] ?? "a key") on \(target)"
         case "browser_scroll":
             return "Scroll \(approval.arguments["direction"] ?? "") in \(target)"
+        case "browser_download":
+            return "Download \(approval.navigationTarget ?? target)"
+        case "browser_upload":
+            return "Attach a file you choose to \(target)"
         case "browser_handle_dialog":
             if let text = approval.arguments["promptText"] { return "Answer “\(text.prefix(80))” to the page's question \(target)" }
             return approval.effect == "dialog_accept" ? "Answer OK to \(target)" : "Answer Cancel to \(target)"

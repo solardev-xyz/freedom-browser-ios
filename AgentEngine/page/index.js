@@ -12,6 +12,7 @@
 
 import {
 	collectPageSnapshot,
+	describeAttachedFile,
 	describeReferencedElement,
 	inspectReferencedElement,
 	inspectScrollReference,
@@ -431,6 +432,26 @@ async function scroll(ref, direction, pages = 1) {
 	};
 }
 
+// MARK: - upload
+
+/** Puts the file the user chose into the referenced file input, as if picked there. */
+function setFile(ref, base64, name, type) {
+	const inspected = inspectReferencedElement(ref, "upload");
+	if (!inspected.ok) return inspected;
+	const { element } = reference(ref);
+	const view = element.ownerDocument.defaultView;
+	const binary = atob(base64);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+	const transfer = new view.DataTransfer();
+	transfer.items.add(new view.File([bytes], name, { type, lastModified: Date.now() }));
+	element.files = transfer.files;
+	element.dispatchEvent(new view.Event("input", { bubbles: true, composed: true }));
+	element.dispatchEvent(new view.Event("change", { bubbles: true }));
+	const attached = describeAttachedFile(ref);
+	return attached.ok ? { attached: true, ref, filename: attached.filename, bytes: attached.bytes, mimeType: attached.mimeType, trusted: false } : attached;
+}
+
 // MARK: - dispatch
 
 const methods = {
@@ -451,6 +472,7 @@ const methods = {
 	press: ({ ref, key }) => press(ref, key),
 	scroll: ({ ref, direction, pages }) => scroll(ref, direction, pages ?? 1),
 	matches: ({ ref, state }) => referencedElementMatchesState(ref, state),
+	setFile: ({ ref, base64, name, type }) => setFile(ref, base64, name, type),
 	containsText: ({ text }) => ({ ok: true, matched: pageContainsText(text) }),
 };
 

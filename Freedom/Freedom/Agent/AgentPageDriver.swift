@@ -42,6 +42,10 @@ final class AgentPageDriver {
         case visualNotInteractable
         case visualClickOnly
         case pageTimeout(Int)
+        case notDownloadable
+        case notFileInput
+        case uploadCancelled
+        case uploadUnavailable
         case dialogOpen(String)
         case dialogGone
         case unknownFrame
@@ -64,6 +68,10 @@ final class AgentPageDriver {
             case .visualClickOnly: "Visual targets only support browser_click."
             case .dialogOpen(let summary): "DIALOG_OPEN: the page shows a dialog and waits for an answer (\(summary)). Read it with browser_get_dialog; answer it with browser_handle_dialog only if the task calls for it."
             case .dialogGone: "That dialog is no longer open. Use browser_get_dialog."
+            case .notDownloadable: "DOWNLOAD_UNAVAILABLE: that element isn't a link Freedom can download. Use a download link from the snapshot."
+            case .notFileInput: "ELEMENT_NOT_INTERACTABLE: that element isn't a file input."
+            case .uploadCancelled: "FILE_UPLOAD_CANCELLED_BY_USER: the user didn't choose a file. Don't retry unless they ask again."
+            case .uploadUnavailable: "File attachment is unavailable right now."
             case .unknownFrame: "FRAME_NOT_FOUND: that frame reference isn't known or the frame is gone. Use browser_list_frames."
             case .staleFrame: "STALE_FRAME_REFERENCE: the frame navigated or was removed. Use browser_list_frames and browser_read_frame again."
             case .opaqueFrame: "POLICY_DENIED: frames with an opaque origin can't be read."
@@ -79,11 +87,15 @@ final class AgentPageDriver {
 
     private let tabs: TabStore
     private let defaults: UserDefaults
+    /// Asks the user for a file for browser_upload (AgentService shows the
+    /// picker on the agent's sheet): site and field label in, the file or nil out.
+    var chooseFile: ((_ site: String, _ field: String) async -> AgentPickedFile?)?
 
     init(tabs: TabStore, defaults: UserDefaults = .standard) {
         self.tabs = tabs
         self.defaults = defaults
         chatTabs = defaults.data(forKey: Self.chatTabsKey).flatMap { try? JSONDecoder().decode([String: ChatTabs].self, from: $0) } ?? [:]
+        chatDownloads = defaults.dictionary(forKey: Self.chatDownloadsKey) as? [String: [String]] ?? [:]
     }
 
     /// One call from the engine's `page` service.
@@ -94,6 +106,7 @@ final class AgentPageDriver {
         case "createTab": return try await createTab(chat, url: params["url"] as? String ?? "")
         case "focusTab": return try focusTab(chat, id: params["tabId"] as? String ?? "")
         case "closeTab": return try closeTab(chat, id: params["tabId"] as? String ?? "")
+        case "listDownloads": return listDownloads(chat)
         default: break
         }
         let tab = try await workingTab(chat, opening: method == "navigate")
@@ -148,6 +161,15 @@ final class AgentPageDriver {
             return try await screenshot(tab)
         case "targetPoint":
             return try await targetPoint(tab, params)
+        case "download":
+            return try await download(tab, chat: chat, ref: ref, in: frame)
+        case "upload":
+            return try await act(tab) { try await self.upload(tab, ref: ref, in: frame) }
+        #if DEBUG
+        case "debugUpload":
+            // Page checks: the upload path with test bytes instead of the user's choice.
+            return try await act(tab) { try await self.callPage(tab, "setFile", params.filter { $0.key != "chatId" }, in: frame) }
+        #endif
         case "snapshot", "describe", "matches", "containsText":
             return try await callPage(tab, method, params.filter { $0.key != "chatId" }, in: frame)
         case "click", "type", "select", "press", "scroll":
@@ -570,6 +592,72 @@ final class AgentPageDriver {
         try await Self.withTimeout(20, interrupt: { tab.pendingDialog.map { DriverError.dialogOpen(Self.summary($0)) } }) {
             try await self.callPageUnbounded(tab, method, params, in: frame)
         }
+    }
+
+    // MARK: - Downloads and uploads
+
+    private static let chatDownloadsKey = "agent.chatDownloads"
+    /// The downloads each chat started (DownloadManager item IDs).
+    private var chatDownloads: [String: [String]]
+
+    private static let downloadableSchemes: Set<String> = ["http", "https", "bzz", "ipfs", "ipns", "data"]
+
+    /// browser_download: the link's target through Freedom's download manager (after the approval).
+    private func download(_ tab: BrowserTab, chat: String?, ref: String, in frame: WKFrameInfo?) async throws -> [String: Any] {
+        let described = try await callPage(tab, "describe", ["ref": ref, "action": "download", "key": ""], in: frame) as? [String: Any] ?? [:]
+        guard described["ok"] as? Bool == true else { return described }
+        guard let target = described["navigationTarget"] as? String, let url = URL(string: target),
+              let scheme = url.scheme?.lowercased(), Self.downloadableSchemes.contains(scheme) else { throw DriverError.notDownloadable }
+        let download = await tab.webView.startDownload(using: URLRequest(url: url))
+        let manager = DownloadManager.shared
+        let id = manager.adopt(download, sourceURL: url, mimeType: nil, from: tab.webView, ephemeral: tab.isPrivate)
+        if let chat {
+            chatDownloads[chat, default: []].append(id.uuidString)
+            defaults.set(chatDownloads, forKey: Self.chatDownloadsKey)
+        }
+        // Small files finish at once; a big one reports progress and stays in Downloads.
+        for _ in 0..<240 {
+            if manager.item(id: id)?.isActive == false { break }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return manager.item(id: id).map(receipt) ?? ["downloadId": id.uuidString.lowercased(), "state": "unknown"]
+    }
+
+    private func listDownloads(_ chat: String?) -> [String: Any] {
+        let ids = chat.flatMap { chatDownloads[$0] } ?? []
+        let items = ids.compactMap(UUID.init(uuidString:)).compactMap { DownloadManager.shared.item(id: $0) }
+        return ["downloads": items.map(receipt)]
+    }
+
+    private func receipt(_ item: DownloadItem) -> [String: Any] {
+        let state: String = switch item.state {
+        case .inProgress: "inProgress"
+        case .paused: "paused"
+        case .completed: "completed"
+        case .failed(let message): "failed: \(message)"
+        case .cancelled: "cancelled"
+        }
+        var receipt: [String: Any] = [
+            "downloadId": item.id.uuidString.lowercased(),
+            "filename": item.filename,
+            "state": state,
+            "bytes": item.bytesReceived,
+            "available": item.state == .completed && FileManager.default.fileExists(atPath: DownloadManager.shared.fileURL(for: item).path),
+        ]
+        if let total = item.totalBytes { receipt["totalBytes"] = total }
+        if let mime = item.mimeType { receipt["mimeType"] = mime }
+        return receipt
+    }
+
+    /// browser_upload: the user chooses the file (after the approval), the page script puts it into the input.
+    private func upload(_ tab: BrowserTab, ref: String, in frame: WKFrameInfo?) async throws -> Any? {
+        let described = try await callPage(tab, "describe", ["ref": ref, "action": "upload", "key": ""], in: frame) as? [String: Any] ?? [:]
+        guard described["ok"] as? Bool == true else { return described }
+        guard described["effect"] as? String == "file_upload" else { throw DriverError.notFileInput }
+        guard let chooseFile else { throw DriverError.uploadUnavailable }
+        let site = frame.map { $0.securityOrigin.host } ?? tab.webView.url?.host() ?? "this page"
+        guard let file = await chooseFile(site, described["label"] as? String ?? "") else { throw DriverError.uploadCancelled }
+        return try await callPage(tab, "setFile", ["ref": ref, "base64": file.data.base64EncodedString(), "name": file.name, "type": file.mimeType], in: frame)
     }
 
     // MARK: - Embedded frames

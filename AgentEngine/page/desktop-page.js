@@ -1098,4 +1098,6 @@ export {
 
   pageContainsText,
 
+  describeAttachedFile,
+
 };

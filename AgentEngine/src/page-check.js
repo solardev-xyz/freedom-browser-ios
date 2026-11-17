@@ -36,6 +36,12 @@ document.getElementById("say").onclick=()=>{alert("Hello there");out.textContent
 const FRAME_PAGE = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Embedded form</title>
 <p>The order form below is another site's page.</p><iframe src="https://httpbin.org/forms/post" style="width:100%;height:900px;border:1px solid #888"></iframe>`;
 
+// A download link and a file input that reads back what it got.
+const FILES_PAGE = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Files</title>
+<p><a href="https://httpbin.org/robots.txt" download>Download robots.txt</a></p>
+<p><label>Your document <input type=file id=f></label></p><p id=out>no file</p>
+<script>const f=document.getElementById("f");f.addEventListener("change",()=>{const x=f.files[0];x.text().then(t=>{document.getElementById("out").textContent="got "+x.name+" "+x.size+" bytes: "+t})})</script>`;
+
 export const CASES = [
 	{
 		name: "wikipedia-search-form",
@@ -151,6 +157,17 @@ export const CASES = [
 		],
 	},
 	{
+		name: "files",
+		what: "download a link into Freedom's downloads; put a file into a file input",
+		html: FILES_PAGE,
+		timeoutMs: 20_000,
+		steps: [
+			{ download: { name: /download robots/i } },
+			{ upload: { name: /your document/i }, text: "hello upload", filename: "note.txt" },
+			{ expect: { text: "got note.txt 12 bytes: hello upload" } },
+		],
+	},
+	{
 		name: "native-select",
 		what: "a native <select> through browser_select",
 		url: "https://the-internet.herokuapp.com/dropdown",
@@ -255,7 +272,7 @@ export async function runPageChecks(call, names, log = console.log, { loadOnly =
 }
 
 function label(step) {
-	const [kind] = Object.keys(step).filter((k) => ["type", "press", "click", "select", "scroll", "visual", "blocked", "pause", "answer", "frames", "inFrame", "expect"].includes(k));
+	const [kind] = Object.keys(step).filter((k) => ["type", "press", "click", "select", "scroll", "visual", "blocked", "pause", "answer", "frames", "inFrame", "download", "upload", "expect"].includes(k));
 	return `${kind} ${JSON.stringify(step[kind], (_, v) => (v instanceof RegExp ? String(v) : v))}${step.key ? ` ${step.key}` : ""}${step.text ? ` "${step.text}"` : ""}`;
 }
 
@@ -291,6 +308,20 @@ async function runStep(call, step, testCase, context) {
 		const r = await call("click", { ref: element.ref });
 		if (step.dialog && r.dialogOpened?.type !== step.dialog) throw new Error(`expected a ${step.dialog} dialog, got ${JSON.stringify(r).slice(0, 200)}`);
 		return { name: element.name, navigated: r.navigated, handledByTouch: r.handledByTouch, ...(r.dialogOpened && { dialog: r.dialogOpened.type, message: r.dialogOpened.message }) };
+	}
+	if (step.download) {
+		const { element } = await find(call, step.download);
+		const r = await call("download", { ref: element.ref });
+		if (r.state !== "completed" || !r.available) throw new Error(`download not completed: ${JSON.stringify(r)}`);
+		const listed = await call("listDownloads");
+		return { filename: r.filename, bytes: r.bytes, listed: listed.downloads.length };
+	}
+	if (step.upload) {
+		const { element } = await find(call, step.upload);
+		const base64 = btoa(String.fromCharCode(...new TextEncoder().encode(step.text)));
+		const r = await call("debugUpload", { ref: element.ref, base64, name: step.filename, type: "text/plain" });
+		if (!r.attached) throw new Error(`not attached: ${JSON.stringify(r)}`);
+		return { role: element.role, filename: r.filename, bytes: r.bytes };
 	}
 	if (step.frames) {
 		const { frames } = await call("listFrames");

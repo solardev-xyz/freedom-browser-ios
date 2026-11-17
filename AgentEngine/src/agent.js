@@ -18,7 +18,7 @@ import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { createRegistry, defineExtension, GenerationTask, Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { classifyInteraction, mayProceed } from "./classifier.js";
-import { createPageTools, DIALOG_TOOLS, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
+import { ALWAYS_ASK_TOOLS, createPageTools, DIALOG_TOOLS, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
 import { createWalletTools } from "./tools/wallet.js";
 
 const context = BACKGROUND_CONTEXT;
@@ -195,6 +195,10 @@ export async function openAgent({ database, page, wallet, emit, apiKeys = {}, ap
 
 	/** Whether an interaction may run without asking, by mode. */
 	async function assess(call, described, api, ctx) {
+		if (ALWAYS_ASK_TOOLS.has(call.name)) {
+			const what = call.name === "browser_download" ? `Download ${described.navigationTarget || "a file"}` : `Attach a file of your choice to ${described.label ? `“${described.label}”` : "a file field"}`;
+			return { proceed: false, classification: { kind: "consequential", confidence: 1, summary: `${what}.`, uncertainties: [] } };
+		}
 		if (mode === "allow_website_interactions") return { proceed: true };
 		if (mode === "every_interaction") return { proceed: false };
 		// A click at a screenshot point: nothing says what it does (desktop's visual_effect_unknown).
@@ -505,6 +509,15 @@ function scriptedProvider(pace) {
 		const results = messages.slice(userIndex + 1).filter((m) => m.role === "toolResult");
 		const last = results.at(-1);
 		const wantsClick = /\bclick\b/i.test(prompt);
+		// "download": download the first element of the snapshot.
+		if (/\bdownload\b/i.test(prompt)) {
+			if (!last) return fauxAssistantMessage([fauxToolCall("browser_snapshot", {})], { stopReason: "toolUse" });
+			if (last.toolName === "browser_snapshot") {
+				const element = safeJSON(textOf(last))?.result?.elements?.[0];
+				if (element) return fauxAssistantMessage([fauxToolCall("browser_download", { ref: element.ref })], { stopReason: "toolUse" });
+			}
+			return fauxAssistantMessage(last.isError ? `Not downloaded: ${textOf(last)}` : "Downloaded.");
+		}
 		// "send": one wallet transfer, then report its result.
 		if (/\bsend\b/i.test(prompt)) {
 			if (!last) return fauxAssistantMessage([fauxToolCall("wallet_transfer", { recipient: "vitalik.eth", amount: "0.01", asset: "ETH", chainId: 1 })], { stopReason: "toolUse" });

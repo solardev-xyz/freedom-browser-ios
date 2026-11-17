@@ -136,6 +136,8 @@ final class AgentService {
     private var walletDriver: AgentWalletDriver?
     /// A transfer the agent asked for, waiting for the user on the agent's sheet.
     private(set) var walletPrompt: AgentTransferPrompt?
+    /// A file the agent asked to upload (browser_upload), waiting for the user's choice.
+    private(set) var filePrompt: AgentFilePrompt?
     private let wallet: WalletServices
     private let balances: WalletBalanceStore
     private let userWallets: UserWalletStore
@@ -180,6 +182,10 @@ final class AgentService {
         phase = .starting
         let engine = AgentEngine()
         let driver = AgentPageDriver(tabs: tabStore, defaults: defaults)
+        driver.chooseFile = { [weak self] site, field in
+            guard let self else { return nil }
+            return await AgentFilePrompt.ask(AgentFilePrompt(site: site, field: field)) { self.filePrompt = $0 }
+        }
         engine.pageDriver = driver
         let walletDriver = AgentWalletDriver(services: wallet, balances: balances, userWallets: userWallets) { [weak self] prompt in
             self?.walletPrompt = prompt
@@ -261,6 +267,7 @@ final class AgentService {
         pageDriver = nil
         walletDriver?.cancelPending()
         walletDriver = nil
+        filePrompt?.cancel()
         phase = .off
         approvals = []
         live = AgentLiveState()
@@ -331,8 +338,9 @@ final class AgentService {
     }
 
     func stopRun() async {
-        // Stopping the agent withdraws a transfer it was asking for.
+        // Stopping the agent withdraws a transfer or file choice it was asking for.
         walletDriver?.cancelPending()
+        filePrompt?.cancel()
         guard let engine, let chatID = currentChatID else { return }
         _ = try? await engine.command("agentAbort", ["chatId": chatID])
     }

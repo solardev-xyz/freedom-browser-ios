@@ -42,7 +42,8 @@ releases, so upgrade them together and run `npm run check` afterwards.
   `browser_navigate`, `browser_click`, `browser_type`, `browser_select`,
   `browser_scroll`, `browser_press`, `browser_wait`, `browser_stop_loading`,
   `browser_screenshot`, `browser_target_point`, `browser_get_dialog`,
-  `browser_handle_dialog`, `browser_list_frames`, `browser_read_frame`. Every call carries the chat's
+  `browser_handle_dialog`, `browser_list_frames`, `browser_read_frame`,
+  `browser_download`, `browser_list_downloads`, `browser_upload`. Every call carries the chat's
   ID: each chat has its own tabs (the user's tab it started in, which a new
   message re-points to the tab the user is on, and the tabs it opened; it
   closes only those). Screenshots are JPEG images of the page's viewport for
@@ -57,7 +58,11 @@ releases, so upgrade them together and run `npm run check` afterwards.
   the frame handles its navigation delegate sees (`BrowserTab.subframes`);
   the driver probes which are alive and reads one with the page script run
   inside it, and its references (`frame_element_<key>_…`) route actions back
-  to that frame. Not yet: uploads, downloads; WebMCP doesn't exist in WebKit.
+  to that frame. Downloads go through Freedom's download manager (receipts,
+  never paths; the chat's list in UserDefaults `agent.chatDownloads`);
+  uploads open a picker on the agent's sheet (photo library or Files) and the
+  page script puts the chosen file into the input (DataTransfer). Both always
+  ask, in every mode, as on desktop. WebMCP doesn't exist in WebKit.
 - `tools/wallet.js`: desktop's `wallet_transfer`. The app's `wallet` service
   (`AgentWallet.swift`) resolves the network, asset (symbol or contract) and
   recipient (address or name, as the Send form), checks balances and the fee,

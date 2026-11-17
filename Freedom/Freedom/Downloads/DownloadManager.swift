@@ -96,7 +96,8 @@ final class DownloadManager: NSObject {
     /// Take ownership of a download WebKit created for a navigation
     /// action or response; the originating web view is remembered so a
     /// paused download can be resumed through it.
-    func adopt(_ download: WKDownload, sourceURL: URL?, mimeType: String?, from webView: WKWebView?, ephemeral: Bool = false) {
+    @discardableResult
+    func adopt(_ download: WKDownload, sourceURL: URL?, mimeType: String?, from webView: WKWebView?, ephemeral: Bool = false) -> UUID {
         let id = UUID()
         let item = DownloadItem(
             id: id, sourceURL: sourceURL?.absoluteString ?? "", filename: "", mimeType: mimeType,
@@ -106,6 +107,7 @@ final class DownloadManager: NSObject {
         items.insert(item, at: 0)
         attach(download, to: id, webView: webView)
         log.notice("[downloads] started \(sourceURL?.absoluteString ?? "?", privacy: .public)")
+        return id
     }
 
     private func attach(_ download: WKDownload, to id: UUID, webView: WKWebView?) {

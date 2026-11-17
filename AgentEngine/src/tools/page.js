@@ -3,8 +3,7 @@
 // service (AgentPageDriver.swift) with the calling chat's ID: each chat has
 // its own tabs (the user's tab it started in, the tabs it opened) and an
 // active one its tools act on. The driver runs page/index.js in the tab.
-// Not here yet: uploads, downloads; page tools (WebMCP) don't exist in
-// WebKit.
+// Page tools (WebMCP) don't exist in WebKit.
 
 import { defineTool } from "@earendil-works/pi-durable";
 import { arr, bool, int, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
@@ -21,7 +20,9 @@ const DWEB_NAVIGATION_GUIDANCE =
 	" ENS names (name.eth) open the site their content hash points to, on Swarm or IPFS; navigate to the name itself (vitalik.eth or ens://vitalik.eth), never an invented https:// URL for it, which would use DNS instead of Freedom's name resolution.";
 
 /** Tools that act on the page, for the approval gate. */
-export const INTERACTION_TOOLS = new Set(["browser_click", "browser_type", "browser_select", "browser_scroll", "browser_press"]);
+export const INTERACTION_TOOLS = new Set(["browser_click", "browser_type", "browser_select", "browser_scroll", "browser_press", "browser_download", "browser_upload"]);
+/** Interactions that always ask, whatever the mode (desktop: downloads and uploads). */
+export const ALWAYS_ASK_TOOLS = new Set(["browser_download", "browser_upload"]);
 /** Answering a page dialog always asks the user, whatever the mode (desktop). */
 export const DIALOG_TOOLS = new Set(["browser_handle_dialog"]);
 
@@ -207,6 +208,29 @@ export function createPageTools(page) {
 			}),
 			replay: "safe",
 			execute: async (args, api, ctx) => json(await runWait(api, args, ctx)),
+		}),
+		defineTool({
+			name: "browser_upload",
+			description:
+				"Ask the user to choose one file on their phone (photo library or Files), then attach it to an exact file-input reference from the latest page snapshot. Freedom never reveals a local path. File selection always requires approval, even when ordinary website interactions are allowed. If the user cancels the picker, do not retry unless they explicitly ask again.",
+			parameters: obj({ ref: ref() }),
+			replay: "unsafe",
+			execute: async ({ ref }, api) => json(await forChat(api)("upload", { ref })),
+		}),
+		defineTool({
+			name: "browser_download",
+			description:
+				"Download a file through Freedom using a download link reference from the latest page snapshot. Returns a safe artifact receipt, never a filesystem path; the file lands in Freedom's Downloads. Downloads always require approval. If the user cancels the transfer, do not retry it unless they explicitly ask again.",
+			parameters: obj({ ref: ref() }),
+			replay: "unsafe",
+			execute: async ({ ref }, api) => json(await forChat(api)("download", { ref })),
+		}),
+		defineTool({
+			name: "browser_list_downloads",
+			description: "List safe receipts for downloads created by this Agent conversation, including whether each file is still available.",
+			parameters: obj({}),
+			replay: "safe",
+			execute: async (_, api) => json(await forChat(api)("listDownloads")),
 		}),
 		defineTool({
 			name: "browser_get_dialog",
