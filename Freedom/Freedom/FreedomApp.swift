@@ -132,7 +132,8 @@ struct FreedomApp: App {
             let autoApprove = AutoApproveStore(context: container.mainContext)
             let txService = TransactionService(vault: vault, registry: registry)
             let txHistory = WalletTransactionHistoryStore(context: container.mainContext)
-            self._walletBalances = State(wrappedValue: WalletBalanceStore(registry: registry))
+            let walletBalances = WalletBalanceStore(registry: registry)
+            self._walletBalances = State(wrappedValue: walletBalances)
             txService.history = txHistory
             self._walletTransactionHistory = State(wrappedValue: txHistory)
             let wallet = WalletServices(
@@ -315,7 +316,9 @@ struct FreedomApp: App {
                 ipfs: ipfsInstance
             )
             self._tabStore = State(wrappedValue: tabs)
-            self._agent = State(wrappedValue: AgentService(settings: AgentSettings(), tabStore: tabs))
+            self._agent = State(wrappedValue: AgentService(
+                settings: AgentSettings(), tabStore: tabs, wallet: wallet, balances: walletBalances, userWallets: userWallets
+            ))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
         }

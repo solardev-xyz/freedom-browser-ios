@@ -172,7 +172,7 @@ onCommand("agentOpen", async ({ apiKeys, approvalMode, openrouterZeroRetention, 
 	}
 	if (wipe) await wipeAppDatabase(AGENT_DATABASE);
 	const database = await openAppDatabase(AGENT_DATABASE);
-	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, page: (method, params) => request("page", method, params) });
+	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, page: (method, params) => request("page", method, params), wallet: (method, params) => request("wallet", method, params) });
 	return { openMs: agent.openMs, approvals: agent.pendingApprovals() };
 });
 onCommand("agentCreateChat", ({ model }) => openedAgent().createChat({ model }));

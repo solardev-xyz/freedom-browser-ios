@@ -203,6 +203,11 @@ private struct AgentSheetPresenter: ViewModifier {
     @Environment(TabStore.self) private var tabStore
     @Binding var isPresented: Bool
 
+    /// Dismissing the transfer sheet cancels the transfer.
+    private var walletPromptBinding: Binding<AgentTransferPrompt?> {
+        Binding(get: { agent.walletPrompt }, set: { if $0 == nil { agent.walletPrompt?.cancel() } })
+    }
+
     /// A page prompt showing from the root: the agent's sheet waits for it.
     private var pagePromptPending: Bool { tabStore.activeTab?.hasPendingPrompt == true }
 
@@ -212,13 +217,20 @@ private struct AgentSheetPresenter: ViewModifier {
                 if new > old, !isPresented, !pagePromptPending { isPresented = true }
             }
             .onChange(of: pagePromptPending) { _, pending in
-                if !pending, !agent.approvals.isEmpty, !isPresented { isPresented = true }
+                if !pending, !agent.approvals.isEmpty || agent.walletPrompt != nil, !isPresented { isPresented = true }
+            }
+            .onChange(of: agent.walletPrompt?.id) { _, id in
+                if id != nil, !isPresented, !pagePromptPending { isPresented = true }
             }
             .sheet(isPresented: $isPresented, onDismiss: { agent.isSheetOnScreen = false }) {
                 AgentSheet()
                     .onAppear { agent.isSheetOnScreen = true }
                     // A page the agent operates may ask for the wallet, a permission, Swarm or Radicle.
                     .pagePromptSheets(inAgentSheet: true)
+                    // The agent's own transfer (wallet_transfer).
+                    .sheet(item: walletPromptBinding) { prompt in
+                        AgentTransferSheet(prompt: prompt)
+                    }
                     .presentationDetents([.medium, .large])
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
@@ -313,6 +325,7 @@ enum AgentToolLabel {
         case "browser_stop_loading": "stop.circle"
         case "browser_get_dialog", "browser_handle_dialog": "exclamationmark.bubble"
         case "browser_list_frames", "browser_read_frame": "rectangle.inset.filled"
+        case "wallet_transfer": "arrow.up.right.circle"
         case "browser_navigate": "arrow.up.right.square"
         case "browser_click": "hand.tap"
         case "browser_type": "keyboard"
@@ -346,6 +359,7 @@ enum AgentToolLabel {
         case "browser_handle_dialog": "Answering the dialog…"
         case "browser_list_frames": "Finding embedded frames…"
         case "browser_read_frame": "Reading an embedded frame…"
+        case "wallet_transfer": "Waiting for you to approve the transfer…"
         default: "Working…"
         }
     }
@@ -372,6 +386,7 @@ enum AgentToolLabel {
         case "browser_get_dialog": return "Read the dialog"
         case "browser_list_frames": return "Found embedded frames"
         case "browser_read_frame": return "Read an embedded frame"
+        case "wallet_transfer": return "Send \(arguments["amount"] ?? "") \(arguments["asset"] ?? "") to \(arguments["recipient"] ?? "")"
         case "browser_handle_dialog": return arguments["accept"] == "1" ? "Answered OK to the dialog" : "Answered Cancel to the dialog"
         default: return name
         }

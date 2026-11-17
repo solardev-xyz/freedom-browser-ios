@@ -58,6 +58,12 @@ releases, so upgrade them together and run `npm run check` afterwards.
   the driver probes which are alive and reads one with the page script run
   inside it, and its references (`frame_element_<key>_…`) route actions back
   to that frame. Not yet: uploads, downloads; WebMCP doesn't exist in WebKit.
+- `tools/wallet.js`: desktop's `wallet_transfer`. The app's `wallet` service
+  (`AgentWallet.swift`) resolves the network, asset (symbol or contract) and
+  recipient (address or name, as the Send form), checks balances and the fee,
+  and shows the exact transfer on the agent's sheet; nothing is signed until
+  the user slides to send. Replay `unsafe`: a transfer interrupted by a
+  restart is reported, never sent again.
 - `classifier.js`: desktop's interaction-intent classifier.
 - `page-check.js`: scripted checks of the browser tools on real sites, no model.
 - `bridge.js`: engine ↔ app messages (`freedomAgent` handler, `window.__freedomAgent.command`).

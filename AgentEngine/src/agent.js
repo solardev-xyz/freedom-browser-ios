@@ -19,6 +19,7 @@ import { createRegistry, defineExtension, GenerationTask, Harness, hook, section
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { classifyInteraction, mayProceed } from "./classifier.js";
 import { createPageTools, DIALOG_TOOLS, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
+import { createWalletTools } from "./tools/wallet.js";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -37,6 +38,7 @@ const PREAMBLE = [
 	"If a tool reports that approval or user action is required, or the user declined, explain the blocker and do not retry or work around it unless the user explicitly asks again.",
 	"On follow-up messages, assume the page may have changed since the previous turn: get the current tab and take a fresh snapshot before interacting with page content.",
 	"ENS names (name.eth) and bzz://, ipfs:// and ipns:// addresses open decentralized websites; navigate to them like any other URL.",
+	"wallet_transfer sends funds from the user's Freedom wallet only after they approve the exact transfer on their phone. Use it only when the user asks to send funds; never claim a transfer happened unless its result says submitted, and give them the transaction hash.",
 	"Keep answers short: the user reads them on a phone.",
 ].join("\n");
 
@@ -45,6 +47,8 @@ const PREAMBLE = [
  * unfinished.
  *
  * - `page(method, params)`: the host's page service (AgentPageDriver.swift).
+ * - `wallet(method, params)`: the host's wallet service (AgentWallet.swift);
+ *   without it, no wallet tools.
  * - `emit(event)`: `approval` (a website interaction waits for `approve()`),
  *   `approval_gone`, and for the chat being viewed `chat_items` (its
  *   transcript changed) and `chat_live` (busy, streamed answer, tools).
@@ -56,7 +60,7 @@ const PREAMBLE = [
  *   no data (desktop's "Require zero data retention", on by default).
  * - `scriptedPace`: tokens per second of the offline test model.
  */
-export async function openAgent({ database, page, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, scriptedPace = 200 }) {
+export async function openAgent({ database, page, wallet, emit, apiKeys = {}, approvalMode = "sensitive_actions", openrouterZeroRetention = true, scriptedPace = 200 }) {
 	const t0 = performance.now();
 	const approvals = new Map(); // taskId → { chatId, request, resolve }
 	let mode = APPROVAL_MODES.includes(approvalMode) ? approvalMode : "sensitive_actions";
@@ -76,7 +80,7 @@ export async function openAgent({ database, page, emit, apiKeys = {}, approvalMo
 	const freedom = defineExtension({
 		name: "freedom",
 		sections: [section("preamble", () => PREAMBLE, { tag: false })],
-		tools: pageTools.tools,
+		tools: [...pageTools.tools, ...(wallet ? createWalletTools(wallet) : [])],
 	});
 
 	let harness;
@@ -501,6 +505,11 @@ function scriptedProvider(pace) {
 		const results = messages.slice(userIndex + 1).filter((m) => m.role === "toolResult");
 		const last = results.at(-1);
 		const wantsClick = /\bclick\b/i.test(prompt);
+		// "send": one wallet transfer, then report its result.
+		if (/\bsend\b/i.test(prompt)) {
+			if (!last) return fauxAssistantMessage([fauxToolCall("wallet_transfer", { recipient: "vitalik.eth", amount: "0.01", asset: "ETH", chainId: 1 })], { stopReason: "toolUse" });
+			return fauxAssistantMessage(last.isError ? `Not sent: ${textOf(last)}` : `Sent: ${textOf(last)}`);
+		}
 		// "dialog": read the page's dialog and answer OK.
 		if (/\bdialog\b/i.test(prompt)) {
 			if (!last) return fauxAssistantMessage([fauxToolCall("browser_get_dialog", {})], { stopReason: "toolUse" });

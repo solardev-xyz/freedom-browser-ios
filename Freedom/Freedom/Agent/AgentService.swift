@@ -133,11 +133,27 @@ final class AgentService {
     private let tabStore: TabStore
     private var engine: AgentEngine?
     private var pageDriver: AgentPageDriver?
+    private var walletDriver: AgentWalletDriver?
+    /// A transfer the agent asked for, waiting for the user on the agent's sheet.
+    private(set) var walletPrompt: AgentTransferPrompt?
+    private let wallet: WalletServices
+    private let balances: WalletBalanceStore
+    private let userWallets: UserWalletStore
     private let defaults: UserDefaults
 
-    init(settings: AgentSettings, tabStore: TabStore, defaults: UserDefaults = .standard) {
+    init(
+        settings: AgentSettings,
+        tabStore: TabStore,
+        wallet: WalletServices,
+        balances: WalletBalanceStore,
+        userWallets: UserWalletStore,
+        defaults: UserDefaults = .standard
+    ) {
         self.settings = settings
         self.tabStore = tabStore
+        self.wallet = wallet
+        self.balances = balances
+        self.userWallets = userWallets
         self.defaults = defaults
         chats = (defaults.data(forKey: Self.chatsKey)).flatMap { try? JSONDecoder().decode([AgentChat].self, from: $0) } ?? []
         keyedProviders = Set(AgentKeyStore.allKeys(AgentSettings.Provider.allCases.map(\.rawValue)).keys)
@@ -165,6 +181,11 @@ final class AgentService {
         let engine = AgentEngine()
         let driver = AgentPageDriver(tabs: tabStore, defaults: defaults)
         engine.pageDriver = driver
+        let walletDriver = AgentWalletDriver(services: wallet, balances: balances, userWallets: userWallets) { [weak self] prompt in
+            self?.walletPrompt = prompt
+        }
+        engine.walletDriver = walletDriver
+        self.walletDriver = walletDriver
         engine.onEvent = { [weak self] event in self?.handle(event) }
         engine.onTerminated = { [weak self] in self?.engineDied() }
         self.engine = engine
@@ -238,6 +259,8 @@ final class AgentService {
         engine?.stop()
         engine = nil
         pageDriver = nil
+        walletDriver?.cancelPending()
+        walletDriver = nil
         phase = .off
         approvals = []
         live = AgentLiveState()
@@ -308,6 +331,8 @@ final class AgentService {
     }
 
     func stopRun() async {
+        // Stopping the agent withdraws a transfer it was asking for.
+        walletDriver?.cancelPending()
         guard let engine, let chatID = currentChatID else { return }
         _ = try? await engine.command("agentAbort", ["chatId": chatID])
     }

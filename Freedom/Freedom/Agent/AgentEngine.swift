@@ -36,6 +36,8 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigation
     /// closure with arguments for this property miscompiled (Swift 6.2: the
     /// thunk passed garbage for the method string, crashing in `handle`).
     var pageDriver: AgentPageDriver?
+    /// The agent's wallet tool (`wallet_transfer`), a reference like `pageDriver`.
+    var walletDriver: AgentWalletDriver?
 
     private(set) var webView: WKWebView?
     private var readyWaiter: CheckedContinuation<Void, Error>?
@@ -172,6 +174,19 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigation
             Task {
                 do {
                     replyHandler(try await pageDriver.handle(method, params), nil)
+                } catch {
+                    replyHandler(nil, error.localizedDescription)
+                }
+            }
+        case "wallet":
+            guard let walletDriver else {
+                replyHandler(nil, "The wallet tools aren't available")
+                return
+            }
+            let params = body["params"] as? [String: Any] ?? [:]
+            Task {
+                do {
+                    replyHandler(try await walletDriver.handle(method, params), nil)
                 } catch {
                     replyHandler(nil, error.localizedDescription)
                 }

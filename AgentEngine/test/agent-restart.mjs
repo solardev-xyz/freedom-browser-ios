@@ -15,6 +15,8 @@
 // 9. A click at a screenshot point asks even in "sensitive_actions".
 // 10. browser_stop_loading ends a running browser_wait.
 // 11. Answering a page dialog asks even in "allow_website_interactions".
+// 12. wallet_transfer reaches the app's wallet service with the chat's ID.
+// 13. Killed while the wallet waited for the user: reopening never sends again.
 
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -77,6 +79,14 @@ async function main() {
 
 		const dialog = JSON.parse((await runChild("dialog", join(dir, "dialog.sqlite"))).stdout);
 		check(dialog.approvalsAsked === 1 && dialog.approval?.effect === "dialog_accept" && dialog.dialogAnswers === 1, "answering a page dialog asks even in allow_website_interactions");
+
+		const transfer = JSON.parse((await runChild("transfer", join(dir, "transfer.sqlite"))).stdout);
+		check(transfer.transfers === 1 && transfer.transferChat === transfer.chatId && /0xfeed/.test(transfer.answer), "wallet_transfer reaches the wallet service with the chat's ID");
+
+		const transferDb = join(dir, "transfer-kill.sqlite");
+		check((await runChild("kill-at-transfer", transferDb)).signal === "SIGKILL", "killed while the wallet waited for the user");
+		const resumedTransfer = JSON.parse((await runChild("transfer-resume", transferDb)).stdout);
+		check(resumedTransfer.transfers === 0 && /^Not sent/.test(resumedTransfer.answer), "reopening doesn't send the interrupted transfer again; the model is told");
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -141,6 +151,13 @@ function fakePage({ describeThrows = false, noTab = false, visual = false } = {}
 
 async function child(mode, file) {
 	const database = await openNodeSqliteDatabase(file);
+	const walletState = { transfers: 0 };
+	const wallet = async (method, params) => {
+		if (mode === "kill-at-transfer") process.kill(process.pid, "SIGKILL");
+		walletState.transfers += 1;
+		walletState.chatId = params.chatId;
+		return { status: "submitted", txHash: "0xfeed", chainId: params.chainId };
+	};
 	const { page, state } = fakePage({ describeThrows: mode === "uninspectable", noTab: mode === "no-tab", visual: mode === "visual" });
 	const ended = Promise.withResolvers();
 	let approvalsAsked = 0;
@@ -172,17 +189,17 @@ async function child(mode, file) {
 	};
 	let wasBusy = false;
 	const approvalMode = ["allow", "dialog"].includes(mode) ? "allow_website_interactions" : ["uninspectable", "visual"].includes(mode) ? "sensitive_actions" : "every_interaction";
-	agent = await openAgent({ database, page, emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000 });
+	agent = await openAgent({ database, page, wallet, emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000 });
 	// One chat per database: the first run creates it and the restart finds it under the same ID.
 	const chatId = await findOrCreateChat(agent, file);
 	await agent.view(chatId);
-	const question = ["kill-mid-answer", "resume"].includes(mode) ? QUESTION : mode === "dialog" ? "Answer the dialog" : CLICK;
-	if (mode !== "approve") await agent.submit({ chatId, prompt: question, requestId: `${question}-1`, model: SCRIPTED_MODEL });
+	const question = ["kill-mid-answer", "resume"].includes(mode) ? QUESTION : mode === "dialog" ? "Answer the dialog" : /transfer/.test(mode) ? "Send 0.01 ETH to vitalik.eth" : CLICK;
+	if (!["approve", "transfer-resume"].includes(mode)) await agent.submit({ chatId, prompt: question, requestId: `${question}-1`, model: SCRIPTED_MODEL });
 	const timeout = setTimeout(() => ended.reject(new Error(`${mode}: the run didn't end within 30 s`)), 30_000);
 	await ended.promise;
 	clearTimeout(timeout);
 	await new Promise((resolve) => setTimeout(resolve, 50)); // the last chat_items
-	process.stdout.write(JSON.stringify({ firstLive, items, answer, approvalsAsked, approval, clicks: state.clicks, dialogAnswers: state.dialogAnswers, chatId, chatIds: [...state.chatIds], unboundCalls: state.unboundCalls }));
+	process.stdout.write(JSON.stringify({ firstLive, items, answer, approvalsAsked, approval, clicks: state.clicks, dialogAnswers: state.dialogAnswers, transfers: walletState.transfers, transferChat: walletState.chatId, chatId, chatIds: [...state.chatIds], unboundCalls: state.unboundCalls }));
 	await agent.close();
 	await database.close();
 }
