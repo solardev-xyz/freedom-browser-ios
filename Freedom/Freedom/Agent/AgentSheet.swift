@@ -524,6 +524,10 @@ enum AgentToolLabel {
         case "node_diagnostics":
             return "Share the \(approval.label) with the model provider"
         case "swarm_publish":
+            if approval.arguments["target"] == "draft" { return "Create a private draft link for \(approval.label)" }
+            if let name = approval.arguments["stableAddress"], !name.isEmpty {
+                return "Publish \(approval.label) publicly to Swarm at the stable address “\(name)”"
+            }
             return "Publish \(approval.label) publicly to Swarm"
         case "browser_upload":
             return "Attach a file you choose to \(target)"

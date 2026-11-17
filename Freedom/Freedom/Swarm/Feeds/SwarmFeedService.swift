@@ -116,11 +116,19 @@ struct SwarmFeedService {
     /// from the latest feed read (or 0 if the feed is empty); bridge
     /// wraps the call in `SwarmFeedWriteLock` so concurrent writes
     /// don't race to the same index.
+    ///
+    /// `minIndex`: write at least at this index (an index the caller
+    /// already wrote, plus one, when the node hasn't caught up).
+    /// `probeHead`: when the node can't look the feed up (404), find
+    /// its latest entry by SOC address before writing (`latestIndex`)
+    /// instead of starting at 0 (desktop's probeFeedHead).
     func updateFeed(
         ownerHex: String, topicHex: String,
         contentReference: String,
         privateKey: Data,
-        batchID: String
+        batchID: String,
+        minIndex: UInt64 = 0,
+        probeHead: Bool = false
     ) async throws -> UpdateFeedResult {
         guard let topicBytes = Data(hex: topicHex), topicBytes.count == 32 else {
             throw FeedServiceError.other("topicHex must be 32-byte hex")
@@ -129,9 +137,13 @@ struct SwarmFeedService {
               referenceBytes.count == 32 else {
             throw FeedServiceError.other("contentReference must be 32-byte hex")
         }
-        let nextIndex = try await resolveNextIndex(
+        var nextIndex = try await resolveNextIndex(
             ownerHex: ownerHex, topicHex: topicHex
         )
+        if nextIndex == 0, probeHead, let latest = try await latestIndex(ownerHex: ownerHex, topicHex: topicHex) {
+            nextIndex = latest + 1
+        }
+        nextIndex = max(nextIndex, minIndex)
         let socPayload = Self.timestampBytes() + referenceBytes
         let cac: SwarmSOC.CAC
         do {
@@ -205,6 +217,51 @@ struct SwarmFeedService {
             socReference: upload.reference,
             tagUid: upload.tagUid
         )
+    }
+
+    /// Whether the feed has an entry at exactly `index`, by its SOC
+    /// address (see `assertIndexAvailable`). Only a 404 means no.
+    func entryExists(ownerHex: String, topicHex: String, index: UInt64) async throws -> Bool {
+        guard let topicBytes = Data(hex: topicHex), topicBytes.count == 32,
+              let ownerBytes = Data(hex: ownerHex), ownerBytes.count == 20 else {
+            throw FeedServiceError.other("owner and topic must be 20- and 32-byte hex")
+        }
+        let identifier = SwarmSOC.feedIdentifier(topic: topicBytes, index: index)
+        let address = SwarmSOC.socAddress(identifier: identifier, ownerAddress: ownerBytes)
+            .web3.hexString.web3.noHexPrefix
+        do {
+            _ = try await getChunk(address)
+            return true
+        } catch BeeAPIClient.Error.notFound {
+            return false
+        } catch BeeAPIClient.Error.notRunning {
+            throw FeedServiceError.unreachable
+        }
+    }
+
+    /// The feed's latest index by SOC address, or nil when it has no
+    /// entry 0: index 0, then doubling while entries exist, then
+    /// bisecting between the last found and the first missing one
+    /// (desktop's probeFeedHead). For a feed the node's own lookup
+    /// can't find yet (bee 404 on `/feeds`).
+    func latestIndex(ownerHex: String, topicHex: String) async throws -> UInt64? {
+        guard try await entryExists(ownerHex: ownerHex, topicHex: topicHex, index: 0) else { return nil }
+        var found: UInt64 = 0
+        var missing: UInt64 = 1
+        while try await entryExists(ownerHex: ownerHex, topicHex: topicHex, index: missing) {
+            found = missing
+            guard missing < 1 << 40 else { return found }
+            missing *= 2
+        }
+        while missing - found > 1 {
+            let middle = found + (missing - found) / 2
+            if try await entryExists(ownerHex: ownerHex, topicHex: topicHex, index: middle) {
+                found = middle
+            } else {
+                missing = middle
+            }
+        }
+        return found
     }
 
     /// Probes bee for an entry at exactly `index`. SWIP-required

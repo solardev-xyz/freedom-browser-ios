@@ -57,11 +57,12 @@ export const CASES = [
 		// DuckDuckGo would be the obvious case, but Freedom's ad-block scriptlets crash its page
 		// process on the simulator (with or without the agent), so a comparable site instead.
 		name: "ecosia-search",
-		what: "type into a script-driven search box, click the search button",
+		what: "type into a script-driven search box, submit it with Enter",
 		url: "https://www.ecosia.org/",
+		// The mobile layout (2026-11) hides its search button: Enter submits.
 		steps: [
 			{ type: { role: /searchbox|textbox|combobox/ }, text: "freedom browser swarm" },
-			{ click: { role: "button", name: /search|such/i } },
+			{ press: { role: /searchbox|textbox|combobox/ }, key: "Enter" },
 			{ expect: { url: /[?&]q=freedom/ } },
 		],
 	},
@@ -209,7 +210,9 @@ export const CASES = [
 		name: "github-search-dialog",
 		what: "open a script-built search dialog and type into it",
 		url: "https://github.com/solardev-xyz",
+		// The logged-out mobile header (2026-11) keeps search behind its menu.
 		steps: [
+			{ click: { role: "button", name: /toggle navigation/i } },
 			{ click: { role: "button", name: /search|type \/ to search/i } },
 			{ type: { role: /combobox|searchbox|textbox/, name: /search/i }, text: "freedom-browser" },
 			{ press: { role: /combobox|searchbox|textbox/, name: /search/i }, key: "Enter" },

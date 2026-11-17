@@ -60,17 +60,22 @@ struct SwarmPublishService {
     /// with the reference + a tag UID and dispatch to the network
     /// asynchronously (otherwise the response blocks until every
     /// chunk is sent — slower, and bee may not return a tag at all).
+    ///
+    /// `encrypt` sends `Swarm-Encrypt: true`: the node encrypts the
+    /// chunks and returns a 128-hex reference (address + decryption
+    /// key), so the link itself carries the key (a private draft link).
     func publishData(
         _ data: Data,
         contentType: String,
         name: String?,
-        batchID: String
+        batchID: String,
+        encrypt: Bool = false
     ) async throws -> UploadResult {
         var query: [String: String] = [:]
         if let name, !name.isEmpty { query["name"] = name }
         return try await postUpload(
             body: data, contentType: contentType,
-            extraHeaders: [:], query: query, batchID: batchID
+            extraHeaders: encrypt ? ["Swarm-Encrypt": "true"] : [:], query: query, batchID: batchID
         )
     }
 

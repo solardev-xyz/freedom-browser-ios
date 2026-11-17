@@ -401,6 +401,82 @@ final class SwarmFeedServiceTests: XCTestCase {
 
     // MARK: - Helpers
 
+    // MARK: - latestIndex / probeHead (agent stable addresses)
+
+    /// SOC addresses of entries 0...latest, as `getChunk` sees them.
+    private func socAddresses(upTo latest: UInt64) -> Set<String> {
+        Set((0...latest).map { index in
+            SwarmSOC.socAddress(
+                identifier: SwarmSOC.feedIdentifier(topic: Data(hex: testTopic)!, index: index),
+                ownerAddress: Data(hex: testOwner)!
+            ).web3.hexString.web3.noHexPrefix
+        })
+    }
+
+    func testLatestIndexFindsTheHeadByDoublingAndBisecting() async throws {
+        let existing = socAddresses(upTo: 37)
+        var probes = 0
+        let service = makeService(getChunk: { address in
+            probes += 1
+            guard existing.contains(address) else { throw BeeAPIClient.Error.notFound }
+            return Data()
+        })
+        let latest = try await service.latestIndex(ownerHex: testOwner, topicHex: testTopic)
+        XCTAssertEqual(latest, 37)
+        XCTAssertLessThan(probes, 20, "doubling + bisecting, not a scan")
+    }
+
+    func testLatestIndexIsNilWithoutEntryZero() async throws {
+        let service = makeService(getChunk: { _ in throw BeeAPIClient.Error.notFound })
+        let latest = try await service.latestIndex(ownerHex: testOwner, topicHex: testTopic)
+        XCTAssertNil(latest)
+    }
+
+    /// Only a 404 means missing: an unreachable node fails the probe.
+    func testLatestIndexMapsUnreachable() async {
+        let service = makeService(getChunk: { _ in throw BeeAPIClient.Error.notRunning })
+        await assertThrows(SwarmFeedService.FeedServiceError.unreachable) {
+            _ = try await service.latestIndex(ownerHex: self.testOwner, topicHex: self.testTopic)
+        }
+    }
+
+    /// bee can't look the feed up (404), but entries 0...4 exist: with
+    /// `probeHead` the update goes to 5, not over entry 0.
+    func testUpdateFeedWithProbeHeadWritesAfterTheProbedHead() async throws {
+        let existing = socAddresses(upTo: 4)
+        var identifier: String?
+        let service = makeService(
+            readFeed: { _, _, _ in throw BeeAPIClient.Error.notFound },
+            uploadSOC: { _, id, _, _, _ in
+                identifier = id
+                return (reference: self.testManifestRef, tagUid: nil)
+            },
+            getChunk: { address in
+                guard existing.contains(address) else { throw BeeAPIClient.Error.notFound }
+                return Data()
+            }
+        )
+        let result = try await service.updateFeed(
+            ownerHex: testOwner, topicHex: testTopic, contentReference: testContentRef,
+            privateKey: testPrivateKey, batchID: testBatchID, probeHead: true
+        )
+        XCTAssertEqual(result.index, 5)
+        XCTAssertEqual(identifier, SwarmSOC.feedIdentifier(topic: Data(hex: testTopic)!, index: 5).hexString)
+    }
+
+    /// An index the caller already wrote wins over a node that lags behind.
+    func testUpdateFeedHonoursMinIndex() async throws {
+        let service = makeService(
+            readFeed: { _, _, _ in BeeAPIClient.FeedReadResult(payload: Data(), index: 2, nextIndex: 3) },
+            uploadSOC: { _, _, _, _, _ in (reference: self.testManifestRef, tagUid: nil) }
+        )
+        let result = try await service.updateFeed(
+            ownerHex: testOwner, topicHex: testTopic, contentReference: testContentRef,
+            privateKey: testPrivateKey, batchID: testBatchID, minIndex: 8
+        )
+        XCTAssertEqual(result.index, 8)
+    }
+
     /// Builds a service with stubbable closures. Defaults throw to
     /// surface "wrong closure called" via `FeedServiceError.other`.
     private func makeService(

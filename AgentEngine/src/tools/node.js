@@ -63,13 +63,24 @@ export function createNodeTools(nodes) {
 		defineTool({
 			name: "swarm_publish",
 			description:
-				"Publish one file attached to this conversation (resourceId from attachment_list) or bounded inline text to the public Swarm network through Freedom. Inline text is data, not a named file. Content is public, unencrypted and permanent while its storage lasts. Freedom always asks the user before uploading, separately for each publication, showing the storage it uses. If the result is still sending, keep its publicationId and use swarm_publication_status; never blindly repeat a publication. On iPhone, private draft links (target draft) and stable addresses aren't available yet. Read the swarm-publishing skill first.",
+				"Publish one file attached to this conversation (resourceId from attachment_list) or bounded inline text to the public Swarm network through Freedom. Inline text is data, not a named file. By default content is public and unencrypted; target draft makes an encrypted private draft link instead. Freedom always asks the user before dispatch, separately for each publication, showing the storage it uses. If the result is still sending, keep its publicationId and use swarm_publication_status; never blindly repeat a possibly applied publication. Read the swarm-publishing skill first.",
 			parameters: obj({
 				resourceId: opt(str({ maxLength: 80 })),
 				text: opt(str({ minLength: 1, maxLength: 262_144 })),
 				contentType: opt(str({ minLength: 1, maxLength: 255 })),
-				target: opt(oneOf(["public", "draft"])),
-				stableAddress: opt(str({ maxLength: 64 })),
+				target: opt(
+					oneOf(["public", "draft"], {
+						description:
+							"public (default): an unencrypted public publication. draft: a private draft link, encrypted with Swarm encryption; anyone given the link can read it, and the encrypted data is still stored permanently on the public network. Use draft only when the user asks for a private or draft link. Publishing a draft publicly later is a separate public publication with its own approval.",
+					}),
+				),
+				stableAddress: opt(
+					str({
+						pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+						description:
+							"Optional lowercase name for a stable address: Freedom publishes under a feed owned by the user's Swarm identity, so a later publication with the same name updates the same bzz:// address. Older versions stay retrievable by their own references. Public publications only; never with target draft.",
+					}),
+				),
 			}),
 			replay: "unsafe",
 			execute: async (args, api) => json(await call(api, "publish", args)),

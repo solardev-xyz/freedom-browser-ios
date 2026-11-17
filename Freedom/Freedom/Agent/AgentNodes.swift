@@ -51,7 +51,7 @@ final class AgentNodeDriver {
         case "status": return status()
         case "request": return try await request(params)
         case "diagnostics": return diagnostics(params)
-        case "publishPreview": return try preview(params, chat: chat)
+        case "publishPreview": return try await preview(params, chat: chat)
         case "publish": return try await publish(params, chat: chat)
         case "publicationStatus": return await publicationStatus(params, chat: chat)
         default: throw AgentEngine.EngineError.tool("Unknown nodes method: \(method)")
@@ -66,6 +66,7 @@ final class AgentNodeDriver {
     func forgetAll() {
         publications = [:]
         defaults.set(publications, forKey: Self.publicationsKey)
+        defaults.removeObject(forKey: Self.metaKey)
     }
 
     // MARK: - Status
@@ -212,13 +213,32 @@ final class AgentNodeDriver {
         let name: String?
     }
 
+    /// What a publication asks for besides its content (desktop's target and stableAddress).
+    private struct Target {
+        /// A private draft link: uploaded with Swarm encryption, the link carries the key.
+        let draft: Bool
+        /// A stable address's name (public publications only).
+        let stableName: String?
+    }
+
+    private static let stableNamePattern = /[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?/
+    /// Desktop's feed topic prefix: the same name gives the same address on both.
+    private static let stableTopicPrefix = "freedom-agent/stable-address/"
+
+    private func target(_ params: [String: Any]) throws -> Target {
+        let raw = params["target"] as? String ?? "public"
+        guard raw == "public" || raw == "draft" else { throw DriverError.invalid("INVALID_ARGUMENT: target must be one of: public, draft") }
+        let stable = (params["stableAddress"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        if let stable {
+            guard stable.wholeMatch(of: Self.stableNamePattern) != nil else {
+                throw DriverError.invalid("INVALID_ARGUMENT: stableAddress must be 1-64 lowercase letters, digits or inner hyphens")
+            }
+            guard raw != "draft" else { throw DriverError.invalid("INVALID_ARGUMENT: A private draft link cannot have a stable address") }
+        }
+        return Target(draft: raw == "draft", stableName: stable)
+    }
+
     private func payload(_ params: [String: Any], chat: String?) throws -> Payload {
-        if params["target"] as? String == "draft" {
-            throw DriverError.invalid("CAPABILITY_UNAVAILABLE: private draft links aren't available on iPhone yet; publishing is public only.")
-        }
-        if let stable = params["stableAddress"] as? String, !stable.isEmpty {
-            throw DriverError.invalid("CAPABILITY_UNAVAILABLE: stable addresses aren't available on iPhone yet.")
-        }
         let resourceId = params["resourceId"] as? String
         let text = params["text"] as? String
         guard (resourceId == nil) != (text == nil) else { throw DriverError.invalid("INVALID_ARGUMENT: pass exactly one of resourceId or text.") }
@@ -240,16 +260,40 @@ final class AgentNodeDriver {
         return batch
     }
 
-    private func preview(_ params: [String: Any], chat: String?) throws -> [String: Any] {
+    /// Room for a stable address's feed entry and manifest besides the content.
+    private static let stableAddressBytes = 2 * StampService.estimatedBytes(forFeedWrite: 0)
+
+    private func preview(_ params: [String: Any], chat: String?) async throws -> [String: Any] {
+        let target = try target(params)
         let payload = try payload(params, chat: chat)
-        let batch = try batch(for: payload.data.count)
+        let identity = try target.stableName.map(stableIdentity)
+        let batch = try batch(for: payload.data.count + (identity == nil ? 0 : Self.stableAddressBytes))
         let size = ByteCountFormatter.string(fromByteCount: Int64(payload.data.count), countStyle: .file)
         let what = payload.name.map { "“\($0)” (\(size))" } ?? "text (\(size), \(payload.contentType))"
         let days = batch.ttlSeconds / 86_400
         let storage = "\(batch.label.map { "“\($0)”" } ?? "storage \(batch.batchID.prefix(8))…"), \(days) days left, \(Int((batch.usage * 100).rounded()))% used"
+        var notices: [String] = []
+        if target.draft {
+            notices.append("Private draft link. The content is encrypted, but anyone who gets the link can read it, so share it deliberately. The encrypted data is still stored on the public network and can’t be deleted or taken back.")
+        } else {
+            notices.append("This will be public. Anyone with the link can read it, and it can’t be deleted or taken back.")
+        }
+        if let identity, let name = target.stableName {
+            let plan = await stablePlan(identity, name: name)
+            var line = "Stable address “\(name)”, owned by your Swarm identity \(identity.owner.prefix(6))…\(identity.owner.suffix(4)). "
+            switch plan.existing {
+            case "yes":
+                line += "This address already exists\(plan.currentBzzUrl.map { " (\($0))" } ?? ""). Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication."
+            case "no": line += "This creates a new address."
+            default: line += "Freedom couldn’t check whether this address exists yet; publishing points it at this content either way."
+            }
+            notices.append(line)
+            notices.append("Later fixes can update this address, but they don’t remove this version: anyone holding its own reference can still retrieve it while its postage is valid.")
+        }
+        let action = target.draft ? "Create a private draft link for \(what) on Swarm." : "Publish \(what) publicly to Swarm."
         return [
             "what": what,
-            "summary": "Publish \(what) publicly to Swarm: anyone with the link can read it, and it can't be deleted while the storage lasts. Uses \(storage).",
+            "summary": "\(action) \(notices.joined(separator: " ")) Uses \(storage).",
             "warnings": days < 7 ? ["storage_expires_soon"] : [String](),
         ]
     }
@@ -257,24 +301,44 @@ final class AgentNodeDriver {
     private static let origin = "freedom://agent"
 
     private func publish(_ params: [String: Any], chat: String?) async throws -> [String: Any] {
+        let target = try target(params)
         let payload = try payload(params, chat: chat)
-        let batch = try batch(for: payload.data.count)
+        let identity = try target.stableName.map(stableIdentity)
+        let batch = try batch(for: payload.data.count + (identity == nil ? 0 : Self.stableAddressBytes))
         let history = nodes.swarmServices.publishHistoryStore
-        let row = history.record(kind: .data, name: payload.name, origin: Self.origin, bytesSize: payload.data.count)
+        let historyName = target.draft ? "\(payload.name ?? "Text") (private draft link)" : payload.name
+        let row = history.record(kind: .data, name: historyName, origin: Self.origin, bytesSize: payload.data.count)
+        var meta: [String: Any] = ["target": target.draft ? "draft" : "public"]
         if let chat {
             publications[chat, default: []].append(row.id.uuidString)
             defaults.set(publications, forKey: Self.publicationsKey)
         }
+        defer { saveMeta(meta, for: row.id) }
         let upload: SwarmPublishService.UploadResult
         do {
-            upload = try await nodes.swarmServices.publishService.publishData(payload.data, contentType: payload.contentType, name: payload.name, batchID: batch.batchID)
+            upload = try await nodes.swarmServices.publishService.publishData(
+                payload.data, contentType: payload.contentType, name: payload.name, batchID: batch.batchID, encrypt: target.draft
+            )
         } catch {
             let message = SwarmUserPublisher.describe(error)
             history.fail(row, errorMessage: message)
             throw DriverError.invalid("PUBLISH_FAILED: \(message)")
         }
-        history.complete(row, reference: upload.reference, tagUid: upload.tagUid, batchId: batch.batchID)
-        log.notice("[nodes] published \(payload.data.count) bytes")
+        let reference = upload.reference.lowercased()
+        if target.draft, reference.wholeMatch(of: /[0-9a-f]{64}/) != nil {
+            // The node ignored Swarm-Encrypt: this content is public now.
+            meta["unencryptedReference"] = reference
+            let message = "The node did not encrypt this upload: it returned the unencrypted reference \(reference). Treat the content as public, and do not share it as a private draft link."
+            history.fail(row, errorMessage: message)
+            throw DriverError.invalid("PUBLISH_FAILED: \(message)")
+        }
+        guard reference.wholeMatch(of: target.draft ? /[0-9a-f]{128}/ : /[0-9a-f]{64}/) != nil else {
+            let message = "The node returned an unexpected reference."
+            history.fail(row, errorMessage: message)
+            throw DriverError.invalid("PUBLISH_FAILED: \(message)")
+        }
+        history.complete(row, reference: reference, tagUid: upload.tagUid, batchId: batch.batchID)
+        log.notice("[nodes] published \(payload.data.count) bytes\(target.draft ? " encrypted" : "", privacy: .public)")
         // Follow the upload tag for up to a minute; the reference is final either way.
         var sent = upload.tagUid == nil
         if let tag = upload.tagUid {
@@ -286,13 +350,157 @@ final class AgentNodeDriver {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+        if let identity, let name = target.stableName {
+            meta["stableAddress"] = await updateStableAddress(identity, name: name, reference: reference, batchID: batch.batchID)
+        }
+        saveMeta(meta, for: row.id)
         return receipt(row, sending: !sent)
+    }
+
+    // MARK: - Stable addresses
+
+    /// The Swarm identity a stable address's feed belongs to: the node wallet key
+    /// (m/44'/60'/0'/0/1), as on desktop, so an address is the same on both.
+    private struct StableIdentity {
+        /// 0x-prefixed lowercase address.
+        let owner: String
+        let ownerHex: String
+        let privateKey: Data
+        let topicHex: String
+    }
+
+    private func stableIdentity(_ name: String) throws -> StableIdentity {
+        let address: String
+        let key: HDKey
+        do {
+            key = try nodes.swarmServices.vault.signingKey(at: .beeWallet)
+            address = try key.ethereumAddress.lowercased()
+        } catch {
+            throw DriverError.invalid("CAPABILITY_UNAVAILABLE: A stable address is signed with your Swarm identity, which needs Freedom’s vault unlocked. Ask the user to unlock it, then publish again.")
+        }
+        let hex = address.hasPrefix("0x") ? String(address.dropFirst(2)) : address
+        return StableIdentity(owner: "0x" + hex, ownerHex: hex, privateKey: key.privateKey, topicHex: FeedTopic.fromString(Self.stableTopicPrefix + name))
+    }
+
+    private static let stableAddressesKey = "agent.stableAddresses"
+
+    /// Stable addresses this phone updated: `owner/name` → manifest reference and last index.
+    private var stableAddresses: [String: [String: Any]] {
+        get { defaults.dictionary(forKey: Self.stableAddressesKey) as? [String: [String: Any]] ?? [:] }
+        set { defaults.set(newValue, forKey: Self.stableAddressesKey) }
+    }
+
+    private struct StablePlan {
+        /// "yes", "no" or "unknown".
+        let existing: String
+        let latestIndex: UInt64?
+        let currentBzzUrl: String?
+    }
+
+    /// Whether the address exists, from this phone's record or the network (10 s at most).
+    private func stablePlan(_ identity: StableIdentity, name: String) async -> StablePlan {
+        if let known = stableAddresses["\(identity.owner)/\(name)"], let manifest = known["manifest"] as? String {
+            return StablePlan(existing: "yes", latestIndex: (known["index"] as? NSNumber)?.uint64Value, currentBzzUrl: "bzz://\(manifest)")
+        }
+        let service = nodes.swarmServices.feedService
+        do {
+            // nil: no entry 0, so no address yet. (`try?` would flatten that into a failure.)
+            let latest: UInt64? = try await Self.within(seconds: 10) {
+                do {
+                    return try await service.readFeed(identity.ownerHex, identity.topicHex, nil).index
+                } catch BeeAPIClient.Error.notFound {
+                    return try await service.latestIndex(ownerHex: identity.ownerHex, topicHex: identity.topicHex)
+                }
+            }
+            return latest.map { StablePlan(existing: "yes", latestIndex: $0, currentBzzUrl: nil) }
+                ?? StablePlan(existing: "no", latestIndex: nil, currentBzzUrl: nil)
+        } catch {
+            return StablePlan(existing: "unknown", latestIndex: nil, currentBzzUrl: nil)
+        }
+    }
+
+    /// Points the stable address at `reference`: a feed update (after any later entry
+    /// the node finds), then the feed manifest whose reference is the address. The
+    /// content stays published if this fails; the receipt says so.
+    private func updateStableAddress(_ identity: StableIdentity, name: String, reference: String, batchID: String) async -> [String: Any] {
+        var result: [String: Any] = ["name": name, "owner": identity.owner]
+        let key = "\(identity.owner)/\(name)"
+        let known = (stableAddresses[key]?["index"] as? NSNumber)?.uint64Value
+        let service = nodes.swarmServices.feedService
+        let lock = nodes.swarmServices.feedWriteLock
+        let write: @MainActor (UInt64) async throws -> SwarmFeedService.FeedWriteResult = { minIndex in
+            try await Self.within(seconds: 60) {
+                try await lock.withLock(topicHex: identity.topicHex) {
+                    try await service.updateFeed(
+                        ownerHex: identity.ownerHex, topicHex: identity.topicHex, contentReference: reference,
+                        privateKey: identity.privateKey, batchID: batchID, minIndex: minIndex, probeHead: true
+                    )
+                }
+            }
+        }
+        do {
+            var written = try await write(known.map { $0 + 1 } ?? 0)
+            // A later entry the node only found now: write once more after it.
+            if let head = try? await service.readFeed(identity.ownerHex, identity.topicHex, nil).index, head > written.index {
+                written = try await write(head + 1)
+            }
+            let manifest = try await Self.within(seconds: 60) {
+                try await service.createFeed(ownerHex: identity.ownerHex, topicHex: identity.topicHex, batchID: batchID)
+            }
+            stableAddresses[key] = ["manifest": manifest.manifestReference, "index": NSNumber(value: written.index)]
+            result["reference"] = manifest.manifestReference
+            result["bzzUrl"] = manifest.bzzUrl
+            result["index"] = NSNumber(value: written.index)
+            result["updated"] = true
+            log.notice("[nodes] stable address \(name, privacy: .public) now at index \(written.index)")
+        } catch {
+            result["updated"] = false
+            result["error"] = "The stable address was not updated: \(SwarmUserPublisher.describe(error))"
+            log.error("[nodes] stable address \(name, privacy: .public) not updated: \(String(describing: error), privacy: .public)")
+        }
+        return result
+    }
+
+    private struct Timeout: LocalizedError {
+        var errorDescription: String? { "The Swarm node didn't answer in time." }
+    }
+
+    /// `work`'s result, or `Timeout` after `seconds` (the work is cancelled).
+    private static func within<T: Sendable>(seconds: Double, _ work: @escaping @MainActor () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await work() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw Timeout()
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw Timeout() }
+            return first
+        }
+    }
+
+    // MARK: - Receipts
+
+    private static let metaKey = "agent.publicationMeta"
+
+    /// Per publication (history record ID): target, stable address result, an unencrypted reference.
+    private func saveMeta(_ meta: [String: Any], for id: UUID) {
+        var all = defaults.dictionary(forKey: Self.metaKey) ?? [:]
+        all[id.uuidString] = meta
+        defaults.set(all, forKey: Self.metaKey)
+    }
+
+    private func meta(for id: UUID) -> [String: Any] {
+        (defaults.dictionary(forKey: Self.metaKey)?[id.uuidString] as? [String: Any]) ?? [:]
     }
 
     private func publicationID(_ id: UUID) -> String { "swarm_pub_" + id.uuidString.replacingOccurrences(of: "-", with: "").lowercased() }
 
     private func receipt(_ row: SwarmPublishHistoryRecord, sending: Bool) -> [String: Any] {
-        var receipt: [String: Any] = ["publicationId": publicationID(row.id), "target": "public"]
+        let meta = meta(for: row.id)
+        let draft = meta["target"] as? String == "draft"
+        var receipt: [String: Any] = ["publicationId": publicationID(row.id), "target": draft ? "draft" : "public", "public": !draft]
+        if draft { receipt["encrypted"] = true }
         switch row.status {
         case .uploading: receipt["status"] = "uploading"
         case .failed: receipt["status"] = "failed"
@@ -302,6 +510,8 @@ final class AgentNodeDriver {
             receipt["reference"] = reference
             receipt["bzzUrl"] = "bzz://\(reference)/"
         }
+        if let unencrypted = meta["unencryptedReference"] { receipt["unencryptedReference"] = unencrypted }
+        if let stable = meta["stableAddress"] { receipt["stableAddress"] = stable }
         if let name = row.name { receipt["name"] = name }
         if let bytes = row.bytesSize { receipt["bytes"] = bytes }
         if let error = row.errorMessage { receipt["error"] = error }
