@@ -432,11 +432,11 @@ final class BrowserTab {
         // edit menu; the touch script goes in with the other user scripts.
         selectionRelay.owner = self
         contentController.add(selectionRelay, name: ContextMenuSupport.selectionHandlerName)
-        freedomWebView.onWindowChange = { [weak self] in self?.reloadIfShown() }
+        freedomWebView.onWindowChange = { [weak self] in self?.tabShown() }
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reloadIfShown() }
+            MainActor.assumeIsolated { self?.tabShown() }
         }
         freedomWebView.searchMenuTitle = { [weak self] in
             guard let self else { return nil }
@@ -898,6 +898,7 @@ final class BrowserTab {
     /// reloads when it's shown again.
     fileprivate func pageProcessDied() {
         // The page that asked for these is gone.
+        cancelDialog()
         cancelPermissionPrompts()
         endFind()
         endRefreshing()
@@ -918,12 +919,94 @@ final class BrowserTab {
         }
     }
 
+    /// The tab came on screen (or the app to the foreground).
+    private func tabShown() {
+        reloadIfShown()
+        presentDialogIfShown()
+    }
+
     /// Finishes a reload put off because the page died while the tab
     /// wasn't shown.
     private func reloadIfShown() {
         guard reloadWhenShown, isShown else { return }
         reloadWhenShown = false
         reload()
+    }
+
+    // MARK: - JavaScript dialogs
+
+    /// A page's `alert()`, `confirm()` or `prompt()`. The page's scripts
+    /// wait until it's answered.
+    struct PageDialog: Equatable {
+        enum Kind: String { case alert, confirm, prompt }
+        let id = UUID()
+        let kind: Kind
+        /// The host of the frame that asked (an embedded frame's own).
+        let host: String
+        let message: String
+        let defaultText: String?
+        let isMainFrame: Bool
+    }
+
+    /// The dialog waiting for an answer; one at a time, since the page is
+    /// blocked until it's answered.
+    private(set) var pendingDialog: PageDialog?
+    @ObservationIgnored private var dialogCompletion: ((Bool, String?) -> Void)?
+    @ObservationIgnored private weak var dialogAlert: UIAlertController?
+
+    /// WebKit asked for a dialog. Shown as an alert while the tab is on
+    /// screen, otherwise held until it is (as desktop browsers do for
+    /// background tabs). Before, Freedom left WebKit's defaults: alerts
+    /// vanished and every confirm() answered Cancel.
+    fileprivate func runDialog(_ dialog: PageDialog, completion: @escaping (Bool, String?) -> Void) {
+        guard pendingDialog == nil else { completion(false, nil); return }
+        pendingDialog = dialog
+        dialogCompletion = completion
+        presentDialogIfShown()
+    }
+
+    /// Answers the pending dialog: OK (`accept`, with `text` for a prompt)
+    /// or Cancel. Closes the alert if it's showing.
+    func answerDialog(accept: Bool, text: String? = nil) {
+        guard let completion = dialogCompletion else { return }
+        dialogCompletion = nil
+        pendingDialog = nil
+        if let alert = dialogAlert {
+            dialogAlert = nil
+            alert.presentingViewController?.dismiss(animated: true)
+        }
+        completion(accept, text)
+    }
+
+    /// The page went away (navigation, process death, the tab closing):
+    /// the dialog is answered with Cancel.
+    func cancelDialog() {
+        answerDialog(accept: false)
+    }
+
+    private func presentDialogIfShown() {
+        guard let dialog = pendingDialog, dialogAlert == nil, isShown,
+              let presenter = webView.window?.rootViewController?.topMostPresented else { return }
+        let alert = UIAlertController(title: dialog.host, message: dialog.message, preferredStyle: .alert)
+        // Tapping a button closes the alert itself: forget it before answering.
+        let answer: (Bool, Bool) -> Void = { [weak self, weak alert] accept, withText in
+            guard let self, self.pendingDialog?.id == dialog.id else { return }
+            self.dialogAlert = nil
+            self.answerDialog(accept: accept, text: withText ? (alert?.textFields?.first?.text ?? "") : nil)
+        }
+        switch dialog.kind {
+        case .alert:
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in answer(true, false) })
+        case .confirm:
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in answer(false, false) })
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in answer(true, false) })
+        case .prompt:
+            alert.addTextField { $0.text = dialog.defaultText }
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in answer(false, false) })
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in answer(true, true) })
+        }
+        dialogAlert = alert
+        presenter.present(alert, animated: true)
     }
 
     private func loadInWebView(_ url: URL) {
@@ -1601,6 +1684,52 @@ final class BrowserTab {
 private final class UIDelegate: NSObject, WKUIDelegate {
     weak var owner: BrowserTab?
 
+    // JavaScript dialogs (`BrowserTab.runDialog`); without an owner, WebKit's
+    // defaults: nothing shown, Cancel.
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptAlertPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping () -> Void
+    ) {
+        MainActor.assumeIsolated {
+            guard let owner else { completionHandler(); return }
+            owner.runDialog(Self.dialog(.alert, message, nil, frame)) { _, _ in completionHandler() }
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptConfirmPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        MainActor.assumeIsolated {
+            guard let owner else { completionHandler(false); return }
+            owner.runDialog(Self.dialog(.confirm, message, nil, frame)) { accept, _ in completionHandler(accept) }
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptTextInputPanelWithPrompt prompt: String,
+        defaultText: String?,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (String?) -> Void
+    ) {
+        MainActor.assumeIsolated {
+            guard let owner else { completionHandler(nil); return }
+            owner.runDialog(Self.dialog(.prompt, prompt, defaultText, frame)) { accept, text in completionHandler(accept ? (text ?? "") : nil) }
+        }
+    }
+
+    private static func dialog(_ kind: BrowserTab.PageDialog.Kind, _ message: String, _ defaultText: String?, _ frame: WKFrameInfo) -> BrowserTab.PageDialog {
+        let origin = frame.securityOrigin
+        let host = origin.host.isEmpty ? (frame.request.url?.host() ?? "This page") : origin.host
+        return BrowserTab.PageDialog(kind: kind, host: host, message: message, defaultText: defaultText, isMainFrame: frame.isMainFrame)
+    }
+
     func webView(
         _ webView: WKWebView,
         createWebViewWith configuration: WKWebViewConfiguration,
@@ -1919,6 +2048,8 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // negotiation into a fresh navigation.
         MainActor.assumeIsolated {
             owner?.noteNavigationStarted()
+            // A page that navigates (or is navigated away) no longer waits for its dialog.
+            owner?.cancelDialog()
             owner?.reinstallPreloads()
             owner?.resetPerPageSurfaceState()
             // A navigation withdraws the departing page's prompts and
