@@ -147,6 +147,9 @@ final class AgentService {
     private var walletDriver: AgentWalletDriver?
     /// A transfer the agent asked for, waiting for the user on the agent's sheet.
     private(set) var walletPrompt: AgentTransferPrompt?
+    /// A domain transaction the agent asked for (domain_execute), waiting for the user.
+    private(set) var domainPrompt: AgentDomainPrompt?
+    private var domainDriver: AgentDomainDriver?
     /// A file the agent asked to upload (browser_upload), waiting for the user's choice.
     private(set) var filePrompt: AgentFilePrompt?
     /// Files the user attached to the next message.
@@ -221,6 +224,11 @@ final class AgentService {
         }
         engine.walletDriver = walletDriver
         engine.mcpDriver = mcpDriver
+        let domainDriver = AgentDomainDriver(services: wallet, userWallets: userWallets) { [weak self] prompt in
+            self?.domainPrompt = prompt
+        }
+        engine.domainDriver = domainDriver
+        self.domainDriver = domainDriver
         self.walletDriver = walletDriver
         engine.onEvent = { [weak self] event in self?.handle(event) }
         engine.onTerminated = { [weak self] in self?.engineDied() }
@@ -283,6 +291,24 @@ final class AgentService {
             #if DEBUG
             if !debugLaunchHandled {
                 debugLaunchHandled = true
+                // FREEDOM_DEBUG_AGENT_DOMAIN_PREVIEW=1: the domain approval sheet with a sample plan (no send possible).
+                if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_AGENT_DOMAIN_PREVIEW"] == "1" {
+                    domainPrompt = AgentDomainPrompt(params: [
+                        "label": "Commit registration of example-name.gwei",
+                        "to": "0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6",
+                        "account": ["address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94", "name": "Wallet 1"],
+                        "value": "0.0 ETH", "maxFee": "0.000184 ETH", "data": "0xf14fcbc8" + String(repeating: "ab", count: 32),
+                        "presentation": [
+                            "contract": ["address": "0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6", "name": "GNS NameNFT (.gwei)"],
+                            "items": [
+                                ["label": "Name", "value": "example-name.gwei"],
+                                ["label": "Step", "value": "1 of 2: commit. It costs network fees but does not reserve or buy the name. Registering needs a second approval."],
+                                ["label": "Term", "value": "1 year (365 days)"],
+                                ["label": "Price", "value": "0.0005 ETH, paid at step 2, plus network fees"],
+                            ],
+                        ],
+                    ], locked: false)
+                }
                 // FREEDOM_DEBUG_AGENT_MCP_SIGNIN=<name>: sign in to that connected service at launch.
                 if let name = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_AGENT_MCP_SIGNIN"],
                    let server = mcp.servers.first(where: { $0.name == name }) {
@@ -352,6 +378,8 @@ final class AgentService {
         pageDriver = nil
         walletDriver?.cancelPending()
         walletDriver = nil
+        domainDriver?.cancelPending()
+        domainDriver = nil
         filePrompt?.cancel()
         phase = .off
         approvals = []
@@ -460,8 +488,9 @@ final class AgentService {
     }
 
     func stopRun() async {
-        // Stopping the agent withdraws a transfer or file choice it was asking for.
+        // Stopping the agent withdraws a transfer, domain transaction or file choice it was asking for.
         walletDriver?.cancelPending()
+        domainDriver?.cancelPending()
         filePrompt?.cancel()
         guard let engine, let chatID = currentChatID else { return }
         dropInterrupted()

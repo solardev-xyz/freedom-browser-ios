@@ -44,6 +44,8 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigation
     var nodeDriver: AgentNodeDriver?
     /// The `mcp` service: connected services' sign-in and Keychain state (AgentMcp.swift).
     var mcpDriver: AgentMcpDriver?
+    /// The `domains` service: name registration and records (AgentDomains.swift).
+    var domainDriver: AgentDomainDriver?
 
     private(set) var webView: WKWebView?
     private var readyWaiter: CheckedContinuation<Void, Error>?
@@ -206,6 +208,19 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigation
             Task {
                 do {
                     replyHandler(try await attachmentStore.handle(method, params), nil)
+                } catch {
+                    replyHandler(nil, error.localizedDescription)
+                }
+            }
+        case "domains":
+            guard let domainDriver else {
+                replyHandler(nil, "Domain tools aren't available")
+                return
+            }
+            let params = body["params"] as? [String: Any] ?? [:]
+            Task {
+                do {
+                    replyHandler(try await domainDriver.handle(method, params), nil)
                 } catch {
                     replyHandler(nil, error.localizedDescription)
                 }

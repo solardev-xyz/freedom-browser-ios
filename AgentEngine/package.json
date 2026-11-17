@@ -8,12 +8,14 @@
     "check": "node test/agent-restart.mjs"
   },
   "dependencies": {
+    "@adraffy/ens-normalize": "1.11.1",
     "@earendil-works/chord": "1.5.2",
     "@earendil-works/pi-agent-core": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-durable": "1.5.2",
     "@earendil-works/pi-mcp": "1.5.2",
-    "@earendil-works/pi-schema": "1.5.2"
+    "@earendil-works/pi-schema": "1.5.2",
+    "ethers": "6.17.0"
   },
   "devDependencies": {
     "esbuild": "0.28.2"

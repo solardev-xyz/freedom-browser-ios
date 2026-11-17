@@ -172,7 +172,7 @@ onCommand("agentOpen", async ({ apiKeys, approvalMode, openrouterZeroRetention, 
 	}
 	if (wipe) await wipeAppDatabase(AGENT_DATABASE);
 	const database = await openAppDatabase(AGENT_DATABASE);
-	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, compatible, askBeforeResuming: askBeforeResuming === true, mcp: (method, params) => request("mcp", method, params), mcpServers: mcpServers ?? [], page: (method, params) => request("page", method, params), wallet: (method, params) => request("wallet", method, params), files: (method, params) => request("attachments", method, params), nodes: (method, params) => request("nodes", method, params) });
+	agent = await openAgent({ database, emit, apiKeys, approvalMode, openrouterZeroRetention, compatible, askBeforeResuming: askBeforeResuming === true, mcp: (method, params) => request("mcp", method, params), domains: (method, params) => request("domains", method, params), mcpServers: mcpServers ?? [], page: (method, params) => request("page", method, params), wallet: (method, params) => request("wallet", method, params), files: (method, params) => request("attachments", method, params), nodes: (method, params) => request("nodes", method, params) });
 	return { openMs: agent.openMs, approvals: agent.pendingApprovals(), interrupted: agent.interrupted() };
 });
 onCommand("agentResumeInterrupted", async ({ proceed }) => {

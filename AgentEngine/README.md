@@ -57,6 +57,18 @@ releases, so upgrade them together and run `npm run check` afterwards.
   state; the app keeps the per-chat record (AgentPrivacy.swift,
   Application Support/Agent/privacy.json) and shows it from the agent sheet.
   Desktop's hardware attestation and end-to-end encryption checks aren't here.
+- `domains/`: desktop's decentralized-name tools (domain_inspect,
+  domain_prepare, domain_execute, domain_operation_status) and service,
+  copied from desktop (src/main/domains, pi-domain-tools.js) with its
+  pinned ENSv1, WNS (.wei) and GNS (.gwei) contracts, commitments, checks
+  and messages; changes are marked "iOS:". The app (AgentDomains.swift)
+  provides mainnet reads (the wallet's chain-data router, read methods
+  only), the journal (Application Support/Agent/domain-operations.json)
+  and registration secrets (Keychain), the active wallet, the approval
+  sheet (unlock, review, slide) and the send; `store.flush()` makes the
+  journal durable before anything can be signed. Since about November
+  2026 every ENSv1 controller is de-authorized on mainnet (ENSv2
+  migration), so .eth registration and renewal are refused, as on desktop.
 - `mcp.js`: connected services (desktop's mcp-connections.js and
   pi-mcp-tools.js): remote MCP servers over Streamable HTTP with
   `@earendil-works/pi-mcp`, public or with OAuth (dynamic client

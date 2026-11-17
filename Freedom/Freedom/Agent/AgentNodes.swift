@@ -54,6 +54,7 @@ final class AgentNodeDriver {
         case "publishPreview": return try await preview(params, chat: chat)
         case "publish": return try await publish(params, chat: chat)
         case "publicationStatus": return await publicationStatus(params, chat: chat)
+        case "domainPublication": return await domainPublication(params, chat: chat)
         default: throw AgentEngine.EngineError.tool("Unknown nodes method: \(method)")
         }
     }
@@ -516,6 +517,29 @@ final class AgentNodeDriver {
         if let bytes = row.bytesSize { receipt["bytes"] = bytes }
         if let error = row.errorMessage { receipt["error"] = error }
         return receipt
+    }
+
+    /// A chat's publication as desktop's domain service reads it for a website
+    /// record: completed, public, and retrievable from the node as a site
+    /// (`GET /bzz/<reference>/`), which stands in for desktop's retrieval check.
+    private func domainPublication(_ params: [String: Any], chat: String?) async -> Any? {
+        let history = nodes.swarmServices.publishHistoryStore
+        let ids = (chat.flatMap { publications[$0] } ?? []).compactMap(UUID.init(uuidString:))
+        guard let wanted = params["publicationId"] as? String,
+              let id = ids.first(where: { publicationID($0) == wanted }), let row = history.entry(id: id) else { return NSNull() }
+        var publication = receipt(row, sending: false)
+        let completed = row.status == .completed && row.reference != nil
+        publication["state"] = completed ? "completed" : "failed"
+        var verified = false
+        if completed, publication["public"] as? Bool == true, let reference = row.reference,
+           let url = URL(string: "http://127.0.0.1:1633/bzz/\(reference)/") {
+            var request = URLRequest(url: url, timeoutInterval: 20)
+            request.httpMethod = "HEAD"
+            verified = ((try? await URLSession.shared.data(for: request))?.1 as? HTTPURLResponse)?.statusCode == 200
+        }
+        publication["verified"] = verified
+        if verified { publication["indexDocument"] = row.name ?? "index" }
+        return publication
     }
 
     private func publicationStatus(_ params: [String: Any], chat: String?) async -> [String: Any] {

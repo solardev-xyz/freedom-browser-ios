@@ -1,6 +1,6 @@
 // Desktop's swarm-publishing skill, for the phone: attachments and inline
 // text (no project workspaces or folders), with desktop's private draft links
-// and stable addresses. No domain tools on the phone yet.
+// and stable addresses.
 export default {
 	name: "swarm-publishing",
 	description: "Publish a file attached to the chat, or bounded text, to Swarm through Freedom.",
@@ -13,6 +13,7 @@ Use this skill when the user wants to publish a file or a text to Swarm. Use Fre
 - A Swarm publication is public and unencrypted by default (\`target\` omitted or \`public\`). Explain that clearly before publication when the user may not expect public distribution.
 - \`target: "draft"\` makes a **private draft link** instead: Freedom uploads it with Swarm encryption and returns a longer \`bzz://\` link that carries the decryption key. Use it only when the user asks for a draft, preview or private link. Tell the user plainly that anyone who gets the link can read the content, and that the encrypted data is still stored on the public network permanently; it can't be deleted. A draft never gets a stable address or a domain name. Publishing the same content publicly later is a separate \`swarm_publish\` call with its own approval; never present a draft as published.
 - \`stableAddress: "<name>"\` (public only) publishes under a Swarm feed owned by the user's Swarm identity, so a later publication with the same name updates the same \`bzz://\` address. Use it when the user wants one address for a site they will keep fixing, and reuse the same name for every update. It needs Freedom's vault unlocked. A feed unpublishes nothing: older versions stay retrievable by anyone who has their own reference while their postage is valid. Say so when you offer it.
+- Connect a name (ENS/.wei/.gwei) only when the user asks, through the existing domain tools (\`dweb-domains\` skill). For a publication with a stable address, the name then follows later updates of that address without another transaction.
 - Sources: a file the user attached to this chat (find its \`resourceId\` with \`attachment_list\`), or bounded text you already have authority to publish. Never ask for or invent a filesystem path. Inline text is a text/data publication; do not invent or report a filename. Supply a content type only when it is useful (for example \`text/html\` for a one-page site you wrote for the user).
 - For a single-page site you write: put everything in one HTML document, with no scripts, fonts, styles or images loaded from other hosts, no analytics, and no form posting to another site unless the user asks.
 

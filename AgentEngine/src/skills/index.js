@@ -6,8 +6,9 @@ import { defineTool } from "@earendil-works/pi-durable";
 import { obj, oneOf } from "@earendil-works/pi-schema";
 import swarmPostage from "./swarm-postage.js";
 import swarmPublishing from "./swarm-publishing.js";
+import dwebDomains from "./dweb-domains.js";
 
-export const SKILLS = [swarmPublishing, swarmPostage];
+export const SKILLS = [swarmPublishing, swarmPostage, dwebDomains];
 
 export function skillsSection() {
 	return [

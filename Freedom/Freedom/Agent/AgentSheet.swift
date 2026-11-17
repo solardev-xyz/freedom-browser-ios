@@ -247,6 +247,11 @@ private struct AgentSheetPresenter: ViewModifier {
         Binding(get: { agent.walletPrompt }, set: { if $0 == nil { agent.walletPrompt?.cancel() } })
     }
 
+    /// Dismissing the domain sheet declines the transaction (not while it's being sent).
+    private var domainPromptBinding: Binding<AgentDomainPrompt?> {
+        Binding(get: { agent.domainPrompt }, set: { if $0 == nil { agent.domainPrompt?.cancel() } })
+    }
+
     private var filePromptBinding: Binding<AgentFilePrompt?> {
         Binding(get: { agent.filePrompt }, set: { if $0 == nil { agent.filePrompt?.cancel() } })
     }
@@ -265,6 +270,9 @@ private struct AgentSheetPresenter: ViewModifier {
             .onChange(of: agent.walletPrompt?.id) { _, id in
                 if id != nil, !isPresented, !pagePromptPending { isPresented = true }
             }
+            .onChange(of: agent.domainPrompt?.id) { _, id in
+                if id != nil, !isPresented, !pagePromptPending { isPresented = true }
+            }
             // A task cut off when Freedom closed or was put away: ask whether to continue it.
             .onChange(of: agent.interruptedChats.isEmpty) { _, empty in
                 if !empty, !isPresented, !pagePromptPending { isPresented = true }
@@ -277,6 +285,10 @@ private struct AgentSheetPresenter: ViewModifier {
                     // The agent's own transfer (wallet_transfer).
                     .sheet(item: walletPromptBinding) { prompt in
                         AgentTransferSheet(prompt: prompt)
+                    }
+                    // A domain transaction (domain_execute).
+                    .sheet(item: domainPromptBinding) { prompt in
+                        AgentDomainSheet(prompt: prompt)
                     }
                     // A file the agent asked to upload (browser_upload).
                     .sheet(item: filePromptBinding) { prompt in
@@ -427,6 +439,7 @@ enum AgentToolLabel {
         case "node_request": "terminal"
         case "swarm_publish", "swarm_publication_status": "icloud.and.arrow.up"
         case "mcp_discover", "mcp_request": "puzzlepiece.extension"
+        case "domain_inspect", "domain_prepare", "domain_execute", "domain_operation_status": "globe"
         case "skill_read": "book"
         case "browser_upload": "paperclip"
         case "browser_download", "browser_list_downloads": "arrow.down.circle"
@@ -470,6 +483,10 @@ enum AgentToolLabel {
         case "swarm_publish": "Publishing to Swarm…"
         case "swarm_publication_status": "Checking the publication…"
         case "mcp_discover": "Finding connected services…"
+        case "domain_inspect": "Looking up a name…"
+        case "domain_prepare": "Preparing a name change…"
+        case "domain_execute": "Waiting for your approval…"
+        case "domain_operation_status": "Checking the name change…"
         case "mcp_request": "Using a connected service…"
         case "skill_read": "Reading a skill…"
         case "browser_upload": "Waiting for you to choose a file…"
@@ -507,6 +524,10 @@ enum AgentToolLabel {
         case "swarm_publish": return "Published to Swarm"
         case "swarm_publication_status": return "Checked the publication"
         case "mcp_discover": return "Looked up connected services"
+        case "domain_inspect": return "Looked up \(arguments["name"] ?? "a name")"
+        case "domain_prepare": return "Prepared \(arguments["intent"]?.replacingOccurrences(of: "_", with: " ") ?? "a change") for \(arguments["name"] ?? "a name")"
+        case "domain_execute": return "Ran a name step"
+        case "domain_operation_status": return "Checked the name change"
         case "mcp_request": return "Used \(arguments["name"] ?? arguments["action"] ?? "a connected service")"
         case "skill_read": return "Read the \(arguments["name"] ?? "") skill"
         case "browser_upload": return "Attached a file"
