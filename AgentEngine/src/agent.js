@@ -18,7 +18,7 @@ import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { createRegistry, defineExtension, GenerationTask, Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { classifyInteraction, mayProceed } from "./classifier.js";
-import { createPageTools, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
+import { createPageTools, DIALOG_TOOLS, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -33,7 +33,7 @@ const PREAMBLE = [
 	"Do not claim an action succeeded unless its tool result confirms success.",
 	"Use browser_snapshot as the primary observation and source of element references. References belong to the page they came from: after a navigation or a big change, take a new snapshot. Use browser_screenshot only when the layout or a canvas matters.",
 	"Clicks, typing and key presses on this device are dispatched by script, and a page may ignore them. If an interaction had no visible effect, check with a fresh snapshot instead of repeating it, and if the page doesn't respond, tell the user which step to do themselves.",
-	"Snapshots report open dialogs and controls marked inDialog. Never accept a confirmation just to make progress. Form snapshots expose required/readOnly and validation flags; use these to find missing or invalid fields without repeatedly submitting.",
+	"Snapshots report open dialogs and controls marked inDialog. A native alert, confirm or prompt blocks the page: page tools then report DIALOG_OPEN; read it with browser_get_dialog and answer it with browser_handle_dialog only when the task calls for it. Never accept a confirmation just to make progress. Form snapshots expose required/readOnly and validation flags; use these to find missing or invalid fields without repeatedly submitting.",
 	"If a tool reports that approval or user action is required, or the user declined, explain the blocker and do not retry or work around it unless the user explicitly asks again.",
 	"On follow-up messages, assume the page may have changed since the previous turn: get the current tab and take a fresh snapshot before interacting with page content.",
 	"ENS names (name.eth) and bzz://, ipfs:// and ipns:// addresses open decentralized websites; navigate to them like any other URL.",
@@ -90,6 +90,7 @@ export async function openAgent({ database, page, emit, apiKeys = {}, approvalMo
 		hooks: [
 			hook(ToolTask, {
 				beforeTool: async (call, api, ctx) => {
+					if (DIALOG_TOOLS.has(call.name)) return dialogGate(call, api, ctx);
 					if (!INTERACTION_TOOLS.has(call.name)) return undefined;
 					const stored = await api.memo("approval", ctx);
 					if (stored === "declined") return { block: "The user declined this action." };
@@ -109,6 +110,8 @@ export async function openAgent({ database, page, emit, apiKeys = {}, approvalMo
 					}
 					// A reference that no longer resolves fails in the tool itself, with the reason.
 					if (inspection.stale) return undefined;
+					// A native dialog blocks the page: nothing to ask about until it's answered.
+					if (inspection.unavailable?.startsWith?.("DIALOG_OPEN")) return { block: inspection.unavailable };
 					// An element Freedom couldn't inspect never runs unasked (outside "allow").
 					const described = inspection.described ?? { label: "", unavailable: inspection.unavailable };
 					const verdict = described.unavailable
@@ -150,6 +153,41 @@ export async function openAgent({ database, page, emit, apiKeys = {}, approvalMo
 			}),
 		],
 	});
+
+	/**
+	 * Answering a page dialog: always asks, in every mode (desktop: "Every
+	 * response requires user approval, including dismissal"), and only for
+	 * the dialog that is still open.
+	 */
+	async function dialogGate(call, api, ctx) {
+		const stored = await api.memo("approval", ctx);
+		if (stored === "declined") return { block: "The user declined answering the dialog. It is still open." };
+		const pageCall = (method, params) => pageTools.call(method, params, api.conversationId);
+		const current = async () => (await pageCall("getDialog").catch(() => ({})))?.dialog;
+		const dialog = await current();
+		if (!dialog || dialog.dialogRef !== call.arguments.dialogRef) return { block: "That dialog is no longer open. Use browser_get_dialog." };
+		if (stored !== undefined) return undefined;
+		const tab = await pageCall("tab").catch(() => ({}));
+		const accept = call.arguments.accept === true;
+		const answer = await waitForApproval(
+			api.taskId,
+			api.conversationId,
+			{
+				tool: call.name,
+				arguments: { ...(typeof call.arguments.promptText === "string" && accept && { promptText: call.arguments.promptText }) },
+				label: String(dialog.message ?? "").slice(0, 300),
+				effect: accept ? "dialog_accept" : "dialog_dismiss",
+				summary: `${accept ? "OK" : "Cancel"} on the ${dialog.type} from ${dialog.origin}.`,
+				uncertainties: [],
+				url: tab.url,
+			},
+			ctx,
+		);
+		await api.memo("approval", answer, ctx);
+		if (answer !== "approved") return { block: "The user declined answering the dialog. It is still open." };
+		if ((await current())?.dialogRef !== call.arguments.dialogRef) return { block: "That dialog closed while the approval was pending." };
+		return undefined;
+	}
 
 	/** Whether an interaction may run without asking, by mode. */
 	async function assess(call, described, api, ctx) {
@@ -463,6 +501,16 @@ function scriptedProvider(pace) {
 		const results = messages.slice(userIndex + 1).filter((m) => m.role === "toolResult");
 		const last = results.at(-1);
 		const wantsClick = /\bclick\b/i.test(prompt);
+		// "dialog": read the page's dialog and answer OK.
+		if (/\bdialog\b/i.test(prompt)) {
+			if (!last) return fauxAssistantMessage([fauxToolCall("browser_get_dialog", {})], { stopReason: "toolUse" });
+			if (last.toolName === "browser_get_dialog") {
+				const dialog = safeJSON(textOf(last))?.dialog;
+				if (dialog) return fauxAssistantMessage([fauxToolCall("browser_handle_dialog", { dialogRef: dialog.dialogRef, accept: true })], { stopReason: "toolUse" });
+				return fauxAssistantMessage("There is no dialog.");
+			}
+			return fauxAssistantMessage(last.isError ? `I didn't answer it: ${textOf(last)}` : "Done, I answered the dialog.");
+		}
 		if (!last) return fauxAssistantMessage([fauxToolCall("browser_snapshot", {})], { stopReason: "toolUse" });
 		if (last.toolName === "browser_snapshot") {
 			const snapshot = safeJSON(textOf(last));

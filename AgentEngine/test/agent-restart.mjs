@@ -14,6 +14,7 @@
 // 8. Every page call carries the chat's ID (each chat has its own tabs).
 // 9. A click at a screenshot point asks even in "sensitive_actions".
 // 10. browser_stop_loading ends a running browser_wait.
+// 11. Answering a page dialog asks even in "allow_website_interactions".
 
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -73,6 +74,9 @@ async function main() {
 		check(visual.approvalsAsked === 1 && visual.approval?.uncertainties?.includes("visual_effect_unknown") && visual.clicks === 1, "a click at a screenshot point asks in sensitive_actions");
 
 		check(await stopEndsWait(), "browser_stop_loading ends a running browser_wait");
+
+		const dialog = JSON.parse((await runChild("dialog", join(dir, "dialog.sqlite"))).stdout);
+		check(dialog.approvalsAsked === 1 && dialog.approval?.effect === "dialog_accept" && dialog.dialogAnswers === 1, "answering a page dialog asks even in allow_website_interactions");
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -103,7 +107,7 @@ async function stopEndsWait() {
 
 /** A page with one button; `describe` changes its label once `relabel` is set. */
 function fakePage({ describeThrows = false, noTab = false, visual = false } = {}) {
-	const state = { clicks: 0, relabel: false, chatIds: new Set(), unboundCalls: 0 };
+	const state = { clicks: 0, relabel: false, chatIds: new Set(), unboundCalls: 0, dialogAnswers: 0, dialogOpen: true };
 	const page = async (method, params = {}) => {
 		if (params.chatId === undefined) state.unboundCalls += 1;
 		else state.chatIds.add(params.chatId);
@@ -119,6 +123,12 @@ function fakePage({ describeThrows = false, noTab = false, visual = false } = {}
 				if (noTab) throw new Error("No tab is open.");
 				if (visual) return { ok: true, label: "Visual point (40%, 60%); effect unknown", effect: "", visual: true };
 				return { ok: true, label: state.relabel ? "Delete account" : "Buy now" };
+			case "getDialog":
+				return { dialog: state.dialogOpen ? { dialogRef: "dialog_1", type: "confirm", message: "Delete this item?", origin: "shop.example" } : null };
+			case "handleDialog":
+				state.dialogAnswers += 1;
+				state.dialogOpen = false;
+				return { handled: true, accepted: params.accept };
 			case "click":
 				state.clicks += 1;
 				return { clicked: true, ref: "ref_a_0", trusted: false, navigated: false };
@@ -156,23 +166,23 @@ async function child(mode, file) {
 			approval = event;
 			if (mode === "kill-at-approval") process.kill(process.pid, "SIGKILL");
 			if (mode === "changed") state.relabel = true;
-			if (["approve", "changed", "uninspectable", "visual"].includes(mode)) agent.approve(event.taskId, true);
+			if (["approve", "changed", "uninspectable", "visual", "dialog"].includes(mode)) agent.approve(event.taskId, true);
 			if (mode === "decline") agent.approve(event.taskId, false);
 		}
 	};
 	let wasBusy = false;
-	const approvalMode = mode === "allow" ? "allow_website_interactions" : ["uninspectable", "visual"].includes(mode) ? "sensitive_actions" : "every_interaction";
+	const approvalMode = ["allow", "dialog"].includes(mode) ? "allow_website_interactions" : ["uninspectable", "visual"].includes(mode) ? "sensitive_actions" : "every_interaction";
 	agent = await openAgent({ database, page, emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000 });
 	// One chat per database: the first run creates it and the restart finds it under the same ID.
 	const chatId = await findOrCreateChat(agent, file);
 	await agent.view(chatId);
-	const question = ["kill-mid-answer", "resume"].includes(mode) ? QUESTION : CLICK;
+	const question = ["kill-mid-answer", "resume"].includes(mode) ? QUESTION : mode === "dialog" ? "Answer the dialog" : CLICK;
 	if (mode !== "approve") await agent.submit({ chatId, prompt: question, requestId: `${question}-1`, model: SCRIPTED_MODEL });
 	const timeout = setTimeout(() => ended.reject(new Error(`${mode}: the run didn't end within 30 s`)), 30_000);
 	await ended.promise;
 	clearTimeout(timeout);
 	await new Promise((resolve) => setTimeout(resolve, 50)); // the last chat_items
-	process.stdout.write(JSON.stringify({ firstLive, items, answer, approvalsAsked, approval, clicks: state.clicks, chatId, chatIds: [...state.chatIds], unboundCalls: state.unboundCalls }));
+	process.stdout.write(JSON.stringify({ firstLive, items, answer, approvalsAsked, approval, clicks: state.clicks, dialogAnswers: state.dialogAnswers, chatId, chatIds: [...state.chatIds], unboundCalls: state.unboundCalls }));
 	await agent.close();
 	await database.close();
 }

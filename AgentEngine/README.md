@@ -41,15 +41,19 @@ releases, so upgrade them together and run `npm run check` afterwards.
   `browser_focus_tab`, `browser_close_tab`, `browser_snapshot`,
   `browser_navigate`, `browser_click`, `browser_type`, `browser_select`,
   `browser_scroll`, `browser_press`, `browser_wait`, `browser_stop_loading`,
-  `browser_screenshot`, `browser_target_point`. Every call carries the chat's
+  `browser_screenshot`, `browser_target_point`, `browser_get_dialog`,
+  `browser_handle_dialog`. Every call carries the chat's
   ID: each chat has its own tabs (the user's tab it started in, which a new
   message re-points to the tab the user is on, and the tabs it opened; it
   closes only those). Screenshots are JPEG images of the page's viewport for
   models that accept images; `browser_target_point` turns a point of the
   latest screenshot into a single-use reference for `browser_click`, valid
   while the viewport and DOM are unchanged, and that click always asks outside
-  `allow_website_interactions` (desktop's `visual_effect_unknown`). Not yet:
-  frames, dialogs, uploads, downloads; WebMCP doesn't exist in WebKit.
+  `allow_website_interactions` (desktop's `visual_effect_unknown`). A page's
+  alert/confirm/prompt (`BrowserTab.pendingDialog`) blocks its scripts: page
+  calls then fail with DIALOG_OPEN at once, an action that opens one returns
+  it, and answering it always asks the user, in every mode. Not yet: frames,
+  uploads, downloads; WebMCP doesn't exist in WebKit.
 - `classifier.js`: desktop's interaction-intent classifier.
 - `page-check.js`: scripted checks of the browser tools on real sites, no model.
 - `bridge.js`: engine ↔ app messages (`freedomAgent` handler, `window.__freedomAgent.command`).

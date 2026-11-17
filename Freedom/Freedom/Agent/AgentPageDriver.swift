@@ -8,7 +8,8 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "AgentEngin
 /// Whichever of a result and a timeout comes first resumes the caller.
 @MainActor
 private final class ResumeOnce {
-    private var done = false
+    private(set) var done = false
+    var isDone: Bool { done }
     func claim() -> Bool {
         defer { done = true }
         return !done
@@ -41,6 +42,8 @@ final class AgentPageDriver {
         case visualNotInteractable
         case visualClickOnly
         case pageTimeout(Int)
+        case dialogOpen(String)
+        case dialogGone
 
         var errorDescription: String? {
             switch self {
@@ -56,6 +59,8 @@ final class AgentPageDriver {
             case .staleVisualTarget: "STALE_ELEMENT_REFERENCE: the visual target changed or expired; take a new screenshot and target it again."
             case .visualNotInteractable: "ELEMENT_NOT_INTERACTABLE: use a semantic control reference from browser_snapshot for this target."
             case .visualClickOnly: "Visual targets only support browser_click."
+            case .dialogOpen(let summary): "DIALOG_OPEN: the page shows a dialog and waits for an answer (\(summary)). Read it with browser_get_dialog; answer it with browser_handle_dialog only if the task calls for it."
+            case .dialogGone: "That dialog is no longer open. Use browser_get_dialog."
             case .pageTimeout(let seconds): "TIMEOUT: the page didn't respond within \(seconds) s; it may be busy, stuck or reloading. Check it with browser_get_tab before trying again."
             }
         }
@@ -86,6 +91,22 @@ final class AgentPageDriver {
         default: break
         }
         let tab = try await workingTab(chat, opening: method == "navigate")
+        switch method {
+        case "getDialog":
+            let dialog: Any = tab.pendingDialog.map { Self.describe($0) as Any } ?? NSNull()
+            return ["dialog": dialog, "tab": state(of: tab)]
+        case "handleDialog":
+            guard let dialog = tab.pendingDialog, params["dialogRef"] as? String == Self.dialogRef(dialog) else { throw DriverError.dialogGone }
+            let accept = (params["accept"] as? NSNumber)?.boolValue ?? false
+            tab.answerDialog(accept: accept, text: dialog.kind == .prompt ? (params["promptText"] as? String ?? "") : nil)
+            try? await Task.sleep(for: .milliseconds(120))
+            return ["handled": true, "accepted": accept, "tab": state(of: tab)]
+        case "tab", "stop", "navigate":
+            break
+        default:
+            // The page's scripts are blocked while a dialog waits.
+            if let dialog = tab.pendingDialog { throw DriverError.dialogOpen(Self.summary(dialog)) }
+        }
         // A point from a screenshot (browser_target_point): only a click, and only while the view is unchanged.
         let ref = params["ref"] as? String ?? ""
         if ref.hasPrefix("visual_") {
@@ -124,10 +145,18 @@ final class AgentPageDriver {
     }
 
     /// Runs an action and reports the tab afterwards, once the page had a moment to react
-    /// (a link starting to load, a form submitting).
+    /// (a link starting to load, a form submitting). An action that opened a dialog
+    /// returns at once: the page's scripts wait for the answer.
     private func act(_ tab: BrowserTab, _ action: () async throws -> Any?) async throws -> Any? {
         let before = navigationCount(tab.webView)
-        var result = try await action() as? [String: Any] ?? [:]
+        var result: [String: Any]
+        do {
+            result = try await action() as? [String: Any] ?? [:]
+        } catch DriverError.dialogOpen {
+            guard let dialog = tab.pendingDialog else { throw DriverError.dialogGone }
+            return ["ok": true, "dialogOpened": Self.describe(dialog), "tab": state(of: tab),
+                    "note": "The action opened a dialog; the page waits for its answer (browser_handle_dialog)."]
+        }
         try? await Task.sleep(for: .milliseconds(120))
         if result["ok"] as? Bool != false {
             result["tab"] = state(of: tab)
@@ -487,9 +516,25 @@ final class AgentPageDriver {
     /// `work`'s result, or `pageTimeout` after `seconds`: a page that hangs (a busy
     /// script, a process coming back from a crash) must not hold a tool forever.
     /// WebKit can't cancel a script call; a late result is dropped.
-    private static func withTimeout<T>(_ seconds: Int, _ work: @escaping @MainActor () async throws -> T) async throws -> T {
+    private static func withTimeout<T>(
+        _ seconds: Int,
+        interrupt: (@MainActor () -> Error?)? = nil,
+        _ work: @escaping @MainActor () async throws -> T
+    ) async throws -> T {
         let once = ResumeOnce()
         return try await withCheckedThrowingContinuation { continuation in
+            // A page dialog blocks the page's scripts: stop waiting when one appears.
+            if let interrupt {
+                Task { @MainActor in
+                    while !once.isDone {
+                        if let error = interrupt(), once.claim() {
+                            continuation.resume(throwing: error)
+                            return
+                        }
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                }
+            }
             Task { @MainActor in
                 do {
                     let value = try await work()
@@ -509,7 +554,23 @@ final class AgentPageDriver {
     }
 
     private func callPage(_ tab: BrowserTab, _ method: String, _ params: [String: Any]) async throws -> Any? {
-        try await Self.withTimeout(20) { try await self.callPageUnbounded(tab, method, params) }
+        try await Self.withTimeout(20, interrupt: { tab.pendingDialog.map { DriverError.dialogOpen(Self.summary($0)) } }) {
+            try await self.callPageUnbounded(tab, method, params)
+        }
+    }
+
+    // MARK: - Dialogs
+
+    private static func dialogRef(_ dialog: BrowserTab.PageDialog) -> String { "dialog_\(dialog.id.uuidString.lowercased())" }
+
+    private static func describe(_ dialog: BrowserTab.PageDialog) -> [String: Any] {
+        var info: [String: Any] = ["dialogRef": dialogRef(dialog), "type": dialog.kind.rawValue, "message": dialog.message, "origin": dialog.host, "mainFrame": dialog.isMainFrame]
+        if dialog.kind == .prompt { info["defaultPrompt"] = dialog.defaultText ?? "" }
+        return info
+    }
+
+    private static func summary(_ dialog: BrowserTab.PageDialog) -> String {
+        "\(dialog.kind.rawValue) from \(dialog.host): “\(dialog.message.prefix(120))”"
     }
 
     private func callPageUnbounded(_ tab: BrowserTab, _ method: String, _ params: [String: Any]) async throws -> Any? {

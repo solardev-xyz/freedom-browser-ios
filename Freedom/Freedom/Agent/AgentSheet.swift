@@ -295,6 +295,13 @@ enum AgentToolLabel {
     static func icon(_ name: String) -> String {
         switch name {
         case "browser_snapshot", "browser_get_tab": "doc.text.magnifyingglass"
+        case "browser_list_tabs", "browser_focus_tab": "square.on.square"
+        case "browser_create_tab": "plus.square.on.square"
+        case "browser_close_tab": "xmark.square"
+        case "browser_screenshot": "camera.viewfinder"
+        case "browser_target_point": "scope"
+        case "browser_stop_loading": "stop.circle"
+        case "browser_get_dialog", "browser_handle_dialog": "exclamationmark.bubble"
         case "browser_navigate": "arrow.up.right.square"
         case "browser_click": "hand.tap"
         case "browser_type": "keyboard"
@@ -317,6 +324,15 @@ enum AgentToolLabel {
         case "browser_scroll": "Scrolling…"
         case "browser_press": "Pressing a key…"
         case "browser_wait": "Waiting for the page…"
+        case "browser_list_tabs": "Checking the tabs…"
+        case "browser_create_tab": "Opening a tab…"
+        case "browser_focus_tab": "Switching tabs…"
+        case "browser_close_tab": "Closing a tab…"
+        case "browser_screenshot": "Looking at the page…"
+        case "browser_target_point": "Finding the spot…"
+        case "browser_stop_loading": "Stopping…"
+        case "browser_get_dialog": "Reading the dialog…"
+        case "browser_handle_dialog": "Answering the dialog…"
         default: "Working…"
         }
     }
@@ -333,6 +349,15 @@ enum AgentToolLabel {
         case "browser_scroll": return "Scroll \(arguments["direction"] ?? "")"
         case "browser_press": return "Press \(arguments["key"] ?? "a key")\(intent)"
         case "browser_wait": return "Wait for \(arguments["condition"] ?? "the page")"
+        case "browser_list_tabs": return "Checked the tabs"
+        case "browser_create_tab": return "Opened \(arguments["url"] ?? "a page") in a new tab"
+        case "browser_focus_tab": return "Switched tabs"
+        case "browser_close_tab": return "Closed a tab"
+        case "browser_screenshot": return "Looked at the page"
+        case "browser_target_point": return "Found a spot on the page"
+        case "browser_stop_loading": return "Stopped loading"
+        case "browser_get_dialog": return "Read the dialog"
+        case "browser_handle_dialog": return arguments["accept"] == "1" ? "Answered OK to the dialog" : "Answered Cancel to the dialog"
         default: return name
         }
     }
@@ -352,6 +377,9 @@ enum AgentToolLabel {
             return "Press \(approval.arguments["key"] ?? "a key") on \(target)"
         case "browser_scroll":
             return "Scroll \(approval.arguments["direction"] ?? "") in \(target)"
+        case "browser_handle_dialog":
+            if let text = approval.arguments["promptText"] { return "Answer “\(text.prefix(80))” to the page's question \(target)" }
+            return approval.effect == "dialog_accept" ? "Answer OK to \(target)" : "Answer Cancel to \(target)"
         default:
             return approval.tool
         }

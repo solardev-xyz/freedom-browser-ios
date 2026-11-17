@@ -23,6 +23,15 @@ const VISUAL_PAGE = `<!doctype html><meta name="viewport" content="width=device-
 <div class=c id=tl></div><div class=c id=tr></div><div class=c id=bl></div><div class=c id=br></div><canvas id=cv></canvas><p id=out>nothing yet</p>
 <script>const out=document.getElementById("out");for(const id of ["tl","tr","bl","br"])document.getElementById(id).addEventListener("click",()=>{out.textContent="hit "+id});
 document.getElementById("cv").addEventListener("click",e=>{const r=e.target.getBoundingClientRect();out.textContent="canvas "+Math.round((e.clientX-r.left)/r.width*100)+" "+Math.round((e.clientY-r.top)/r.height*100)})</script>`;
+// Native dialogs: buttons that open confirm(), prompt() and alert() and
+// write what they got back into the page.
+const DIALOG_PAGE = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Dialogs</title>
+<button id=del>Delete item</button> <button id=ask>Ask name</button> <button id=say>Say hi</button><p id=out>nothing yet</p>
+<script>const out=document.getElementById("out");
+document.getElementById("del").onclick=()=>{out.textContent="confirmed: "+confirm("Delete this item?")};
+document.getElementById("ask").onclick=()=>{out.textContent="name: "+prompt("Your name?","anon")};
+document.getElementById("say").onclick=()=>{alert("Hello there");out.textContent="alert done"};</script>`;
+
 export const CASES = [
 	{
 		name: "wikipedia-search-form",
@@ -101,6 +110,27 @@ export const CASES = [
 			{ expect: { pattern: /hit bl/ } },
 			{ visual: [0.97, 0.98] },
 			{ expect: { pattern: /hit br/ } },
+		],
+	},
+	{
+		name: "dialogs",
+		what: "confirm, prompt and alert: the page waits, reads are refused, answers reach the page",
+		html: DIALOG_PAGE,
+		steps: [
+			{ click: { role: "button", name: "Delete item" }, dialog: "confirm" },
+			{ blocked: true },
+			{ pause: 2500 },
+			{ answer: { accept: true } },
+			{ expect: { text: "confirmed: true" } },
+			{ click: { role: "button", name: "Ask name" }, dialog: "prompt" },
+			{ answer: { accept: true, promptText: "Freedom" } },
+			{ expect: { text: "name: Freedom" } },
+			{ click: { role: "button", name: "Delete item" }, dialog: "confirm" },
+			{ answer: { accept: false } },
+			{ expect: { text: "confirmed: false" } },
+			{ click: { role: "button", name: "Say hi" }, dialog: "alert" },
+			{ answer: { accept: true } },
+			{ expect: { text: "alert done" } },
 		],
 	},
 	{
@@ -208,7 +238,7 @@ export async function runPageChecks(call, names, log = console.log, { loadOnly =
 }
 
 function label(step) {
-	const [kind] = Object.keys(step).filter((k) => ["type", "press", "click", "select", "scroll", "visual", "expect"].includes(k));
+	const [kind] = Object.keys(step).filter((k) => ["type", "press", "click", "select", "scroll", "visual", "blocked", "pause", "answer", "expect"].includes(k));
 	return `${kind} ${JSON.stringify(step[kind], (_, v) => (v instanceof RegExp ? String(v) : v))}${step.key ? ` ${step.key}` : ""}${step.text ? ` "${step.text}"` : ""}`;
 }
 
@@ -242,7 +272,29 @@ async function runStep(call, step, testCase, context) {
 		const { element } = await find(call, step.click);
 		context.urlBefore = (await call("tab")).url;
 		const r = await call("click", { ref: element.ref });
-		return { name: element.name, navigated: r.navigated, handledByTouch: r.handledByTouch };
+		if (step.dialog && r.dialogOpened?.type !== step.dialog) throw new Error(`expected a ${step.dialog} dialog, got ${JSON.stringify(r).slice(0, 200)}`);
+		return { name: element.name, navigated: r.navigated, handledByTouch: r.handledByTouch, ...(r.dialogOpened && { dialog: r.dialogOpened.type, message: r.dialogOpened.message }) };
+	}
+	if (step.blocked) {
+		// While a dialog waits, page reads fail at once instead of hanging.
+		const t0 = Date.now();
+		try {
+			await call("snapshot", { options: {} });
+		} catch (error) {
+			if (/DIALOG_OPEN/.test(error.message)) return { refused: true, ms: Date.now() - t0 };
+			throw error;
+		}
+		throw new Error("a snapshot ran while a dialog was open");
+	}
+	if (step.pause) {
+		await sleep(step.pause);
+		return { paused: step.pause };
+	}
+	if (step.answer) {
+		const { dialog } = await call("getDialog");
+		if (!dialog) throw new Error("no dialog is open");
+		const r = await call("handleDialog", { dialogRef: dialog.dialogRef, accept: step.answer.accept, promptText: step.answer.promptText });
+		return { type: dialog.type, message: dialog.message, accepted: r.accepted };
 	}
 	if (step.select) {
 		const { element } = await find(call, step.select);
