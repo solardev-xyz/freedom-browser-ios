@@ -45,6 +45,7 @@ struct FreedomApp: App {
     @State private var walletBalances: WalletBalanceStore
     @State private var adblock: AdblockService
     @State private var adblockUpdate: AdblockUpdateService
+    @State private var agent: AgentService
     @Environment(\.scenePhase) private var scenePhase
     private let modelContainer: ModelContainer
 
@@ -301,7 +302,7 @@ struct FreedomApp: App {
                 settings: settings,
                 io: .live(adblock: adblockService, bee: swarmBee)
             ))
-            self._tabStore = State(wrappedValue: TabStore(
+            let tabs = TabStore(
                 context: container.mainContext,
                 historyStore: history,
                 faviconStore: favicons,
@@ -312,7 +313,9 @@ struct FreedomApp: App {
                 radicle: radicleServices,
                 adblock: adblockService,
                 ipfs: ipfsInstance
-            ))
+            )
+            self._tabStore = State(wrappedValue: tabs)
+            self._agent = State(wrappedValue: AgentService(settings: AgentSettings(), tabStore: tabs))
         } catch {
             fatalError("Failed to create SwiftData ModelContainer: \(error)")
         }
@@ -360,6 +363,10 @@ struct FreedomApp: App {
                 .environment(swarmUserPublisher)
                 .environment(adblock)
                 .environment(adblockUpdate)
+                .environment(agent)
+                // A run the app was killed during continues once the window is up
+                // (the engine's web view must sit in it, or its timers are throttled).
+                .task { await agent.start() }
                 .environment(openlvSession)
                 // URLs from outside: the phone-signing pairing link
                 // (`freedom://…#openlv://…`; universal links on the bridge

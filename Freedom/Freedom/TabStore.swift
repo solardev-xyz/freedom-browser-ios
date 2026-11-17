@@ -199,6 +199,15 @@ final class TabStore {
         save()
     }
 
+    /// The active tab, or a new one brought to the front when there is
+    /// none: the agent navigating from the start page.
+    func activeTabOpeningIfNeeded() -> BrowserTab {
+        if let tab = activeTab { return tab }
+        let tab = ensureActiveTab()
+        externalOpenToken += 1
+        return tab
+    }
+
     private func ensureActiveTab() -> BrowserTab {
         if let id = activeRecordID, let tab = liveTabs[id] { return tab }
         let id = activeRecordID ?? newTab()

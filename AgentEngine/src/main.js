@@ -8,9 +8,11 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
-import { emit, forwardConsole, onCommand, request } from "./bridge.js";
-import { openDurableAgent } from "./durable.js";
+import { emit, forwardConsole, onCommand, pendingRequests, request } from "./bridge.js";
+import { openAgent } from "./agent.js";
 import { installNativeFetch } from "./net.js";
+import { runPageChecks } from "./page-check.js";
+import { createPageTools } from "./tools/page.js";
 import { openAppDatabase, wipeAppDatabase } from "./sqlite.js";
 
 forwardConsole();
@@ -68,6 +70,26 @@ onCommand("timerCheck", async ({ count = 40 }) => {
 		worst = Math.max(worst, performance.now() - start - 50);
 	}
 	return { expectedMs: count * 50, totalMs: Math.round(performance.now() - t0), worstLateMs: Math.round(worst), visibility: document.visibilityState };
+});
+
+// Scripted checks of the browser tools on real sites (page-check.js).
+onCommand("pageCheck", ({ names, loadOnly }) => {
+	const { call } = createPageTools((method, params) => request("page", method, params));
+	return runPageChecks(call, names, console.log, { loadOnly: loadOnly === true });
+});
+
+// Diagnostics: every `seconds`, a log line that timers still fire here, with any
+// request to the app that has waited over 2 s (a lost reply stalls the agent).
+let heartbeat;
+onCommand("heartbeat", ({ seconds = 5 }) => {
+	clearInterval(heartbeat);
+	let beats = 0;
+	heartbeat = setInterval(() => {
+		beats += 1;
+		const stuck = pendingRequests(2000);
+		if (stuck.length || beats % 6 === 0) console.log(`[heartbeat] ${beats} visibility=${document.visibilityState} stuck=${JSON.stringify(stuck)}`);
+	}, seconds * 1000);
+	return true;
 });
 
 onCommand("abort", () => {
@@ -131,48 +153,42 @@ onCommand("run", async (params) => {
 	return result;
 });
 
-// The durable agent (durable.js) on the app's SQLite database. `durableOpen`
-// continues whatever the last process left unfinished; its events (`state`,
-// `approval`, `run_end`) arrive like the bare loop's.
+// Freedom Agent (agent.js) on the app's database "agent": chats, browser
+// tools on the user's tab, approvals. Events: `approval`, `approval_gone`,
+// and `chat_items` / `chat_live` for the chat being viewed.
 
-const DURABLE_DATABASE = "agent-spike";
-let durable;
+const AGENT_DATABASE = "agent";
+let agent;
 
-onCommand("durableOpen", async ({ wipe, pace, apiKeys }) => {
-	if (durable) {
-		await durable.close();
-		durable = undefined;
-	}
-	if (wipe) await wipeAppDatabase(DURABLE_DATABASE);
-	const database = await openAppDatabase(DURABLE_DATABASE);
-	durable = await openDurableAgent({
-		database,
-		emit,
-		pace: pace ?? 200,
-		apiKeys,
-		readPage: () => request("tool", "readPage", {}),
-	});
-	return { openMs: durable.openMs, resumed: durable.resumed };
-});
-
-const openDurable = () => {
-	if (!durable) throw new Error("The durable agent isn't open");
-	return durable;
+const openedAgent = () => {
+	if (!agent) throw new Error("The agent isn't open");
+	return agent;
 };
 
-// `model`: `{ provider, modelId }`; omitted, the conversation keeps its model
-// (the scripted one at first).
-onCommand("durableSubmit", ({ prompt, requestId, model }) => openDurable().submit({ prompt, requestId, model }));
-onCommand("durableSetKey", async ({ provider, key }) => {
-	await openDurable().setApiKey(provider, key);
+onCommand("agentOpen", async ({ apiKeys, approvalMode, wipe }) => {
+	if (agent) {
+		await agent.close();
+		agent = undefined;
+	}
+	if (wipe) await wipeAppDatabase(AGENT_DATABASE);
+	const database = await openAppDatabase(AGENT_DATABASE);
+	agent = await openAgent({ database, emit, apiKeys, approvalMode, page: (method, params) => request("page", method, params) });
+	return { openMs: agent.openMs, approvals: agent.pendingApprovals() };
+});
+onCommand("agentCreateChat", ({ model }) => openedAgent().createChat({ model }));
+onCommand("agentSubmit", ({ chatId, prompt, requestId, model }) => openedAgent().submit({ chatId, prompt, requestId, model }));
+onCommand("agentView", ({ chatId }) => (chatId === undefined || chatId === null ? openedAgent().unview().then(() => true) : openedAgent().view(chatId)));
+onCommand("agentApprove", ({ taskId, approved }) => openedAgent().approve(taskId, approved));
+onCommand("agentAbort", async ({ chatId }) => {
+	await openedAgent().abort(chatId);
 	return true;
 });
-onCommand("durableApprove", ({ taskId, approved }) => openDurable().approve(taskId, approved));
-onCommand("durableTranscript", () => openDurable().transcript());
-onCommand("durableAbort", async () => {
-	await openDurable().abort();
+onCommand("agentSummaries", ({ chatIds }) => openedAgent().summaries(chatIds));
+onCommand("agentSetKey", async ({ provider, key }) => {
+	await openedAgent().setApiKey(provider, key);
 	return true;
 });
+onCommand("agentSetApprovalMode", ({ mode }) => openedAgent().setApprovalMode(mode));
 
 function resolveModel({ provider, model: modelId, baseUrl }) {
 	const models = createModels();

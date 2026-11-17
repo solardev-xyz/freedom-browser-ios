@@ -1,5 +1,6 @@
 // Bundles the engine for WebKit into the app's resources:
-// Freedom/Freedom/Resources/agent-engine/agent-engine.{js,html}.
+// Freedom/Freedom/Resources/agent-engine/agent-engine.{js,html}, and the page
+// side, agent-page.js.
 // The output is generated, so git ignores it; run `npm run build` after
 // changing src/ or the Pi versions in package.json.
 
@@ -18,6 +19,19 @@ const result = await build({
 	target: "safari18",
 	minify: true,
 	metafile: true,
+	logLevel: "info",
+});
+
+// The page side: injected into a tab's isolated content world when the agent
+// reads or operates the page (AgentPageDriver.swift).
+await build({
+	entryPoints: ["page/index.js"],
+	outfile: new URL("agent-page.js", outdir).pathname,
+	bundle: true,
+	format: "iife",
+	platform: "browser",
+	target: "safari18",
+	minify: true,
 	logLevel: "info",
 });
 

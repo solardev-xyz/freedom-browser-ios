@@ -39,6 +39,11 @@ struct SettingsView: View {
                 NavigationLink(value: SettingsPath.wallet) {
                     Label("Wallet", systemImage: "wallet.bifold.fill")
                 }
+                if AgentSettings.isAvailable {
+                    NavigationLink(value: SettingsPath.agent) {
+                        Label("Agent", systemImage: "sparkles")
+                    }
+                }
                 NavigationLink(value: SettingsPath.ens) {
                     Label("Name Resolution", systemImage: "globe")
                 }
@@ -133,6 +138,8 @@ struct SettingsView: View {
         switch route {
         case .wallet:
             WalletSettingsView()
+        case .agent:
+            AgentSettingsView()
         case .ens:
             ENSSettingsView()
         case .swarm:

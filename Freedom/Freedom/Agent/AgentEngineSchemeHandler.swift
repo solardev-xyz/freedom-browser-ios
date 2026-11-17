@@ -1,4 +1,3 @@
-#if DEBUG
 import Foundation
 import OSLog
 import WebKit
@@ -96,6 +95,7 @@ private final class AgentNetProxy: NSObject, URLSessionDataDelegate {
         request.httpBody = incoming.httpBody ?? incoming.httpBodyStream.map(Self.readAll)
 
         let dataTask = session.dataTask(with: request)
+        log.notice("[net] \(target.host() ?? "?", privacy: .public) \(request.httpMethod ?? "?", privacy: .public) start, \(request.httpBody?.count ?? 0) bytes")
         entries[dataTask.taskIdentifier] = Entry(schemeTask)
         taskIDs[ObjectIdentifier(schemeTask)] = dataTask.taskIdentifier
         dataTask.resume()
@@ -171,4 +171,3 @@ private final class AgentNetProxy: NSObject, URLSessionDataDelegate {
         return data
     }
 }
-#endif

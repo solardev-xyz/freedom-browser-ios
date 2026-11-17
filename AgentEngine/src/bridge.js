@@ -15,9 +15,22 @@ function handler() {
 // Message handlers take JSON-like values only.
 const plain = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 
+// Requests waiting for the app's reply, for diagnostics (`pendingRequests`).
+const pending = new Map();
+let nextRequest = 0;
+
 export async function request(service, method, params) {
-	return handler().postMessage({ service, method, params: plain(params) });
+	const id = nextRequest++;
+	pending.set(id, { service, method, since: Date.now(), detail: service === "sql" ? String(params?.sql ?? "").slice(0, 80) : "" });
+	try {
+		return await handler().postMessage({ service, method, params: plain(params) });
+	} finally {
+		pending.delete(id);
+	}
 }
+
+/** Requests older than `ms` still waiting for the app. */
+export const pendingRequests = (ms = 0) => [...pending.values()].filter((r) => Date.now() - r.since >= ms).map((r) => ({ ...r, ageMs: Date.now() - r.since }));
 
 export function emit(event) {
 	handler()

@@ -1,4 +1,3 @@
-#if DEBUG
 import Foundation
 import OSLog
 import WebKit
@@ -9,7 +8,7 @@ private let log = Logger(subsystem: "com.browser.Freedom", category: "AgentEngin
 /// in a hidden WKWebView. The engine reaches the app through the
 /// `freedomAgent` message handler: tool calls, events and console output.
 /// The app drives it with `command(_:_:)`.
-final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply {
+final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDelegate {
     enum EngineError: LocalizedError {
         case notStarted
         case bootTimedOut
@@ -26,8 +25,17 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply {
 
     /// Engine events (`text`, `tool_start`, `tool_end`, `done`, …) as JSON objects.
     var onEvent: (([String: Any]) -> Void)?
+    /// The engine's web content process died (WebKit crashed or iOS reclaimed
+    /// it): everything in it is gone, so the owner starts a new engine, and the
+    /// durable agent continues from its database.
+    var onTerminated: (() -> Void)?
     /// Backs the `read_page` tool.
     var readPage: (() async throws -> [String: Any])?
+    /// Backs the browser tools (the `page` service). A reference, not a
+    /// closure: with this target's concurrency settings, converting an async
+    /// closure with arguments for this property miscompiled (Swift 6.2: the
+    /// thunk passed garbage for the method string, crashing in `handle`).
+    var pageDriver: AgentPageDriver?
 
     private(set) var webView: WKWebView?
     private var readyWaiter: CheckedContinuation<Void, Error>?
@@ -42,7 +50,10 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply {
         config.setURLSchemeHandler(AgentEngineSchemeHandler(), forURLScheme: AgentEngineSchemeHandler.scheme)
         config.userContentController.addScriptMessageHandler(WeakReplyHandler(self), contentWorld: .page, name: "freedomAgent")
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1, height: 1), configuration: config)
+        webView.navigationDelegate = self
+        #if DEBUG
         webView.isInspectable = true
+        #endif
         self.webView = webView
         // iOS WebKit counts a web view outside any window as a hidden page and
         // throttles its timers, which Pi's streaming and commits run on. So the
@@ -53,6 +64,9 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply {
             webView.isUserInteractionEnabled = false
             webView.accessibilityElementsHidden = true
             window.insertSubview(webView, at: 0)
+            log.notice("[engine] in window \(String(describing: type(of: window)), privacy: .public) key=\(window.isKeyWindow) hidden=\(window.isHidden) level=\(window.windowLevel.rawValue)")
+        } else {
+            log.error("[engine] no window to sit in: timers will be throttled")
         }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -66,6 +80,10 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply {
         }
         let ms = Int(Date().timeIntervalSince(t0) * 1000)
         log.notice("[engine] ready in \(ms) ms")
+        #if DEBUG
+        // For crash-recovery tests: the process to kill (private WebKit key, DEBUG only).
+        if let pid = webView.value(forKey: "_webProcessIdentifier") as? Int { log.notice("[engine] web process pid \(pid)") }
+        #endif
         return ms
     }
 
@@ -74,6 +92,13 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply {
         webView?.removeFromSuperview()
         webView = nil
         database.close()
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        log.error("[engine] its web content process died")
+        readyWaiter?.resume(throwing: EngineError.notStarted)
+        readyWaiter = nil
+        onTerminated?()
     }
 
     private static func hostWindow() -> UIWindow? {
@@ -138,6 +163,19 @@ final class AgentEngine: NSObject, WKScriptMessageHandlerWithReply {
                     }
                 }
             }
+        case "page":
+            guard let pageDriver else {
+                replyHandler(nil, "The browser tools aren't available")
+                return
+            }
+            let params = body["params"] as? [String: Any] ?? [:]
+            Task {
+                do {
+                    replyHandler(try await pageDriver.handle(method, params), nil)
+                } catch {
+                    replyHandler(nil, error.localizedDescription)
+                }
+            }
         case "tool":
             guard method == "readPage", let readPage else {
                 replyHandler(nil, "Unknown tool: \(method)")
@@ -175,4 +213,3 @@ private final class WeakReplyHandler: NSObject, WKScriptMessageHandlerWithReply 
         target.userContentController(userContentController, didReceive: message, replyHandler: replyHandler)
     }
 }
-#endif

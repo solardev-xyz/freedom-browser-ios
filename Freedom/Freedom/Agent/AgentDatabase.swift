@@ -1,4 +1,3 @@
-#if DEBUG
 import Foundation
 import OSLog
 import SQLite3
@@ -258,4 +257,3 @@ extension AgentDatabase.Operation {
         }
     }
 }
-#endif

@@ -13,6 +13,7 @@ import SwiftUI
 /// trimming the `.chainlistSearch` / `.addChainForm` suffix.
 enum SettingsPath: Hashable {
     case wallet
+    case agent
     case ens
     case swarm
     case ipfs
@@ -42,7 +43,7 @@ enum SettingsPath: Hashable {
     var isAddChainStep: Bool {
         switch self {
         case .chainlistSearch, .addChainForm: return true
-        case .wallet, .ens, .swarm, .ipfs, .myotis, .rpc, .adblock, .search, .sitePermissions, .about, .licenses, .license,
+        case .wallet, .agent, .ens, .swarm, .ipfs, .myotis, .rpc, .adblock, .search, .sitePermissions, .about, .licenses, .license,
              .chainEditor, .chainSource, .ensMethod: return false
         }
     }

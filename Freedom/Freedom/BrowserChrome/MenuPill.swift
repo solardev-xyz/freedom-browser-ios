@@ -30,7 +30,9 @@ struct MenuPill: View, Equatable {
     let onSettings: () -> Void
     let onDownloads: () -> Void
     let onNewPrivateTab: () -> Void
-    /// DEBUG builds only: opens the agent engine spike.
+    /// Opens Freedom Agent; nil in builds without it (`AgentSettings.isAvailable`).
+    var onAgent: (() -> Void)? = nil
+    /// DEBUG builds only: opens the agent engine's test bench.
     var onAgentSpike: (() -> Void)? = nil
 
     /// Data-only equality: the closures defeat SwiftUI's automatic
@@ -55,6 +57,11 @@ struct MenuPill: View, Equatable {
             // System Menu doesn't render `ControlGroup`'s side-by-side
             // layout reliably here, so each is its own row.
             Section {
+                if let onAgent {
+                    Button(action: onAgent) {
+                        Label("Agent", systemImage: "sparkles")
+                    }
+                }
                 if let url = shareURL {
                     ShareLink(item: url) {
                         Label("Share", systemImage: "square.and.arrow.up")
@@ -88,7 +95,7 @@ struct MenuPill: View, Equatable {
                 #if DEBUG
                 if let onAgentSpike {
                     Button(action: onAgentSpike) {
-                        Label("Agent (spike)", systemImage: "sparkles")
+                        Label("Agent test bench", systemImage: "hammer")
                     }
                 }
                 #endif

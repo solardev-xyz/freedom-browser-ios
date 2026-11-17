@@ -60,6 +60,7 @@ struct ContentView: View {
     @State private var isShowingRadicleNode = false
     @State private var isShowingNodesDrawer = false
     @State private var isShowingDownloads = false
+    @State private var isShowingAgent = false
     #if DEBUG
     @State private var isShowingAgentSpike = false
     #endif
@@ -164,7 +165,8 @@ struct ContentView: View {
         // FREEDOM_DEBUG_SHOW=swarm|radicle opens that node's sheet (screenshots).
         if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "swarm" { isShowingNode = true }
         if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "radicle" { isShowingRadicleNode = true }
-        if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "agent" { isShowingAgentSpike = true }
+        if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "agent" { isShowingAgent = true }
+        if ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SHOW"] == "agent-bench" { isShowingAgentSpike = true }
         guard let raw = ProcessInfo.processInfo.environment["FREEDOM_DEBUG_SETTINGS"], !raw.isEmpty else { return }
         Logger(subsystem: "com.browser.Freedom", category: "DebugOpen").notice("[debug-settings] opening \(raw, privacy: .public)")
         // ens | ens:<method> | chains | chain:<id> | chain:<id>:<source>
@@ -294,6 +296,7 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingDownloads) {
             DownloadsView()
         }
+        .agentSheet(isPresented: $isShowingAgent)
         #if DEBUG
         .sheet(isPresented: $isShowingAgentSpike) {
             AgentSpikeView()
@@ -559,6 +562,7 @@ struct ContentView: View {
                         onSettings: { isShowingSettings = true },
                         onDownloads: { isShowingDownloads = true },
                         onNewPrivateTab: { tabStore.newTab(isPrivate: true) },
+                        onAgent: AgentSettings.isAvailable ? { isShowingAgent = true } : nil,
                         onAgentSpike: agentSpikeAction
                     )
                     .equatable()

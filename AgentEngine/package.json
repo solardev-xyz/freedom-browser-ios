@@ -5,7 +5,7 @@
   "description": "Pi's agent loop bundled for WebKit; the Freedom app runs it in a hidden WKWebView.",
   "scripts": {
     "build": "node build.mjs",
-    "check": "node test/durable-restart.mjs"
+    "check": "node test/agent-restart.mjs"
   },
   "dependencies": {
     "@earendil-works/chord": "1.5.2",
