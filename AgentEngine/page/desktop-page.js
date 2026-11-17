@@ -811,6 +811,7 @@ async function describeReferencedElement(ref, action, key) {
   let actionLabel = label;
   let navigationTarget = '';
   let formPayloadFingerprint = '';
+  let formMethod = '';
   if (action === 'select' && tag === 'select') {
     if (element.options.length > 1000 || Array.from(element.options).some(
       (option) => option.value.length > 2000 || option.label.length > 2000
@@ -863,11 +864,13 @@ async function describeReferencedElement(ref, action, key) {
             lastModified: value.lastModified,
           },
     ]);
+    // Freedom iOS: the method tells a search (GET) from a form that sends data.
+    formMethod = defaultSubmitter?.hasAttribute('formmethod')
+      ? defaultSubmitter.formMethod
+      : element.form.method;
     const serializedPayload = JSON.stringify({
       action: navigationTarget,
-      method: defaultSubmitter?.hasAttribute('formmethod')
-        ? defaultSubmitter.formMethod
-        : element.form.method,
+      method: formMethod,
       enctype: defaultSubmitter?.hasAttribute('formenctype')
         ? defaultSubmitter.formEnctype
         : element.form.enctype,
@@ -901,6 +904,12 @@ async function describeReferencedElement(ref, action, key) {
     }),
     ...(navigationTarget && { navigationTarget }),
     ...(formPayloadFingerprint && { formPayloadFingerprint }),
+    ...(formMethod && { formMethod }),
+    // Freedom iOS: a box or option in a form is filled in, not sent.
+    ...(tag === 'input' && ['checkbox', 'radio'].includes(inputType) && {
+      formControl: inputType,
+      inForm: Boolean(element.form),
+    }),
   };
 }
 

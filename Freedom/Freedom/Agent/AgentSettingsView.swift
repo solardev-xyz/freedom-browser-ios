@@ -122,7 +122,7 @@ struct AgentSettingsView: View {
         case .everyInteraction:
             "Every click, keystroke and form change on a website waits for you."
         case .sensitiveActions:
-            "Reading and moving around run on their own. Anything that submits, sends, buys, posts, deletes or changes an account waits for you; the model judges which is which, and asks when unsure."
+            "Browsing, searching and filling in fields run on their own. Sending a message, buying, booking, posting, deleting or changing an account waits for you; the model judges which is which, and a form it can't judge waits too."
         case .allowWebsiteInteractions:
             "Website clicks, typing and form changes run without asking. Use this only on sites you trust."
         }

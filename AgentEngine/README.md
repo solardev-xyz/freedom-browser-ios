@@ -30,10 +30,13 @@ releases, so upgrade them together and run `npm run check` afterwards.
     (from the Keychain) on every open.
   - Approvals: desktop's three modes (`every_interaction`, `sensitive_actions`,
     `allow_website_interactions`) gate the website interactions in a
-    `beforeTool` hook. In `sensitive_actions`, form submissions always ask and
-    everything else goes to desktop's interaction-intent classifier
-    (`classifier.js`, same prompt and contract), which lets an interaction run
-    only when it's ordinary with confidence ≥ 0.85. The decision is stored with
+    `beforeTool` hook. `sensitive_actions` is looser than desktop's (Florian,
+    2026-11-17: the agent acts in the user's own browser, so only what sends,
+    buys or commits something asks): typing, choosing, scrolling, keys that
+    don't submit and links to another page run; form submissions and other
+    clicks go to desktop's interaction-intent classifier (`classifier.js`,
+    desktop's output contract with an iPhone prompt), and ask when it calls
+    them consequential, or when it can't tell for a form. The decision is stored with
     the tool call; after an approval, the element must still be what the user
     approved, or the call is blocked.
 - `tools/page.js`: the browser tools, with desktop's names, parameters and

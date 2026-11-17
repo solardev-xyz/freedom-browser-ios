@@ -19,7 +19,7 @@ import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
 import { createRegistry, defineExtension, GenerationTask, Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
-import { classifyInteraction, mayProceed } from "./classifier.js";
+import { classifyInteraction, sensitiveAsks, sensitivePrecheck } from "./classifier.js";
 import { ALWAYS_ASK_TOOLS, createPageTools, DIALOG_TOOLS, INTERACTION_TOOLS, waitFor } from "./tools/page.js";
 import { createWalletTools } from "./tools/wallet.js";
 import { compatibleProvider } from "./compatible.js";
@@ -138,11 +138,13 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 					if (inspection.stale) return undefined;
 					// A native dialog blocks the page: nothing to ask about until it's answered.
 					if (inspection.unavailable?.startsWith?.("DIALOG_OPEN")) return { block: inspection.unavailable };
-					// An element Freedom couldn't inspect never runs unasked (outside "allow").
+					// An element Freedom couldn't inspect is clicked or submitted only after asking
+					// (outside "allow"); typing, choosing and scrolling send nothing.
 					const described = inspection.described ?? { label: "", unavailable: inspection.unavailable };
+					const drafting = mode === "sensitive_actions" && sensitivePrecheck(call.name.replace("browser_", ""), {}) === "proceed";
 					const verdict = described.unavailable
 						? {
-								proceed: mode === "allow_website_interactions",
+								proceed: mode === "allow_website_interactions" || drafting,
 								classification: { kind: "uncertain", confidence: 0, summary: "Freedom couldn't inspect this element.", uncertainties: ["inspection_unavailable"] },
 							}
 						: await assess(call, described, api, ctx);
@@ -259,20 +261,16 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 		}
 		if (mode === "allow_website_interactions") return { proceed: true };
 		if (mode === "every_interaction") return { proceed: false };
-		// A click at a screenshot point: nothing says what it does (desktop's visual_effect_unknown).
-		if (described.visual) {
-			return { proceed: false, classification: { kind: "uncertain", confidence: 0, summary: "Click a point on the page whose effect Freedom can't tell.", uncertainties: ["visual_effect_unknown"] } };
-		}
-		if (described.effect === "form_submission") {
-			const classification = { kind: "consequential", confidence: 1, summary: `Submit ${described.label ? `“${described.label}”` : "this form"}.`, uncertainties: [] };
-			return { proceed: false, classification };
-		}
+		// "Ask for sensitive actions": what can't send anything runs; the rest asks
+		// only when it sends, buys or commits something (classifier.js).
+		const operation = call.name.replace("browser_", "");
+		const tab = await pageTools.call("tab", {}, api.conversationId).catch(() => ({}));
+		if (sensitivePrecheck(operation, described, tab.url) === "proceed") return { proceed: true };
+		const submits = described.effect === "form_submission";
 		const conversation = await harness.conversation(api.conversationId, ctx);
 		const agent = await conversation?.agent(ctx);
 		const model = agent?.model && models.getModel(agent.model.provider, agent.model.modelId);
-		const tab = await pageTools.call("tab", {}, api.conversationId).catch(() => ({}));
 		const args = call.arguments;
-		const operation = call.name.replace("browser_", "");
 		const classification =
 			model && agent.model.provider !== SCRIPTED_MODEL.provider
 				? await classifyInteraction(
@@ -288,14 +286,14 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 								...(operation === "type" && { characters: typeof args.text === "string" ? args.text.length : 0, replace: args.replace !== false }),
 								...(operation === "select" && (Array.isArray(args.values) ? { values: args.values.map((v) => v.slice(0, 240)) } : { value: String(args.value ?? "").slice(0, 240) })),
 							},
-							trustedContext: { origin: originOf(tab.url), mechanism: described.effect ?? "generic_interaction", destinationOrigin: originOf(described.navigationTarget) },
+							trustedContext: { origin: originOf(tab.url), mechanism: described.visual ? "click_at_screen_point" : described.effect || "generic_interaction", ...(submits && { declaredFormMethod: described.formMethod || "unknown" }), destinationOrigin: originOf(described.navigationTarget) },
 							untrustedContext: { label: described.label },
 						},
 						ctx.abortSignal,
 						(payload) => privacyPayload(model, payload),
 					)
 				: { kind: "uncertain", confidence: 0, summary: "The offline test model can't classify interactions.", uncertainties: ["scripted_model"] };
-		return { proceed: mayProceed(classification), classification };
+		return { proceed: !sensitiveAsks(classification, submits), classification };
 	}
 
 	function waitForApproval(taskId, chatId, request, ctx) {

@@ -12,7 +12,9 @@
 // 6. An element that can't be inspected asks instead of running unasked.
 // 7. With no page open, an interaction is blocked without asking.
 // 8. Every page call carries the chat's ID (each chat has its own tabs).
-// 9. A click at a screenshot point asks even in "sensitive_actions".
+// 9. "sensitive_actions": a click the classifier can't judge runs (here at a
+//    screenshot point); a form it can't judge asks; typing, links and keys
+//    that don't submit never reach the classifier.
 // 10. browser_stop_loading ends a running browser_wait.
 // 11. Answering a page dialog asks even in "allow_website_interactions".
 // 12. wallet_transfer reaches the app's wallet service with the chat's ID.
@@ -31,6 +33,7 @@ import { openAgent, SCRIPTED_MODEL } from "../src/agent.js";
 import { createPageTools } from "../src/tools/page.js";
 import { messageWithAttachments } from "../src/tools/attachments.js";
 import { nodeCallAsks } from "../src/tools/node.js";
+import { sensitiveAsks, sensitivePrecheck } from "../src/classifier.js";
 
 const QUESTION = "What is the page I have open about?";
 const CLICK = "Please click the button";
@@ -78,7 +81,21 @@ async function main() {
 		check(approved.chatIds.length === 1 && approved.chatIds[0] === approved.chatId && approved.unboundCalls === 0, "every page call carries the chat's ID");
 
 		const visual = JSON.parse((await runChild("visual", join(dir, "visual.sqlite"))).stdout);
-		check(visual.approvalsAsked === 1 && visual.approval?.uncertainties?.includes("visual_effect_unknown") && visual.clicks === 1, "a click at a screenshot point asks in sensitive_actions");
+		check(visual.approvalsAsked === 0 && visual.clicks === 1, "sensitive_actions: a click the classifier can't judge runs");
+		const submit = JSON.parse((await runChild("sensitive-submit", join(dir, "submit.sqlite"))).stdout);
+		check(submit.approvalsAsked === 1 && submit.approval?.label === "Send" && submit.clicks === 1, "sensitive_actions: a form the classifier can't judge asks first");
+		const page = "https://mail.example/inbox";
+		check(
+			sensitivePrecheck("type", {}, page) === "proceed" && sensitivePrecheck("press", {}, page) === "proceed" &&
+				sensitivePrecheck("press", { effect: "form_submission" }, page) === "classify" &&
+				sensitivePrecheck("click", { navigationTarget: "https://mail.example/sent" }, page) === "proceed" &&
+				sensitivePrecheck("click", { navigationTarget: "https://mail.example/inbox#" }, page) === "classify" &&
+				sensitivePrecheck("click", { navigationTarget: "javascript:send()" }, page) === "classify" &&
+				sensitivePrecheck("click", { formControl: "checkbox", inForm: true }, page) === "proceed" &&
+				sensitivePrecheck("click", { formControl: "checkbox", inForm: false }, page) === "classify" &&
+				sensitiveAsks({ kind: "consequential" }, false) && !sensitiveAsks({ kind: "ordinary" }, true),
+			"sensitive_actions: typing, links and keys run unasked; consequential actions ask",
+		);
 
 		check(await stopEndsWait(), "browser_stop_loading ends a running browser_wait");
 
@@ -141,7 +158,7 @@ async function stopEndsWait() {
 }
 
 /** A page with one button; `describe` changes its label once `relabel` is set. */
-function fakePage({ describeThrows = false, noTab = false, visual = false } = {}) {
+function fakePage({ describeThrows = false, noTab = false, visual = false, submit = false } = {}) {
 	const state = { clicks: 0, relabel: false, chatIds: new Set(), unboundCalls: 0, dialogAnswers: 0, dialogOpen: true, downloads: 0 };
 	const page = async (method, params = {}) => {
 		if (params.chatId === undefined) state.unboundCalls += 1;
@@ -157,6 +174,7 @@ function fakePage({ describeThrows = false, noTab = false, visual = false } = {}
 				if (describeThrows) throw new Error("crypto.subtle is unavailable");
 				if (noTab) throw new Error("No tab is open.");
 				if (visual) return { ok: true, label: "Visual point (40%, 60%); effect unknown", effect: "", visual: true };
+				if (submit) return { ok: true, label: "Send", effect: "form_submission", formMethod: "get", navigationTarget: "https://shop.example/" };
 				return { ok: true, label: state.relabel ? "Delete account" : "Buy now" };
 			case "download":
 				state.downloads += 1;
@@ -190,7 +208,7 @@ async function child(mode, file) {
 		walletState.chatId = params.chatId;
 		return { status: "submitted", txHash: "0xfeed", chainId: params.chainId };
 	};
-	const { page, state } = fakePage({ describeThrows: mode === "uninspectable", noTab: mode === "no-tab", visual: mode === "visual" });
+	const { page, state } = fakePage({ describeThrows: mode === "uninspectable", noTab: mode === "no-tab", visual: mode === "visual", submit: mode === "sensitive-submit" });
 	const ended = Promise.withResolvers();
 	let approvalsAsked = 0;
 	let approval;
@@ -218,12 +236,12 @@ async function child(mode, file) {
 			approval = event;
 			if (mode === "kill-at-approval") process.kill(process.pid, "SIGKILL");
 			if (mode === "changed") state.relabel = true;
-			if (["approve", "changed", "uninspectable", "visual", "dialog", "download", "stamps"].includes(mode)) agent.approve(event.taskId, true);
+			if (["approve", "changed", "uninspectable", "visual", "sensitive-submit", "dialog", "download", "stamps"].includes(mode)) agent.approve(event.taskId, true);
 			if (mode === "decline") agent.approve(event.taskId, false);
 		}
 	};
 	let wasBusy = false;
-	const approvalMode = ["allow", "dialog", "download", "stamps"].includes(mode) ? "allow_website_interactions" : ["uninspectable", "visual"].includes(mode) ? "sensitive_actions" : "every_interaction";
+	const approvalMode = ["allow", "dialog", "download", "stamps"].includes(mode) ? "allow_website_interactions" : ["uninspectable", "visual", "sensitive-submit"].includes(mode) ? "sensitive_actions" : "every_interaction";
 	agent = await openAgent({ database, page, wallet, nodes, emit, approvalMode, scriptedPace: mode === "kill-mid-answer" ? 25 : 2000 });
 	// One chat per database: the first run creates it and the restart finds it under the same ID.
 	const chatId = await findOrCreateChat(agent, file);
