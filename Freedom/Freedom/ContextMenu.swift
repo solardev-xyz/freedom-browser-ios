@@ -103,6 +103,14 @@ final class SelectionRelay: NSObject, WKScriptMessageHandler {
 final class FreedomWebView: WKWebView {
     var searchMenuTitle: (() -> String?)?
     var onSearchSelection: (() -> Void)?
+    /// The view went on or off screen (only the shown tab's web view is
+    /// in a window).
+    var onWindowChange: (() -> Void)?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        onWindowChange?()
+    }
 
     override func buildMenu(with builder: UIMenuBuilder) {
         super.buildMenu(with: builder)

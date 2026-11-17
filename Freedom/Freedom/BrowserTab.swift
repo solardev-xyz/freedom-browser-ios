@@ -432,6 +432,12 @@ final class BrowserTab {
         // edit menu; the touch script goes in with the other user scripts.
         selectionRelay.owner = self
         contentController.add(selectionRelay, name: ContextMenuSupport.selectionHandlerName)
+        freedomWebView.onWindowChange = { [weak self] in self?.reloadIfShown() }
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadIfShown() }
+        }
         freedomWebView.searchMenuTitle = { [weak self] in
             guard let self else { return nil }
             let engine = SearchEngine.resolve(
@@ -647,6 +653,7 @@ final class BrowserTab {
     deinit {
         observations.forEach { $0.invalidate() }
         bottomChromeProbeTask?.cancel()
+        if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
     }
 
     /// Desktop parity: a main-frame response the web view cannot render,
@@ -837,6 +844,8 @@ final class BrowserTab {
     /// Navigation bookkeeping for the error page: a real navigation
     /// elsewhere forgets it; the page's own callbacks are skipped once.
     func noteNavigationStarted() {
+        // Something loads anyway: no reload left to do when shown.
+        reloadWhenShown = false
         if expectingErrorPageLoad { return }
         if let errorPageURL, webView.url != errorPageURL { self.errorPageURL = nil }
     }
@@ -844,6 +853,77 @@ final class BrowserTab {
     func noteNavigationFinished() {
         if expectingErrorPageLoad { expectingErrorPageLoad = false; return }
         errorPageURL = nil
+    }
+
+    // MARK: - Page process death
+
+    /// What the tab does when its page's process has died.
+    enum ProcessDeathResponse: Equatable {
+        /// Reload now: the tab is on screen.
+        case reload
+        /// Reload when the tab is next shown.
+        case reloadWhenShown
+        /// It died again soon after the last time: show the error page.
+        case showCrashPage
+    }
+
+    /// One automatic reload, and another only once 30 s have passed
+    /// since the last death (WebKit's own limit), so a page that can't
+    /// stay alive doesn't reload in a loop.
+    static func processDeathResponse(lastDeath: Date?, now: Date, onScreen: Bool) -> ProcessDeathResponse {
+        if let lastDeath, now.timeIntervalSince(lastDeath) < 30 { return .showCrashPage }
+        return onScreen ? .reload : .reloadWhenShown
+    }
+
+    @ObservationIgnored private var lastProcessDeath: Date?
+    @ObservationIgnored private var reloadWhenShown = false
+    @ObservationIgnored private var foregroundObserver: NSObjectProtocol?
+
+    /// Shown: the tab's web view is in the window and the app isn't in
+    /// the background (where a reload could just be reclaimed again).
+    private var isShown: Bool {
+        webView.window != nil && UIApplication.shared.applicationState != .background
+    }
+
+    /// The page's process died: iOS reclaims page processes under
+    /// memory pressure (more often while the app is in the background),
+    /// and pages can crash WebKit. The view is left blank. Handling it
+    /// here replaces WebKit's own fallback, which reloads once but on a
+    /// second death within 30 s gives up and leaves a blank tab with no
+    /// address to reload. The tab reloads through `reload()` (so names
+    /// re-resolve), waits until it's shown when it's in the background,
+    /// and gives a page that keeps dying an error page that keeps its
+    /// address; reload or Try again retries it. Like WebKit, a tab that
+    /// isn't shown (another tab is, or the app is in the background)
+    /// reloads when it's shown again.
+    fileprivate func pageProcessDied() {
+        // The page that asked for these is gone.
+        cancelPermissionPrompts()
+        endFind()
+        endRefreshing()
+        let now = Date()
+        let response = Self.processDeathResponse(lastDeath: lastProcessDeath, now: now, onScreen: isShown)
+        lastProcessDeath = now
+        tabLog.error("Page process died: \(String(describing: response), privacy: .public)")
+        switch response {
+        case .reload:
+            reload()
+        case .reloadWhenShown:
+            reloadWhenShown = true
+        case .showCrashPage:
+            guard let page = errorPageURL ?? url else { return }
+            errorPageURL = page
+            expectingErrorPageLoad = true
+            webView.loadSimulatedRequest(URLRequest(url: page), responseHTML: WebErrorPage.render(.pageCrashed, url: page))
+        }
+    }
+
+    /// Finishes a reload put off because the page died while the tab
+    /// wasn't shown.
+    private func reloadIfShown() {
+        guard reloadWhenShown, isShown else { return }
+        reloadWhenShown = false
+        reload()
     }
 
     private func loadInWebView(_ url: URL) {
@@ -1886,6 +1966,15 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         MainActor.assumeIsolated {
             owner?.tearDownActiveIpfsNavigation()
             owner?.presentLoadFailure(error)
+        }
+    }
+
+    /// Implementing this turns off WebKit's own reload after a page
+    /// process death; the tab does it (`pageProcessDied`).
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        MainActor.assumeIsolated {
+            owner?.tearDownActiveIpfsNavigation()
+            owner?.pageProcessDied()
         }
     }
 }

@@ -55,4 +55,22 @@ final class WebErrorPageTests: XCTestCase {
         XCTAssertTrue(html.contains("<p>No content set on this ENS name.</p>"))
         XCTAssertTrue(html.contains("<a href=\"ens://nothing.eth\">Try again</a>"))
     }
+
+    func testCrashPageKeepsTheAddress() {
+        let html = WebErrorPage.render(.pageCrashed, url: URL(string: "https://heavy.example/app")!)
+        XCTAssertTrue(html.contains("<h1>This page keeps crashing</h1>"))
+        XCTAssertTrue(html.contains("heavy.example stopped working twice in a row"))
+        XCTAssertTrue(html.contains("<a href=\"https://heavy.example/app\">Try again</a>"))
+    }
+
+    /// A dead page process: reload once (now if shown, else when shown),
+    /// an error page when it dies again within 30 s.
+    func testPageProcessDeathReloadsOnceThenShowsTheCrashPage() {
+        let now = Date()
+        XCTAssertEqual(BrowserTab.processDeathResponse(lastDeath: nil, now: now, onScreen: true), .reload)
+        XCTAssertEqual(BrowserTab.processDeathResponse(lastDeath: nil, now: now, onScreen: false), .reloadWhenShown)
+        XCTAssertEqual(BrowserTab.processDeathResponse(lastDeath: now.addingTimeInterval(-29), now: now, onScreen: true), .showCrashPage)
+        XCTAssertEqual(BrowserTab.processDeathResponse(lastDeath: now.addingTimeInterval(-29), now: now, onScreen: false), .showCrashPage)
+        XCTAssertEqual(BrowserTab.processDeathResponse(lastDeath: now.addingTimeInterval(-31), now: now, onScreen: true), .reload)
+    }
 }
