@@ -152,6 +152,8 @@ final class AgentService {
     /// Files the user attached to the next message.
     private(set) var stagedAttachments: [AgentAttachment] = []
     let attachments = AgentAttachmentStore()
+    /// Where each chat's model requests went (Conversation privacy).
+    let privacy = AgentPrivacyLedger()
     private let wallet: WalletServices
     private let balances: WalletBalanceStore
     private let userWallets: UserWalletStore
@@ -233,6 +235,7 @@ final class AgentService {
                 driver.forgetAll()
                 attachments.forgetAll()
                 nodeDriver.forgetAll()
+                privacy.forgetAll()
             }
             #endif
             let result = try await engine.command("agentOpen", [
@@ -375,6 +378,7 @@ final class AgentService {
         pageDriver?.forget(chatID: chatID)
         attachments.forget(chatID: chatID)
         nodeDriver?.forget(chatID: chatID)
+        privacy.forget(chat: chatID)
         if currentChatID == chatID { newChat() }
     }
 
@@ -414,6 +418,7 @@ final class AgentService {
                 pageDriver?.forget(chatID: id)
                 attachments.forget(chatID: id)
                 nodeDriver?.forget(chatID: id)
+                privacy.started(chat: id)
                 chatID = id
                 await select(id)
             }
@@ -566,6 +571,7 @@ final class AgentService {
         AgentPageDriver(tabs: tabStore, defaults: defaults).forgetAll()
         AgentNodeDriver(nodes: nodes, attachments: attachments, defaults: defaults).forgetAll()
         attachments.forgetAll()
+        privacy.forgetAll()
         stagedAttachments = []
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(at: AgentDatabase.directory.appending(path: "agent.sqlite\(suffix)"))
@@ -619,6 +625,10 @@ final class AgentService {
         case "approval_gone":
             let taskID = (event["taskId"] as? NSNumber)?.intValue
             approvals.removeAll { $0.taskID == taskID }
+        case "privacy_request":
+            guard let chatID = (event["chatId"] as? NSNumber)?.intValue,
+                  let route = (event["route"] as? [String: Any]).flatMap(AgentPrivacyRoute.init) else { return }
+            privacy.record(chat: chatID, route: route)
         default:
             break
         }

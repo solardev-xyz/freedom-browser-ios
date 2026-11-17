@@ -33,6 +33,10 @@ const context = BACKGROUND_CONTEXT;
 export const SCRIPTED_MODEL = { provider: "faux", modelId: "scripted" };
 export const APPROVAL_MODES = ["every_interaction", "sensitive_actions", "allow_website_interactions"];
 
+/** Names and privacy claims for the conversation privacy record (desktop's provider catalog). */
+const PROVIDER_NAMES = { openrouter: "OpenRouter", anthropic: "Anthropic", openai: "OpenAI", xai: "xAI", meta: "Meta" };
+const PROVIDER_CLAIMS = { openrouter: "routing", anthropic: "standard", openai: "standard", xai: "standard", meta: "standard" };
+
 const PREAMBLE = [
 	"You are Freedom Agent inside Freedom, a browser for the decentralized web, running on the user's iPhone.",
 	"Fulfill the user's task with the browser tools provided. They act on this chat's active tab: the tab the user had open when they sent their message, or one you opened or focused since. The user watches it while you work. Open a new tab with browser_create_tab only when the task needs another page alongside the current one; you can close only tabs you opened.",
@@ -91,9 +95,37 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 	const models = createModels({ credentials });
 	models.setProvider(scriptedProvider(scriptedPace).provider);
 	for (const provider of [openrouterProvider(), anthropicProvider(), openaiProvider(), xaiProvider(), metaProvider()]) models.setProvider(provider);
+	const providerNames = new Map(Object.entries(PROVIDER_NAMES));
 	const setCompatible = (list = []) => {
-		for (const config of list) if (config?.id && config.baseUrl && config.modelId) models.setProvider(compatibleProvider(config));
+		for (const config of list) {
+			if (!config?.id || !config.baseUrl || !config.modelId) continue;
+			models.setProvider(compatibleProvider(config));
+			if (config.name) providerNames.set(config.id, String(config.name));
+		}
 	};
+
+	/**
+	 * Desktop's conversation privacy ledger (session-privacy.js): every model
+	 * request attempt, the agent's and the interaction classifier's, goes to the
+	 * app as `privacy_request` with where it went; the app keeps the per-chat
+	 * record. Desktop's hardware and encryption checks don't exist here.
+	 */
+	function recordRequest(chatId, model, role) {
+		if (chatId === undefined || model.provider === SCRIPTED_MODEL.provider) return;
+		emit({
+			type: "privacy_request",
+			chatId,
+			route: {
+				providerId: model.provider,
+				providerName: providerNames.get(model.provider) ?? model.provider,
+				modelId: model.id,
+				origin: originOf(model.baseUrl),
+				role,
+				claim: PROVIDER_CLAIMS[model.provider] ?? "unknown",
+				retention: model.provider === "openrouter" ? (zeroRetention ? "required" : "not-required") : "unknown",
+			},
+		});
+	}
 	setCompatible(compatible);
 
 	const pageTools = createPageTools(page);
@@ -295,7 +327,10 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 							untrustedContext: { label: described.label },
 						},
 						ctx.abortSignal,
-						(payload) => privacyPayload(model, payload),
+						(payload) => {
+							recordRequest(api.conversationId, model, "permission");
+							return privacyPayload(model, payload);
+						},
 					)
 				: { kind: "uncertain", confidence: 0, summary: "The offline test model can't classify interactions.", uncertainties: ["scripted_model"] };
 		return { proceed: !sensitiveAsks(classification, submits), classification };
@@ -326,7 +361,14 @@ export async function openAgent({ database, page, wallet, files, nodes, emit, ap
 	// Every model request, agent and classifier alike.
 	const privacy = defineExtension({
 		name: "privacy",
-		hooks: [hook(GenerationTask, { beforeProviderRequest: ({ model, payload }) => ({ payload: privacyPayload(model, payload) }) })],
+		hooks: [
+			hook(GenerationTask, {
+				beforeProviderRequest: ({ model, payload }, api) => {
+					recordRequest(api.conversationId, model, "agent");
+					return { payload: privacyPayload(model, payload) };
+				},
+			}),
+		],
 	});
 
 	const registry = createRegistry();

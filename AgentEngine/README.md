@@ -50,6 +50,13 @@ releases, so upgrade them together and run `npm run check` afterwards.
     them consequential, or when it can't tell for a form. The decision is stored with
     the tool call; after an approval, the element must still be what the user
     approved, or the call is blocked.
+- Conversation privacy (desktop's session-privacy.js ledger): every model
+  request attempt, the agent's (`beforeProviderRequest`) and the interaction
+  classifier's (`onPayload`), is sent to the app as a `privacy_request` event
+  with provider, model, destination origin, role, claim and zero-retention
+  state; the app keeps the per-chat record (AgentPrivacy.swift,
+  Application Support/Agent/privacy.json) and shows it from the agent sheet.
+  Desktop's hardware attestation and end-to-end encryption checks aren't here.
 - `tools/page.js`: the browser tools, with desktop's names, parameters and
   descriptions: `browser_get_tab`, `browser_list_tabs`, `browser_create_tab`,
   `browser_focus_tab`, `browser_close_tab`, `browser_snapshot`,

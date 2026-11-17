@@ -9,6 +9,7 @@ struct AgentSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft = ""
     @State private var isShowingSettings = false
+    @State private var isShowingPrivacy = false
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -25,11 +26,23 @@ struct AgentSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { chatsMenu }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    if agent.isConfigured, agent.currentChatID != nil {
+                        Button("Conversation privacy", systemImage: "checkmark.shield") { isShowingPrivacy = true }
+                    }
                     if agent.isConfigured {
                         Button("New chat", systemImage: "square.and.pencil") { agent.newChat() }
                             .disabled(agent.currentChatID == nil)
                     }
                     Button("Agent settings", systemImage: "gearshape") { isShowingSettings = true }
+                }
+            }
+            .sheet(isPresented: $isShowingPrivacy) {
+                NavigationStack {
+                    AgentPrivacyView(
+                        record: agent.currentChatID.flatMap { agent.privacy.records[$0] },
+                        zeroRetention: agent.settings.openrouterZeroRetention
+                    )
+                    .toolbar { Button("Done") { isShowingPrivacy = false } }
                 }
             }
             .sheet(isPresented: $isShowingSettings) {
@@ -40,6 +53,12 @@ struct AgentSheet: View {
             }
         }
         .task { await agent.start() }
+        #if DEBUG
+        // FREEDOM_DEBUG_AGENT_PRIVACY=1: show Conversation privacy when a run ends (simulator runs).
+        .onChange(of: agent.live.busy) { _, busy in
+            if !busy, ProcessInfo.processInfo.environment["FREEDOM_DEBUG_AGENT_PRIVACY"] == "1" { isShowingPrivacy = true }
+        }
+        #endif
     }
 
     // MARK: - Chat
