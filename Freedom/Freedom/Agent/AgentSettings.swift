@@ -17,7 +17,7 @@ final class AgentSettings {
 
     /// Model providers the agent can use with an API key.
     enum Provider: String, CaseIterable, Identifiable, Sendable {
-        case openrouter, anthropic, openai
+        case openrouter, anthropic, openai, xai, meta
 
         var id: String { rawValue }
 
@@ -26,6 +26,8 @@ final class AgentSettings {
             case .openrouter: "OpenRouter"
             case .anthropic: "Anthropic"
             case .openai: "OpenAI"
+            case .xai: "xAI (Grok)"
+            case .meta: "Meta (Muse)"
             }
         }
 
@@ -34,6 +36,8 @@ final class AgentSettings {
             case .openrouter: "anthropic/claude-haiku-5.5"
             case .anthropic: "claude-haiku-5-5"
             case .openai: "gpt-5.4-mini"
+            case .xai: "grok-4.3"
+            case .meta: "muse-spark-1.3"
             }
         }
 
@@ -43,6 +47,8 @@ final class AgentSettings {
             case .openrouter: URL(string: "https://openrouter.ai/settings/keys")!
             case .anthropic: URL(string: "https://console.anthropic.com/settings/keys")!
             case .openai: URL(string: "https://platform.openai.com/api-keys")!
+            case .xai: URL(string: "https://console.x.ai")!
+            case .meta: URL(string: "https://api.meta.ai/muse-code/key")!
             }
         }
     }

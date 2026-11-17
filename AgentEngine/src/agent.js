@@ -14,7 +14,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { metaProvider } from "@earendil-works/pi-ai/providers/meta";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
 import { createRegistry, defineExtension, GenerationTask, Harness, hook, section, ToolTask } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { classifyInteraction, mayProceed } from "./classifier.js";
@@ -55,7 +57,7 @@ const PREAMBLE = [
  * - `emit(event)`: `approval` (a website interaction waits for `approve()`),
  *   `approval_gone`, and for the chat being viewed `chat_items` (its
  *   transcript changed) and `chat_live` (busy, streamed answer, tools).
- * - `apiKeys`: `{ openrouter, anthropic, openai }`. Kept in memory: the
+ * - `apiKeys`: `{ openrouter, anthropic, openai, xai, meta }`. Kept in memory: the
  *   database stores which model a chat uses, never a key, so pass them on
  *   every open (a run continued after a restart needs them at once).
  * - `approvalMode`: one of APPROVAL_MODES.
@@ -76,7 +78,7 @@ export async function openAgent({ database, page, wallet, files, emit, apiKeys =
 	for (const [providerId, key] of Object.entries(apiKeys)) await setApiKey(providerId, key);
 	const models = createModels({ credentials });
 	models.setProvider(scriptedProvider(scriptedPace).provider);
-	for (const provider of [openrouterProvider(), anthropicProvider(), openaiProvider()]) models.setProvider(provider);
+	for (const provider of [openrouterProvider(), anthropicProvider(), openaiProvider(), xaiProvider(), metaProvider()]) models.setProvider(provider);
 
 	const pageTools = createPageTools(page);
 
