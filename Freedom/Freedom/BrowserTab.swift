@@ -933,6 +933,24 @@ final class BrowserTab {
         reload()
     }
 
+    // MARK: - Embedded frames
+
+    /// The page's embedded frames as WebKit announced them (each load of a
+    /// frame passes the navigation delegate), newest last. WebKit has no API
+    /// to list a page's frames, and the agent needs a frame's handle to read
+    /// a cross-origin one. A frame's handle outlives its loads; a removed
+    /// frame's fails when used.
+    @ObservationIgnored private(set) var subframes: [WKFrameInfo] = []
+
+    fileprivate func noteSubframe(_ frame: WKFrameInfo) {
+        subframes.append(frame)
+        if subframes.count > 64 { subframes.removeFirst(subframes.count - 64) }
+    }
+
+    fileprivate func forgetSubframes() {
+        subframes.removeAll()
+    }
+
     // MARK: - JavaScript dialogs
 
     /// A page's `alert()`, `confirm()` or `prompt()`. The page's scripts
@@ -1894,6 +1912,9 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
+        if let frame = navigationAction.targetFrame, !frame.isMainFrame {
+            MainActor.assumeIsolated { owner?.noteSubframe(frame) }
+        }
         // `<a download>` and other explicit download requests.
         if navigationAction.shouldPerformDownload {
             decisionHandler(.download)
@@ -2048,6 +2069,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
         // negotiation into a fresh navigation.
         MainActor.assumeIsolated {
             owner?.noteNavigationStarted()
+            owner?.forgetSubframes()
             // A page that navigates (or is navigated away) no longer waits for its dialog.
             owner?.cancelDialog()
             owner?.reinstallPreloads()

@@ -65,7 +65,10 @@ function focusTarget(element) {
 // MARK: - snapshot
 
 function snapshot(options = {}) {
-	const result = collectPageSnapshot(MAX_PAGE_TEXT_LENGTH, MAX_SNAPSHOT_ELEMENTS, MAX_RETAINED_REFERENCES, MAX_SELECT_OPTIONS, `ref_${hex(8)}`, options);
+	// An embedded frame read through browser_read_frame names its references after the frame,
+	// so the app can route actions on them to it.
+	const prefix = /^frame_element_[0-9a-f]{8}$/.test(options.refPrefix ?? "") ? options.refPrefix : "ref";
+	const result = collectPageSnapshot(MAX_PAGE_TEXT_LENGTH, MAX_SNAPSHOT_ELEMENTS, MAX_RETAINED_REFERENCES, MAX_SELECT_OPTIONS, `${prefix}_${hex(prefix === "ref" ? 8 : 4)}`, options);
 	return { ...result, documentId };
 }
 

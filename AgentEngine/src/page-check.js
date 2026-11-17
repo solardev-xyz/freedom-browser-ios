@@ -32,6 +32,10 @@ document.getElementById("del").onclick=()=>{out.textContent="confirmed: "+confir
 document.getElementById("ask").onclick=()=>{out.textContent="name: "+prompt("Your name?","anon")};
 document.getElementById("say").onclick=()=>{alert("Hello there");out.textContent="alert done"};</script>`;
 
+// A cross-origin frame (httpbin's order form, which allows embedding).
+const FRAME_PAGE = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Embedded form</title>
+<p>The order form below is another site's page.</p><iframe src="https://httpbin.org/forms/post" style="width:100%;height:900px;border:1px solid #888"></iframe>`;
+
 export const CASES = [
 	{
 		name: "wikipedia-search-form",
@@ -131,6 +135,19 @@ export const CASES = [
 			{ click: { role: "button", name: "Say hi" }, dialog: "alert" },
 			{ answer: { accept: true } },
 			{ expect: { text: "alert done" } },
+		],
+	},
+	{
+		name: "cross-origin-frame",
+		what: "list frames, type and click inside a cross-origin frame, submit it, read the result in the frame",
+		html: FRAME_PAGE,
+		timeoutMs: 20_000,
+		steps: [
+			{ frames: /^https:\/\/httpbin\.org$/ },
+			{ inFrame: "type", finder: { role: "textbox", name: /customer name/i }, text: "Frame Agent" },
+			{ inFrame: "click", finder: { role: "radio", name: /large/i } },
+			{ inFrame: "click", finder: { role: "button", name: /submit order/i } },
+			{ expect: { frameText: "Frame Agent", frameOrigin: /^https:\/\/httpbin\.org$/ } },
 		],
 	},
 	{
@@ -238,7 +255,7 @@ export async function runPageChecks(call, names, log = console.log, { loadOnly =
 }
 
 function label(step) {
-	const [kind] = Object.keys(step).filter((k) => ["type", "press", "click", "select", "scroll", "visual", "blocked", "pause", "answer", "expect"].includes(k));
+	const [kind] = Object.keys(step).filter((k) => ["type", "press", "click", "select", "scroll", "visual", "blocked", "pause", "answer", "frames", "inFrame", "expect"].includes(k));
 	return `${kind} ${JSON.stringify(step[kind], (_, v) => (v instanceof RegExp ? String(v) : v))}${step.key ? ` ${step.key}` : ""}${step.text ? ` "${step.text}"` : ""}`;
 }
 
@@ -274,6 +291,20 @@ async function runStep(call, step, testCase, context) {
 		const r = await call("click", { ref: element.ref });
 		if (step.dialog && r.dialogOpened?.type !== step.dialog) throw new Error(`expected a ${step.dialog} dialog, got ${JSON.stringify(r).slice(0, 200)}`);
 		return { name: element.name, navigated: r.navigated, handledByTouch: r.handledByTouch, ...(r.dialogOpened && { dialog: r.dialogOpened.type, message: r.dialogOpened.message }) };
+	}
+	if (step.frames) {
+		const { frames } = await call("listFrames");
+		const frame = frames.find((f) => step.frames.test(f.origin));
+		if (!frame) throw new Error(`no frame from ${step.frames}; ${frames.length} listed: ${frames.map((f) => f.origin).join(" ")}`);
+		context.frameRef = frame.frameRef;
+		return { frames: frames.length, frameRef: frame.frameRef, url: frame.url };
+	}
+	if (step.inFrame) {
+		const read = await call("readFrame", { frameRef: context.frameRef, options: {} });
+		const element = read.result.elements.find((e) => matches(e, step.finder));
+		if (!element) throw new Error(`no element in the frame matches; seen: ${read.result.elements.map((e) => `${e.role}:${e.name}`).slice(0, 20).join(" | ")}`);
+		const r = step.inFrame === "type" ? await call("type", { ref: element.ref, text: step.text, replace: true }) : await call("click", { ref: element.ref });
+		return { name: element.name, ref: element.ref, ...(r.navigated !== undefined && { navigated: r.navigated }) };
 	}
 	if (step.blocked) {
 		// While a dialog waits, page reads fail at once instead of hanging.
@@ -331,6 +362,15 @@ async function expectation(call, expect, timeoutMs, context) {
 		if (expect.url && expect.url.test(tab.url)) return { url: tab.url };
 		if (expect.loaded && !tab.loading && tab.url) return { url: tab.url, title: tab.title };
 		if (expect.navigated && tab.url && tab.url !== context.urlBefore) return { url: tab.url };
+		if (expect.frameText) {
+			// The frame navigated (a new document, a new reference): list again.
+			const { frames } = await call("listFrames");
+			for (const frame of frames.filter((f) => expect.frameOrigin.test(f.origin))) {
+				const read = await call("readFrame", { frameRef: frame.frameRef, options: {} }).catch(() => undefined);
+				if (read?.result?.text?.includes(expect.frameText)) return { frameUrl: frame.url, text: expect.frameText };
+				last = { frameUrl: frame.url, text: read?.result?.text?.slice(0, 160) };
+			}
+		}
 		if (expect.pattern && !tab.loading) {
 			const snap = await call("snapshot", { options: {} });
 			const found = snap.text?.match(expect.pattern);

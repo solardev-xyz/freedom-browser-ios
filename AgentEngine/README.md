@@ -42,7 +42,7 @@ releases, so upgrade them together and run `npm run check` afterwards.
   `browser_navigate`, `browser_click`, `browser_type`, `browser_select`,
   `browser_scroll`, `browser_press`, `browser_wait`, `browser_stop_loading`,
   `browser_screenshot`, `browser_target_point`, `browser_get_dialog`,
-  `browser_handle_dialog`. Every call carries the chat's
+  `browser_handle_dialog`, `browser_list_frames`, `browser_read_frame`. Every call carries the chat's
   ID: each chat has its own tabs (the user's tab it started in, which a new
   message re-points to the tab the user is on, and the tabs it opened; it
   closes only those). Screenshots are JPEG images of the page's viewport for
@@ -52,8 +52,12 @@ releases, so upgrade them together and run `npm run check` afterwards.
   `allow_website_interactions` (desktop's `visual_effect_unknown`). A page's
   alert/confirm/prompt (`BrowserTab.pendingDialog`) blocks its scripts: page
   calls then fail with DIALOG_OPEN at once, an action that opens one returns
-  it, and answering it always asks the user, in every mode. Not yet: frames,
-  uploads, downloads; WebMCP doesn't exist in WebKit.
+  it, and answering it always asks the user, in every mode. Embedded
+  cross-origin frames: WebKit can't list a page's frames, so the tab keeps
+  the frame handles its navigation delegate sees (`BrowserTab.subframes`);
+  the driver probes which are alive and reads one with the page script run
+  inside it, and its references (`frame_element_<key>_…`) route actions back
+  to that frame. Not yet: uploads, downloads; WebMCP doesn't exist in WebKit.
 - `classifier.js`: desktop's interaction-intent classifier.
 - `page-check.js`: scripted checks of the browser tools on real sites, no model.
 - `bridge.js`: engine ↔ app messages (`freedomAgent` handler, `window.__freedomAgent.command`).

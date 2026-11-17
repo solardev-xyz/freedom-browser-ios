@@ -3,8 +3,8 @@
 // service (AgentPageDriver.swift) with the calling chat's ID: each chat has
 // its own tabs (the user's tab it started in, the tabs it opened) and an
 // active one its tools act on. The driver runs page/index.js in the tab.
-// Not here yet: frames, uploads, downloads; page tools (WebMCP) don't
-// exist in WebKit.
+// Not here yet: uploads, downloads; page tools (WebMCP) don't exist in
+// WebKit.
 
 import { defineTool } from "@earendil-works/pi-durable";
 import { arr, bool, int, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
@@ -121,6 +121,28 @@ export function createPageTools(page) {
 				const result = await forChat(api)("snapshot", { options: args });
 				return json({ ok: true, tabId: tab.tabId, navigationId: tab.navigationId, result });
 			},
+		}),
+		defineTool({
+			name: "browser_list_frames",
+			description:
+				"List document-bound frame references and their origins in the active task tab. Use browser_read_frame to read an embedded document that a normal snapshot cannot access (snapshot frames with accessible=false). Same URLs can belong to different frames; use the returned frame reference.",
+			parameters: obj({}),
+			replay: "safe",
+			execute: async (_, api) => json(await forChat(api)("listFrames")),
+		}),
+		defineTool({
+			name: "browser_read_frame",
+			description:
+				"Read a frame from browser_list_frames. Returns bounded text and references usable with browser_click, browser_type, browser_press, browser_select and browser_scroll. Frame actions retain normal approvals. Optional query filters control names; textQuery finds literal rendered text. Use continuation offsets with the same frameRef and query. Navigation/removal invalidates the frame reference. Opaque origins are denied.",
+			parameters: obj({
+				frameRef: str({ minLength: 1, maxLength: 80 }),
+				query: opt(str({ maxLength: 200 })),
+				textQuery: opt(str({ maxLength: 200 })),
+				elementOffset: opt(int({ minimum: 0, maximum: 1_000_000 })),
+				textOffset: opt(int({ minimum: 0, maximum: 1_000_000 })),
+			}),
+			replay: "safe",
+			execute: async ({ frameRef, ...options }, api) => json(await forChat(api)("readFrame", { frameRef, options })),
 		}),
 		defineTool({
 			name: "browser_navigate",

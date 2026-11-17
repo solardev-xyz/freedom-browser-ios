@@ -44,6 +44,9 @@ final class AgentPageDriver {
         case pageTimeout(Int)
         case dialogOpen(String)
         case dialogGone
+        case unknownFrame
+        case staleFrame
+        case opaqueFrame
 
         var errorDescription: String? {
             switch self {
@@ -61,6 +64,9 @@ final class AgentPageDriver {
             case .visualClickOnly: "Visual targets only support browser_click."
             case .dialogOpen(let summary): "DIALOG_OPEN: the page shows a dialog and waits for an answer (\(summary)). Read it with browser_get_dialog; answer it with browser_handle_dialog only if the task calls for it."
             case .dialogGone: "That dialog is no longer open. Use browser_get_dialog."
+            case .unknownFrame: "FRAME_NOT_FOUND: that frame reference isn't known or the frame is gone. Use browser_list_frames."
+            case .staleFrame: "STALE_FRAME_REFERENCE: the frame navigated or was removed. Use browser_list_frames and browser_read_frame again."
+            case .opaqueFrame: "POLICY_DENIED: frames with an opaque origin can't be read."
             case .pageTimeout(let seconds): "TIMEOUT: the page didn't respond within \(seconds) s; it may be busy, stuck or reloading. Check it with browser_get_tab before trying again."
             }
         }
@@ -107,8 +113,15 @@ final class AgentPageDriver {
             // The page's scripts are blocked while a dialog waits.
             if let dialog = tab.pendingDialog { throw DriverError.dialogOpen(Self.summary(dialog)) }
         }
+        switch method {
+        case "listFrames": return try await listFrames(tab)
+        case "readFrame": return try await readFrame(tab, params)
+        default: break
+        }
         // A point from a screenshot (browser_target_point): only a click, and only while the view is unchanged.
         let ref = params["ref"] as? String ?? ""
+        // An element of an embedded frame (browser_read_frame) is acted on in that frame.
+        let frame = try frame(forRef: ref)
         if ref.hasPrefix("visual_") {
             switch method {
             case "describe": return await describeVisual(tab, ref: ref)
@@ -136,9 +149,9 @@ final class AgentPageDriver {
         case "targetPoint":
             return try await targetPoint(tab, params)
         case "snapshot", "describe", "matches", "containsText":
-            return try await callPage(tab, method, params.filter { $0.key != "chatId" })
+            return try await callPage(tab, method, params.filter { $0.key != "chatId" }, in: frame)
         case "click", "type", "select", "press", "scroll":
-            return try await act(tab) { try await self.callPage(tab, method, params.filter { $0.key != "chatId" }) }
+            return try await act(tab) { try await self.callPage(tab, method, params.filter { $0.key != "chatId" }, in: frame) }
         default:
             throw AgentEngine.EngineError.tool("Unknown page method: \(method)")
         }
@@ -553,10 +566,68 @@ final class AgentPageDriver {
         }
     }
 
-    private func callPage(_ tab: BrowserTab, _ method: String, _ params: [String: Any]) async throws -> Any? {
+    private func callPage(_ tab: BrowserTab, _ method: String, _ params: [String: Any], in frame: WKFrameInfo? = nil) async throws -> Any? {
         try await Self.withTimeout(20, interrupt: { tab.pendingDialog.map { DriverError.dialogOpen(Self.summary($0)) } }) {
-            try await self.callPageUnbounded(tab, method, params)
+            try await self.callPageUnbounded(tab, method, params, in: frame)
         }
+    }
+
+    // MARK: - Embedded frames
+
+    /// Frames read so far, by the key in their references (`frame_<key>`,
+    /// `frame_element_<key>_…`).
+    private var frames: [String: WKFrameInfo] = [:]
+
+    private static let frameProbe = """
+    const token = (globalThis.__freedomAgentFrameToken ||= Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, "0")).join(""));
+    return JSON.stringify({ token, url: location.href, origin: location.origin, title: document.title });
+    """
+
+    /// The frame's document: its key (new for each document), URL and origin; nil when the frame is gone.
+    private func probe(_ tab: BrowserTab, _ frame: WKFrameInfo) async -> [String: String]? {
+        let raw = try? await Self.withTimeout(3) {
+            try await tab.webView.callAsyncJavaScript(Self.frameProbe, arguments: [:], in: frame, contentWorld: Self.world)
+        }
+        guard let json = raw as? String, let data = json.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: String]
+    }
+
+    private func listFrames(_ tab: BrowserTab) async throws -> [String: Any] {
+        let pageOrigin = tab.webView.url.flatMap { url in url.scheme.map { "\($0)://\(url.host() ?? "")" } } ?? ""
+        var seen = Set<String>()
+        var listed: [[String: Any]] = []
+        for frame in tab.subframes.reversed() where listed.count < 24 {
+            guard let info = await probe(tab, frame), let key = info["token"], !seen.contains(key) else { continue }
+            seen.insert(key)
+            frames[key] = frame
+            let origin = info["origin"] ?? ""
+            var item: [String: Any] = ["frameRef": "frame_\(key)", "url": info["url"] ?? "", "origin": origin, "title": info["title"] ?? ""]
+            if origin == "null" { item["opaque"] = true }
+            if origin == pageOrigin { item["sameOriginAsPage"] = true }
+            listed.append(item)
+        }
+        return ["frames": listed, "tab": state(of: tab)]
+    }
+
+    private func readFrame(_ tab: BrowserTab, _ params: [String: Any]) async throws -> [String: Any] {
+        let raw = params["frameRef"] as? String ?? ""
+        let key = raw.hasPrefix("frame_") ? String(raw.dropFirst("frame_".count)) : raw
+        guard let frame = frames[key] else { throw DriverError.unknownFrame }
+        guard let info = await probe(tab, frame) else { throw DriverError.unknownFrame }
+        guard info["token"] == key else { throw DriverError.staleFrame }
+        guard info["origin"] != "null" else { throw DriverError.opaqueFrame }
+        var options = params["options"] as? [String: Any] ?? [:]
+        options["refPrefix"] = "frame_element_\(key)"
+        let result = try await callPage(tab, "snapshot", ["options": options], in: frame)
+        return ["ok": true, "frameRef": "frame_\(key)", "url": info["url"] ?? "", "origin": info["origin"] ?? "", "result": result ?? NSNull()]
+    }
+
+    /// The frame a reference belongs to: nil for the page's own (and its same-origin frames).
+    private func frame(forRef ref: String) throws -> WKFrameInfo? {
+        guard let range = ref.range(of: "frame_element_") else { return nil }
+        let key = String(ref[range.upperBound...].prefix(8))
+        guard let frame = frames[key] else { throw DriverError.unknownFrame }
+        return frame
     }
 
     // MARK: - Dialogs
@@ -573,7 +644,7 @@ final class AgentPageDriver {
         "\(dialog.kind.rawValue) from \(dialog.host): “\(dialog.message.prefix(120))”"
     }
 
-    private func callPageUnbounded(_ tab: BrowserTab, _ method: String, _ params: [String: Any]) async throws -> Any? {
+    private func callPageUnbounded(_ tab: BrowserTab, _ method: String, _ params: [String: Any], in frame: WKFrameInfo?) async throws -> Any? {
         let webView = tab.webView
         let body = """
         const page = globalThis.__freedomAgentPage;
@@ -581,12 +652,13 @@ final class AgentPageDriver {
         return await page.call(method, args);
         """
         let arguments: [String: Any] = ["method": method, "args": params]
-        var result = try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: Self.world)
+        var result = try await webView.callAsyncJavaScript(body, arguments: arguments, in: frame, contentWorld: Self.world)
         if result as? String == Self.installSentinel {
             guard let script = Self.pageScript else { throw DriverError.scriptMissing }
-            _ = try await webView.callAsyncJavaScript(script + "\nreturn true;", arguments: [:], in: nil, contentWorld: Self.world)
-            log.notice("[page] installed the page script on \(webView.url?.host() ?? "?", privacy: .public)")
-            result = try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: Self.world)
+            _ = try await webView.callAsyncJavaScript(script + "\nreturn true;", arguments: [:], in: frame, contentWorld: Self.world)
+            let host = frame.map { $0.securityOrigin.host } ?? webView.url?.host() ?? "?"
+            log.notice("[page] installed the page script on \(host, privacy: .public)\(frame == nil ? "" : " (frame)", privacy: .public)")
+            result = try await webView.callAsyncJavaScript(body, arguments: arguments, in: frame, contentWorld: Self.world)
         }
         guard let json = result as? String, let data = json.data(using: .utf8) else { return result }
         return try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])

@@ -302,6 +302,7 @@ enum AgentToolLabel {
         case "browser_target_point": "scope"
         case "browser_stop_loading": "stop.circle"
         case "browser_get_dialog", "browser_handle_dialog": "exclamationmark.bubble"
+        case "browser_list_frames", "browser_read_frame": "rectangle.inset.filled"
         case "browser_navigate": "arrow.up.right.square"
         case "browser_click": "hand.tap"
         case "browser_type": "keyboard"
@@ -333,6 +334,8 @@ enum AgentToolLabel {
         case "browser_stop_loading": "Stopping…"
         case "browser_get_dialog": "Reading the dialog…"
         case "browser_handle_dialog": "Answering the dialog…"
+        case "browser_list_frames": "Finding embedded frames…"
+        case "browser_read_frame": "Reading an embedded frame…"
         default: "Working…"
         }
     }
@@ -357,6 +360,8 @@ enum AgentToolLabel {
         case "browser_target_point": return "Found a spot on the page"
         case "browser_stop_loading": return "Stopped loading"
         case "browser_get_dialog": return "Read the dialog"
+        case "browser_list_frames": return "Found embedded frames"
+        case "browser_read_frame": return "Read an embedded frame"
         case "browser_handle_dialog": return arguments["accept"] == "1" ? "Answered OK to the dialog" : "Answered Cancel to the dialog"
         default: return name
         }
