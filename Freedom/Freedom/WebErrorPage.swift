@@ -25,6 +25,10 @@ enum WebErrorPage {
         /// message is `ENSErrorFormatting`'s.
         case notResolved(subject: String, message: String)
         case generic(message: String)
+        /// The page's process died again soon after the last time (a
+        /// page that needs more memory than iOS gives it, or one that
+        /// crashes WebKit), so it isn't reloaded into a loop.
+        case pageCrashed
     }
 
     /// What to show for a navigation failure, or nil when the failure
@@ -76,6 +80,7 @@ enum WebErrorPage {
         case .insecureBlocked: "Insecure connection blocked"
         case .notResolved(let subject, _): "Couldn't open \(subject)"
         case .generic: "Can't open this page"
+        case .pageCrashed: "This page keeps crashing"
         }
     }
 
@@ -90,6 +95,7 @@ enum WebErrorPage {
         case .insecureBlocked: "\(host) uses a cleartext or weak connection that iOS blocks."
         case .notResolved(_, let message): message
         case .generic(let message): message
+        case .pageCrashed: "\(host) stopped working twice in a row, so Freedom didn't reload it again. Pages that need a lot of memory can do this."
         }
     }
 
