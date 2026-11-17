@@ -10,6 +10,15 @@ cd AgentEngine && npm ci && npm run build   # bundle into the app's resources
 npm run check                               # kill-and-reopen + approval checks under Node
 ```
 
+The domain tools also have a qualifier against a local Anvil fork of mainnet
+(desktop's, PR #1134): it registers, renews and edits .eth/.wei/.gwei names
+with fork-seeded USDC, DAI and ETH, so nothing leaves the machine:
+
+```sh
+anvil --fork-url <read-only Ethereum RPC> --host 127.0.0.1 --port 18549 --chain-id 1
+node AgentEngine/test/domains-fork.mjs
+```
+
 The build writes `Freedom/Freedom/Resources/agent-engine/` (`agent-engine.{js,html}`
 and `agent-page.js`), which git ignores. Run it again after changing `src/`,
 `page/` or the Pi versions. The Pi packages are pinned to exact versions:
@@ -60,15 +69,18 @@ releases, so upgrade them together and run `npm run check` afterwards.
 - `domains/`: desktop's decentralized-name tools (domain_inspect,
   domain_prepare, domain_execute, domain_operation_status) and service,
   copied from desktop (src/main/domains, pi-domain-tools.js) with its
-  pinned ENSv1, WNS (.wei) and GNS (.gwei) contracts, commitments, checks
-  and messages; changes are marked "iOS:". The app (AgentDomains.swift)
+  pinned ENS, WNS (.wei) and GNS (.gwei) contracts, commitments, checks
+  and messages; changes are marked "iOS:". .eth uses ENSv2 from desktop
+  PR #1134 (`ens-v2.js`, `ens-v2-contracts.js`): registration and renewal
+  pay USDC (default) or DAI, with a capped token approval and the wallet's
+  own ENS records contract as separately approved steps; unmigrated v1
+  names renew through ENS's legacy renewer. The app (AgentDomains.swift)
   provides mainnet reads (the wallet's chain-data router, read methods
-  only), the journal (Application Support/Agent/domain-operations.json)
-  and registration secrets (Keychain), the active wallet, the approval
-  sheet (unlock, review, slide) and the send; `store.flush()` makes the
-  journal durable before anything can be signed. Since about November
-  2026 every ENSv1 controller is de-authorized on mainnet (ENSv2
-  migration), so .eth registration and renewal are refused, as on desktop.
+  only; a node's JSON-RPC error comes back with its revert data), the
+  journal (Application Support/Agent/domain-operations.json) and
+  registration secrets (Keychain), the active wallet, the approval sheet
+  (unlock, review, slide) and the send; `store.flush()` makes the journal
+  durable before anything can be signed.
 - `mcp.js`: connected services (desktop's mcp-connections.js and
   pi-mcp-tools.js): remote MCP servers over Streamable HTTP with
   `@earendil-works/pi-mcp`, public or with OAuth (dynamic client

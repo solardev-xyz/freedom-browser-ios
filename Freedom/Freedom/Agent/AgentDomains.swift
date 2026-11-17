@@ -114,7 +114,14 @@ final class AgentDomainDriver {
             guard let rpcMethod = params["method"] as? String, Self.readMethods.contains(rpcMethod) else {
                 throw DriverError(message: "Unsupported chain request.")
             }
-            return try await services.chainRegistry.walletRPC.callJSON(method: rpcMethod, params: params["params"] as? [Any] ?? [], on: .mainnet)
+            do {
+                let result = try await services.chainRegistry.walletRPC.callJSON(method: rpcMethod, params: params["params"] as? [Any] ?? [], on: .mainnet)
+                return ["result": result]
+            } catch WalletRPC.Error.rpc(let code, let message, let data) {
+                // The node's own answer, such as an execution revert: the engine
+                // reads its revert data (ENSv2's resolver check), as desktop does.
+                return ["error": ["code": code, "message": message, "data": data ?? NSNull()] as [String: Any]]
+            }
         case "account": return try account()
         case "ownWallet": return ownWallet(params["address"] as? String ?? "")
         case "balance":
