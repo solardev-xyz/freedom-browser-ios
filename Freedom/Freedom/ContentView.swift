@@ -499,13 +499,6 @@ struct ContentView: View {
                         onAgentSpike: agentSpikeAction
                     )
                     .equatable()
-                    // iOS 26's `.buttonStyle(.glass)` reserves a slightly
-                    // wider layout box than the visible circle, so the
-                    // HStack's 8pt spacing leaves a bigger visual gap on
-                    // this side than on the NavPill side. Pull it back
-                    // by a few points so the URL pill sits centered
-                    // between equally-spaced neighbors.
-                    .padding(.leading, -5)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
