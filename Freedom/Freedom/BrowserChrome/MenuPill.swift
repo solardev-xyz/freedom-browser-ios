@@ -124,6 +124,12 @@ private struct NativeGlassMenuStyle: ViewModifier {
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
                 .controlSize(.large)
+                // Lay the button out at its visible circle. iOS 26 adds
+                // about 5pt of empty margin on each side of a glass
+                // button, iOS 27 none; without a fixed width the gap to
+                // the URL pill differs per release, and once it is under
+                // the bar's glass spacing the two shapes melt together.
+                .frame(width: 52)
         } else {
             content
                 .frame(width: 50, height: 50)
