@@ -36,6 +36,14 @@ final class BrowserTab {
         case reserved
     }
 
+    /// One page's look, as `extractThemeColor` and the bottom-chrome
+    /// probe found it.
+    struct PageSurface {
+        var themeColor: UIColor?
+        var bottomChromeMode: BottomChromeMode = .overlay
+        var bottomNavColor: UIColor?
+    }
+
     /// A gated navigation waiting for user consent. Rendered in place of
     /// the webview until the user continues (unverified only) or backs
     /// out (all gates). Conflict and anchorDisagreement are security
@@ -292,6 +300,18 @@ final class BrowserTab {
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var lastScrollY: CGFloat = 0
     @ObservationIgnored private var bottomChromeProbeTask: Task<Void, Never>?
+    /// Each history entry's look, so a page restored by Back, Forward
+    /// (or a swipe) or a reload gets it back the moment it commits.
+    /// Holding the item keeps its identifier from being reused; entries
+    /// that left the history are pruned in `rememberSurface`.
+    @ObservationIgnored private var rememberedSurfaces: [ObjectIdentifier: (item: WKBackForwardListItem, surface: PageSurface)] = [:]
+    /// Bumped on every commit, so a theme-color answer from the page
+    /// before can't land on the next one.
+    @ObservationIgnored private var surfaceGeneration = 0
+    /// The history entry of the page on screen; its look is recorded
+    /// against it. (`currentItem` moves as soon as Back or Forward
+    /// starts, while the page being left is still on screen.)
+    @ObservationIgnored private var committedItem: WKBackForwardListItem?
     @ObservationIgnored private let navDelegate = NavDelegate()
     /// Serves staged contract-hosted documents under their `web3:`
     /// origin. Nil for popup tabs, whose configuration inherits the
@@ -424,6 +444,12 @@ final class BrowserTab {
         // previous, Done), entered from the address bar's "On This Page"
         // row — Safari's flow, desktop's Cmd+F bar.
         self.webView.isFindInteractionEnabled = true
+        // Swipe from the left edge for Back, from the right edge for
+        // Forward, as in Safari (the zoom transition's own edge swipe is
+        // turned off in TabsRoot). History traversal still passes the
+        // navigation delegate's `.backForward` path, so ENS names are
+        // re-verified exactly as with the buttons.
+        self.webView.allowsBackForwardNavigationGestures = true
         self.webView.navigationDelegate = navDelegate
         navDelegate.owner = self
         self.webView.uiDelegate = uiDelegate
@@ -1536,15 +1562,31 @@ final class BrowserTab {
         bottomChromeProbeTask = nil
     }
 
-    /// Wipe per-page chrome surface state at navigation start so the
-    /// next page renders against fresh defaults — previous theme
-    /// color, sampled nav color, or layout-mode result can't bleed
-    /// into the new page. Sibling to `resetENSState()`.
-    fileprivate func resetPerPageSurfaceState() {
-        themeColor = nil
-        bottomChromeMode = .overlay
-        bottomNavColor = nil
+    /// Sets the chrome's look when a page commits: the look its history
+    /// entry had last time (Back, Forward, a reload), or the defaults
+    /// until `didFinish` measures a page not seen before. Until the
+    /// commit, the page being left keeps its own. (Clearing at the start
+    /// of every navigation and measuring again after it finished resized
+    /// a restored page up to three times, so a swipe back flickered.)
+    fileprivate func applySurfaceForCommittedPage() {
+        surfaceGeneration &+= 1
         cancelBottomChromeProbe()
+        committedItem = webView.backForwardList.currentItem
+        let surface = committedItem.flatMap { rememberedSurfaces[ObjectIdentifier($0)]?.surface } ?? PageSurface()
+        if themeColor != surface.themeColor { themeColor = surface.themeColor }
+        if bottomChromeMode != surface.bottomChromeMode { bottomChromeMode = surface.bottomChromeMode }
+        if bottomNavColor != surface.bottomNavColor { bottomNavColor = surface.bottomNavColor }
+    }
+
+    /// Notes the look of the page on screen against its history entry.
+    private func rememberSurface() {
+        guard let item = committedItem else { return }
+        let list = webView.backForwardList
+        let inHistory = Set((list.backList + list.forwardList + [list.currentItem].compactMap { $0 }).map(ObjectIdentifier.init))
+        rememberedSurfaces = rememberedSurfaces.filter { inHistory.contains($0.key) }
+        rememberedSurfaces[ObjectIdentifier(item)] = (item, PageSurface(
+            themeColor: themeColor, bottomChromeMode: bottomChromeMode, bottomNavColor: bottomNavColor
+        ))
     }
 
     private func probeBottomChromeOnce() async {
@@ -1606,6 +1648,7 @@ final class BrowserTab {
         let nextColor = (dict?["bgColor"] as? String).flatMap(UIColor.init(cssRGB:))
         if bottomChromeMode != nextMode { bottomChromeMode = nextMode }
         if bottomNavColor != nextColor { bottomNavColor = nextColor }
+        rememberSurface()
     }
 
     /// Reads the page's `<meta name="theme-color">` after navigation
@@ -1632,6 +1675,7 @@ final class BrowserTab {
             return fallback;
         })()
         """
+        let generation = surfaceGeneration
         webView.evaluateJavaScript(js) { [weak self] result, _ in
             guard let self else { return }
             let color = (result as? String).flatMap(UIColor.init(hex:))
@@ -1639,7 +1683,10 @@ final class BrowserTab {
             // property directly. assumeIsolated mirrors the surrounding
             // observer style.
             MainActor.assumeIsolated {
+                // Another page has committed since: not its color.
+                guard self.surfaceGeneration == generation else { return }
                 if self.themeColor != color { self.themeColor = color }
+                self.rememberSurface()
             }
         }
     }
@@ -2042,16 +2089,13 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         // Fresh EIP-6963 UUID + idempotent swarm preload per page session.
-        // Per-page surface state (theme color + bottom chrome mode) is
-        // cleared so the chrome reverts to default while loading rather
-        // than carrying the previous page's brand color or layout
-        // negotiation into a fresh navigation.
+        // The page's look (theme color, bottom chrome mode) changes at
+        // commit, when the next page replaces this one (`didCommit`).
         MainActor.assumeIsolated {
             owner?.noteNavigationStarted()
             // A page that navigates (or is navigated away) no longer waits for its dialog.
             owner?.cancelDialog()
             owner?.reinstallPreloads()
-            owner?.resetPerPageSurfaceState()
             // A navigation withdraws the departing page's prompts and
             // ends its find session.
             owner?.cancelPermissionPrompts()
@@ -2062,6 +2106,12 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
         MainActor.assumeIsolated {
             owner?.refreshScriptletsAfterRedirect()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        MainActor.assumeIsolated {
+            owner?.applySurfaceForCommittedPage()
         }
     }
 

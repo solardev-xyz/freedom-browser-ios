@@ -112,6 +112,22 @@ final class FreedomWebView: WKWebView {
         onWindowChange?()
     }
 
+    /// Tells WebKit how much of the page the status bar covers: all of
+    /// its height when the page runs under it (no theme-color, see
+    /// `ContentView.webAreaIgnoredEdges`), nothing otherwise. Without
+    /// it, WebKit saved history scroll positions as if nothing covered
+    /// the top, so Back and Forward put the page back too high and it
+    /// jumped. WebKit also uses it to place fixed headers, and tints the
+    /// status bar with a fixed header's color, as Safari does.
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        guard #available(iOS 26.0, *) else { return }
+        let top = safeAreaInsets.top
+        if obscuredContentInsets.top != top {
+            obscuredContentInsets = UIEdgeInsets(top: top, left: 0, bottom: 0, right: 0)
+        }
+    }
+
     override func buildMenu(with builder: UIMenuBuilder) {
         super.buildMenu(with: builder)
         guard let title = searchMenuTitle?() else { return }
